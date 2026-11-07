@@ -1,0 +1,29 @@
+# setup.sh writes wrangler.toml (not in git) from this, with your KV namespace's and D1 database's ids.
+name = "lampa-native"
+main = "cloudflare-worker.js"
+compatibility_date = "2026-07-01"
+workers_dev = true
+
+# Grades (Loved / Good / OK / Bad) per CUB account and profile, shared with the Lampa plugin (/grades).
+[[kv_namespaces]]
+binding = "GRADES"
+id = "<KV_ID>"
+
+# Resume points shared with Lampa, the search index, marks, follows, skip times… (the *.sql files: setup.sh).
+[[d1_databases]]
+binding = "DB"
+database_name = "<D1_NAME>"
+database_id = "<D1_ID>"
+
+# Voice search: speech to text, and a free model reading it when no home server answers.
+[ai]
+binding = "AI"
+
+# The search index (titles.sql): English at 03:07, Russian at 03:37 UTC (TITLE_CRONS in the worker); hourly: New in 4K
+# at 04 UTC (uhd.sql), For you and the people you follow the other hours (HOURLY_CRON).
+# The Lampa plugin's ?url= pass-through to TorBox and two parsers, open to anyone: only if you use that plugin.
+# [vars]
+# PASS_THROUGH = "1"
+
+[triggers]
+crons = ["7 3 * * *", "37 3 * * *", "23 * * * *"]

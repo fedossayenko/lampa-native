@@ -1,0 +1,11 @@
+#!/bin/bash
+# Checks what is being committed, i.e. the staged files, not the working folder: shell lint, javac lints, host
+# tests. Enable once per clone: tools/install-hooks.sh
+set -euo pipefail
+repo=$(git rev-parse --show-toplevel)
+snap="$(git rev-parse --absolute-git-dir)/commit-snapshot"
+rm -rf "$snap"
+git checkout-index -a --prefix="$snap/"
+mkdir -p "$repo/tools/lib"
+ln -s "$repo/tools/lib" "$snap/tools/lib" # the pinned org.json jar, so it isn't downloaded again
+exec "$snap/tools/check.sh"

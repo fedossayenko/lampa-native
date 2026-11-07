@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    package="local.lampanative"
+    android:versionCode="1"
+    android:versionName="dev"> <!-- both set by build.sh from the commit -->
+
+    <!-- minSdk lives here (not only in aapt2's flags) so Android Lint checks API levels against the stick. -->
+    <uses-sdk android:minSdkVersion="30" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Voice search: the remote's microphone while its voice button is held (adb shell pm grant local.lampanative
+         android.permission.RECORD_AUDIO grants it ahead, else Android asks at the first press). -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- A TV app driven by the remote: no touchscreen; leanback optional because Fire OS doesn't declare it. -->
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.software.leanback" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" /> <!-- voice: the remote's -->
+
+    <application
+        android:label="Lampa Native"
+        android:icon="@drawable/icon"
+        android:banner="@drawable/banner"
+        android:allowBackup="false"
+        android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen"
+        android:networkSecurityConfig="@xml/net">
+        <!-- networkSecurityConfig: https only; build.sh adds plain http to HOME_SERVER when the build has one. -->
+        <!-- The home server, "host:port" (Main.homeServer): build.sh writes the build's HOME_SERVER here. -->
+        <meta-data android:name="home_server" android:value="" />
+        <!-- Software drawing here (the default); Main switches the GPU on when Settings choose it (Android can switch
+             a window's GPU on, never off). -->
+        <activity android:name=".Main" android:exported="true" android:hardwareAccelerated="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+            <!-- Fire OS gives the remote's voice button to this screen instead of Alexa (FireTVKeyPolicyManager's
+                 isFgAppAllowedToAcceptVoice: only the key's presence is read). -->
+            <meta-data android:name="can_accept_voice_input" android:value="true" />
+        </activity>
+        <!-- Our DDD fork's position while it plays (Main.Progress); it reaches us even with the app killed. Its
+             data is the address playing (TorBox's https): a filter without schemes would match no such intent.
+             Exported with no permission: DDD is another app, it can't hold one we define without a fork-wide change,
+             and Android 11 can't tell the receiver the sender. So it acts only on the address playing, which the
+             worker signs: another app can't know it. -->
+        <receiver android:name=".Main$Progress" android:exported="true" tools:ignore="ExportedReceiver">
+            <intent-filter>
+                <action android:name="top.rootu.dddplayer.intent.action.PROGRESS" />
+                <data android:scheme="https" />
+                <data android:scheme="http" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

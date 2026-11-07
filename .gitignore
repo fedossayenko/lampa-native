@@ -1,0 +1,5 @@
+build/
+tools/lib
+app/local.env
+.DS_Store
+__pycache__/

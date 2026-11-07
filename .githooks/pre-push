@@ -1,0 +1,18 @@
+#!/bin/bash
+# Checks exactly what is pushed (each pushed commit's files, not the working folder): the commit checks, the APK
+# build and Android Lint, ~30 s. The Claude Code review is run by hand: tools/review.sh (PLAN.md, Development).
+set -euo pipefail
+repo=$(git rev-parse --show-toplevel)
+snap="$(git rev-parse --absolute-git-dir)/push-snapshot"
+mkdir -p "$repo/tools/lib"
+zero=0000000000000000000000000000000000000000
+while read -r _ local_sha _ _; do
+    [ "$local_sha" = "$zero" ] && continue # deleting a remote branch: nothing to check
+    rm -rf "$snap"
+    mkdir -p "$snap"
+    git archive "$local_sha" | tar -x -C "$snap"
+    ln -s "$repo/tools/lib" "$snap/tools/lib"
+    "$snap/tools/check.sh" < /dev/null
+    "$snap/app/build.sh" < /dev/null > /dev/null
+    "$snap/tools/lint.sh" < /dev/null
+done

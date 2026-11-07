@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The intro finder (intro-detect.py) every 10 minutes at low priority, on a Mac at home. Install: copy intro-detect.py
+     to ~/lampa-intros/ there, put the play token and the worker's address in ~/.lampa-intros/play_token and
+     ~/.lampa-intros/worker (chmod 600), this to ~/Library/LaunchAgents/local.lampa-intros.plist, then
+     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.lampa-intros.plist -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>local.lampa-intros</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>exec /usr/bin/python3 "$HOME/lampa-intros/intro-detect.py" &gt;&gt; "$HOME/.lampa-intros/log" 2&gt;&amp;1</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
+    <key>StartInterval</key><integer>600</integer>
+    <key>Nice</key><integer>10</integer>
+    <key>LowPriorityIO</key><true/>
+</dict>
+</plist>

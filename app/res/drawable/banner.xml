@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The TV launcher's tile (320×180 px): the icon's play mark, wider. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="160dp" android:height="90dp" android:viewportWidth="320" android:viewportHeight="180">
+    <path android:fillColor="#FF1D1F20" android:pathData="M0,0h320v180h-320z" />
+    <path android:fillColor="#FFF5B942" android:pathData="M140,60L180,90L140,120Z" />
+</vector>

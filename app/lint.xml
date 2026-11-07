@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<lint>
+    <!-- TMDB's logo (res/drawable/tmdb.xml) is one long path, drawn once on Settings' About row. -->
+    <issue id="VectorPath" severity="ignore" />
+    <!-- English only, views built in code: no string resources to translate. -->
+    <issue id="SetTextI18n" severity="ignore" />
+    <!-- No XML layouts: views are built in code, so none needs the constructors layout tools inflate with. -->
+    <issue id="ViewConstructor" severity="ignore" />
+</lint>
