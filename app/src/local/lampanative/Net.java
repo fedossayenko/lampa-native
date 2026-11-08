@@ -112,33 +112,56 @@ final class Net {
     // Settings → Speed test: Cloudflare's test file (it refuses more than 50 MB an answer), asked again and again.
     static final String SPEED = "https://speed.cloudflare.com/__down?bytes=25000000";
 
-    // streams connections read url over and over for ms: the Mbit/s they got together, 0 when nothing came.
-    // ponytail: a read stalled at the end can run up to its 10 s timeout past ms; join with a limit if that shows.
+    // The running test's deadline (System.nanoTime), 0 once stopSpeed() ended it: its connections go on while it is
+    // still theirs. One test at a time (Main's row).
+    static volatile long speedEnd;
+
+    // Main.onStop: no download behind DDD. Each connection sees it at its next read (a stalled one within 2 s).
+    static void stopSpeed() {
+        speedEnd = 0;
+    }
+
+    // The test ending at end goes on: before it, not stopped, no newer one.
+    static boolean running(long end) {
+        return System.nanoTime() < end && speedEnd == end;
+    }
+
+    // streams connections read url over and over for ms, this thread one of them: the Mbit/s they got together
+    // over that time, 0 when nothing came, -1 when stopSpeed() ended it.
     static double mbps(String url, int streams, long ms) throws InterruptedException {
         AtomicLong bytes = new AtomicLong();
         long start = System.nanoTime(), end = start + ms * 1_000_000;
-        Thread[] all = new Thread[streams];
-        for (int i = 0; i < streams; i++) {
-            all[i] = new Thread(() -> {
-                byte[] buf = new byte[16384];
-                while (System.nanoTime() < end) {
-                    try {
-                        HttpURLConnection c = open(url, 10000);
-                        c.setUseCaches(false); // 25 MB answers kept out of the 50 MB disk cache
-                        try (InputStream in = c.getInputStream()) {
-                            for (int n; System.nanoTime() < end && (n = in.read(buf)) > 0; ) bytes.addAndGet(n);
-                        } finally {
-                            c.disconnect();
-                        }
-                    } catch (IOException e) {
-                        return; // this connection's done; the others go on
+        speedEnd = end;
+        Runnable read = () -> {
+            byte[] buf = new byte[16384];
+            while (running(end)) {
+                try {
+                    HttpURLConnection c = open(url, 2000); // a stalled read gives up 2 s on, not 10
+                    c.setUseCaches(false); // 25 MB answers kept out of the 50 MB disk cache
+                    try (InputStream in = c.getInputStream()) {
+                        for (int n; running(end) && (n = in.read(buf)) > 0; ) bytes.addAndGet(n);
+                    } finally {
+                        c.disconnect();
                     }
+                } catch (IOException e) {
+                    return; // this connection's done; the others go on
                 }
-            });
-            all[i].start();
+            }
+        };
+        Thread[] others = new Thread[streams - 1];
+        for (int i = 0; i < others.length; i++) {
+            others[i] = new Thread(read);
+            others[i].setDaemon(true);
+            others[i].start();
         }
-        for (Thread t : all) t.join();
-        return bytes.get() * 8e3 / (System.nanoTime() - start); // bits per ns × 1000 = Mbit/s
+        read.run();
+        long until = end + 2_500_000_000L; // past it a stalled one ends alone at its read timeout
+        for (Thread t : others) {
+            long left = (until - System.nanoTime()) / 1_000_000;
+            if (left > 0) t.join(left);
+        }
+        if (speedEnd == 0) return -1;
+        return bytes.get() * 8e3 / (Math.min(System.nanoTime(), end) - start); // bits per ns × 1000 = Mbit/s
     }
 
     static String speedLine(double mbps) {

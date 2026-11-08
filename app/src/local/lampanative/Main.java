@@ -319,6 +319,7 @@ public class Main extends Activity {
         stopped = true;
         recording = false;
         showMeter(false); // back at onStart: no sampling behind DDD
+        Net.stopSpeed(); // nor a speed test's downloads (it shows no result)
         for (ImageView p : posters) p.setImageDrawable(empty);
         for (ImageView p : pictures) p.setImageDrawable(empty);
         for (Level l : levels) for (ImageView p : l.pictures()) p.setImageDrawable(empty); // a film under a list
@@ -2671,21 +2672,21 @@ public class Main extends Activity {
                 TextView value = (TextView) ((LinearLayout) v).getChildAt(1);
                 speedLine = "Testing…";
                 value.setText(speedLine);
-                pool.execute(() -> {
-                    String line;
+                new Thread(() -> { // its own: pool's 3 stay for posters meanwhile
+                    double mbps;
                     try {
-                        line = Net.speedLine(Net.mbps(Net.SPEED, 4, 8000));
+                        mbps = Net.mbps(Net.SPEED, 4, 8000);
                     } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        line = Net.speedLine(0);
+                        mbps = -1;
                     }
-                    String shown = line;
+                    String shown = mbps < 0 ? "" : Net.speedLine(mbps); // stopped (onStop): no result
                     ui.post(() -> {
                         speedLine = shown;
                         if (value.isAttachedToWindow()) value.setText(shown);
-                        else settingsAgain(); // the tab's rows drawn again meanwhile
+                        else if (overlay == null) settingsAgain(); // the tab's rows drawn again meanwhile; a sheet
+                        // open over them keeps its focus (they show the result when it closes)
                     });
-                });
+                }).start();
             });
         list.addView(divider());
         Cub.Account a = account();

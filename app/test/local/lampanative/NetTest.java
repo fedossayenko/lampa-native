@@ -39,6 +39,66 @@ class NetTest {
         }
     }
 
+    // A server that sends a little, then stalls: the result is measured over the test's time, not the stall's.
+    static HttpServer stalling(ExecutorService threads) throws Exception {
+        HttpServer s = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        s.createContext("/", x -> {
+            x.sendResponseHeaders(200, 1 << 20);
+            OutputStream o = x.getResponseBody();
+            o.write(new byte[64 << 10]);
+            o.flush();
+            try {
+                Thread.sleep(10_000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            x.close();
+        });
+        s.setExecutor(threads);
+        s.start();
+        return s;
+    }
+
+    void testStalledReadEndsSoonAfterTheTest() throws Exception {
+        ExecutorService threads = Executors.newCachedThreadPool();
+        HttpServer s = stalling(threads);
+        try {
+            long start = System.nanoTime();
+            double mbps = Net.mbps("http://127.0.0.1:" + s.getAddress().getPort() + "/", 2, 300);
+            long took = (System.nanoTime() - start) / 1_000_000;
+            assert took < 3500 : took;
+            // 2 × 64 KB over the 300 ms, not over the 2 s read timeout too
+            assert mbps > 2 : mbps;
+        } finally {
+            s.stop(0);
+            threads.shutdownNow();
+        }
+    }
+
+    // Main.onStop: nothing downloads behind DDD, and a test cut short shows no result.
+    void testStopEndsTheTest() throws Exception {
+        ExecutorService threads = Executors.newCachedThreadPool();
+        HttpServer s = stalling(threads);
+        try {
+            new Thread(() -> {
+                try {
+                    Thread.sleep(200);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                Net.stopSpeed();
+            }).start();
+            long start = System.nanoTime();
+            double mbps = Net.mbps("http://127.0.0.1:" + s.getAddress().getPort() + "/", 2, 60_000);
+            long took = (System.nanoTime() - start) / 1_000_000;
+            assert took < 3500 : took;
+            assert mbps < 0 : mbps;
+        } finally {
+            s.stop(0);
+            threads.shutdownNow();
+        }
+    }
+
     void testSpeedOfNoServerIsZero() throws Exception {
         assert Net.mbps("http://127.0.0.1:1/", 2, 300) == 0;
     }
