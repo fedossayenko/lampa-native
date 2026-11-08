@@ -195,6 +195,7 @@ public class Main extends Activity {
     LinearLayout settingsList; // the Settings tab's rows: drawn again when a sheet or a level over them goes
     TextView settingsHelp; // beside them: what the focused one does
     String torboxLine = "…"; // Settings' TorBox line as last read: drawn again with the rows, asked again after a minute
+    String speedLine = ""; // Settings → Speed test: the last result, "Testing…" while one runs (no second at once)
     long torboxAt;
     View settingsButton; // Back from Search opened by the voice button lands here when nothing on Home had focus
     boolean asking; // a /play under way (UI thread)
@@ -2664,6 +2665,28 @@ public class Main extends Activity {
             ((TextView) ((LinearLayout) v).getChildAt(1)).setText(stats()); // the value, right
             showMeter(on);
         });
+        setting(list, help, "Speed test", speedLine, "OK downloads from Cloudflare for 8 seconds over 4 connections: "
+            + "the speed this TV gets from the internet, the line and the Wi-Fi together.", v -> {
+                if (speedLine.equals("Testing…")) return;
+                TextView value = (TextView) ((LinearLayout) v).getChildAt(1);
+                speedLine = "Testing…";
+                value.setText(speedLine);
+                pool.execute(() -> {
+                    String line;
+                    try {
+                        line = Net.speedLine(Net.mbps(Net.SPEED, 4, 8000));
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        line = Net.speedLine(0);
+                    }
+                    String shown = line;
+                    ui.post(() -> {
+                        speedLine = shown;
+                        if (value.isAttachedToWindow()) value.setText(shown);
+                        else settingsAgain(); // the tab's rows drawn again meanwhile
+                    });
+                });
+            });
         list.addView(divider());
         Cub.Account a = account();
         setting(list, help, "CUB account", a == null ? "Sign in" : "Signed in", "Lampa's account: your history on Home "
