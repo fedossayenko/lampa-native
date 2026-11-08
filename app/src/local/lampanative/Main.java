@@ -2673,12 +2673,7 @@ public class Main extends Activity {
                 speedLine = "Testing…";
                 value.setText(speedLine);
                 new Thread(() -> { // its own: pool's 3 stay for posters meanwhile
-                    double mbps;
-                    try {
-                        mbps = Net.mbps(Net.SPEED, 4, 8000);
-                    } catch (InterruptedException e) {
-                        mbps = -1;
-                    }
+                    double mbps = Net.mbps(Net.SPEED, 4, 8000);
                     String shown = mbps < 0 ? "" : Net.speedLine(mbps); // stopped (onStop): no result
                     ui.post(() -> {
                         speedLine = shown;

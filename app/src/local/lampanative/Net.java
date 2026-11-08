@@ -128,7 +128,7 @@ final class Net {
 
     // streams connections read url over and over for ms, this thread one of them: the Mbit/s they got together
     // over that time, 0 when nothing came, -1 when stopSpeed() ended it.
-    static double mbps(String url, int streams, long ms) throws InterruptedException {
+    static double mbps(String url, int streams, long ms) {
         AtomicLong bytes = new AtomicLong();
         long start = System.nanoTime(), end = start + ms * 1_000_000;
         speedEnd = end;
@@ -137,7 +137,9 @@ final class Net {
             while (running(end)) {
                 try {
                     HttpURLConnection c = open(url, 2000); // a stalled read gives up 2 s on, not 10
+                    c.setConnectTimeout(2000); // and so does a stalled connect
                     c.setUseCaches(false); // 25 MB answers kept out of the 50 MB disk cache
+                    c.setRequestProperty("Accept-Encoding", "identity"); // bytes as sent: gzip would count unpacked
                     try (InputStream in = c.getInputStream()) {
                         for (int n; running(end) && (n = in.read(buf)) > 0; ) bytes.addAndGet(n);
                     } finally {
@@ -156,9 +158,14 @@ final class Net {
         }
         read.run();
         long until = end + 2_500_000_000L; // past it a stalled one ends alone at its read timeout
-        for (Thread t : others) {
-            long left = (until - System.nanoTime()) / 1_000_000;
-            if (left > 0) t.join(left);
+        try {
+            for (Thread t : others) {
+                long left = (until - System.nanoTime()) / 1_000_000;
+                if (left > 0) t.join(left);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return -1;
         }
         if (speedEnd == 0) return -1;
         return bytes.get() * 8e3 / (Math.min(System.nanoTime(), end) - start); // bits per ns × 1000 = Mbit/s
