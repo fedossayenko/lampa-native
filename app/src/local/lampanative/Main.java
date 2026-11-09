@@ -1802,9 +1802,8 @@ public class Main extends Activity {
             cached.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         LinearLayout r = row(s.title(), sourceLine(s, req.langs()), cached, v -> play(req.f(), req.c(), req.season(),
             req.episode(), s.hash(), s.fileIdx(), s.title(), (View) req.list().getParent()));
-        // (not the one autoplay plays: Play reads its audio itself)
-        if (s.cached() == 1 && s.audio() == null && !(req.autoplay() && s.hash().equals(req.prefer()))
-            && req.audioReads()[0]-- > 0) {
+        if (Sources.readsAudio(s, req.autoplay(), req.prefer(), req.audioReads()[0])) {
+            req.audioReads()[0]--;
             TextView detail = r.findViewWithTag(DETAIL);
             View level = (View) req.list().getParent();
             audioReads.execute(() -> {
@@ -1832,14 +1831,20 @@ public class Main extends Activity {
 
     SpannableStringBuilder sourceLine(Sources.Source s, String langs) {
         SpannableStringBuilder line = new SpannableStringBuilder();
-        List<String> audio = Sources.audioChips(s.audio(), langs);
-        for (String b : Sources.chips(s, audio)) {
-            int start = line.length();
-            line.append(b);
-            line.setSpan(new Chip(b, Sources.badgeColor(b)), start, line.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            line.append("  ");
+        List<Sources.Heard> heard = Sources.heard(s, langs);
+        for (String b : Sources.badges(s, !heard.isEmpty())) chip(line, b);
+        for (Sources.Heard h : heard) { // its chips, then where they come from in the line's own color
+            for (String c : h.chips()) chip(line, c);
+            line.append(h.from()).append("  ");
         }
-        return line.append(Sources.details(s, audio.isEmpty()));
+        return line.append(Sources.details(s, heard.isEmpty()));
+    }
+
+    void chip(SpannableStringBuilder line, String b) {
+        int start = line.length();
+        line.append(b);
+        line.setSpan(new Chip(b, Sources.badgeColor(b)), start, line.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        line.append("  ");
     }
 
     // A text color that follows its view's focus (a list row turns white under focus): a span can't take a

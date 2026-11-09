@@ -795,12 +795,13 @@ async function introJobs(request, env) {
 }
 
 // GET /streams/movie/<imdb id> or /streams/series/<imdb id>/<season>/<episode>[?lang=RU,UA][&from=6] -> lampa-native's
-// sources: {streams: [[hash, fileIdx, title, badges, size, seeders, tracker, languages, cached, audio]], next, total,
+// sources: {streams: [[hash, fileIdx, title, badges, size, seeders, tracker, languages, cached, audio, maxvol]], next, total,
 // languages: [[code, releases]]}. Torrentio's list (Cloudflare caches it: 3-8 ms from here), each torrent once,
 // only the asked audio languages (none = all), biggest first, whole discs last. TorBox's cache is checked for the first FIRST only
 // (5 rows fit on the stick's screen, measured; +1 half seen) so they come fast; the app asks from=FIRST for the rest.
 // cached: 1 yes, 0 no, -1 unknown (no TORBOX_API_KEY secret, or TorBox down). audio: its tracks when read before
-// (GET /audio), else null.
+// (GET /audio), else null. maxvol: its tracks as MaxVol has them (maxvolAudio), else null: both kept side by side to
+// compare which tells the truth.
 // POST, the same path: Torrentio's answer in the body, from the stick. Torrentio answers here 429 at times
 // (Cloudflare's IPs are shared and rate-limited) while the stick's home IP gets it: the app then asks Torrentio
 // itself and posts that here (≤ 4 MB; the stick's X-Play-Token only: a list spends TorBox checks on any hashes).
@@ -851,7 +852,7 @@ async function cachedOnTorBox(env, hashes) {
   }
 }
 
-async function sources(request, env, kind, imdb, season, episode) {
+async function sources(request, env, ctx, kind, imdb, season, episode) {
   // the TV's only: each answer spends TorBox's cache checks and the addon's patience
   if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
   let list;
@@ -909,9 +910,13 @@ async function sources(request, env, kind, imdb, season, episode) {
   const from = Number(params.get('from')) || 0;
   const batch = shown.slice(from, from ? MAX : FIRST).map(({ row }) => row);
   const hashes = batch.map(([hash]) => hash);
-  const [cached, audioOf] = await Promise.all([cachedOnTorBox(env, hashes), audioKnown(env, hashes)]);
+  // MaxVol: up to 1.5 s (~0.7-2 s the first time a day, then D1's), the rest kept for the next list
+  const mv = env.DB ? maxvolAudio(env, imdb).catch(() => ({})) : Promise.resolve({});
+  if (ctx) ctx.waitUntil(mv);
+  const [cached, audioOf, maxvol] = await Promise.all([cachedOnTorBox(env, hashes), audioKnown(env, hashes),
+    Promise.race([mv, new Promise((done) => setTimeout(() => done({}), 1500))])]);
   for (const row of batch) row.push(cached ? Number(cached.has(row[0])) : -1);
-  for (const row of batch) row.push(audioOf.get(row[0]) ?? null);
+  for (const row of batch) row.push(audioOf.get(row[0]) ?? null, maxvol[row[0]] ?? null);
   return new Response(JSON.stringify({
     streams: batch,
     next: !from && shown.length > FIRST ? FIRST : 0,
@@ -996,11 +1001,12 @@ async function play(request, env, ctx, hash) {
   if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
   const q = new URL(request.url).searchParams;
   const resume = resumePoint(env, q.get('tl')); // alongside TorBox's three calls
+  // played: a torrent a probe added stays in the account (dropProbeAdds)
+  const played = env.DB?.prepare('INSERT OR REPLACE INTO plays (hash, t) VALUES (?, ?)').bind(hash, Date.now()).run()
+    .catch(() => {});
   try {
-    // played, before TorBox is asked: a probe reading it now leaves the torrent in the account (audio)
-    await env.DB?.prepare('INSERT OR REPLACE INTO plays (hash, t) VALUES (?, ?)').bind(hash, Date.now()).run()
-      .catch(() => {});
     const got = await torboxLink(env, hash, Number(q.get('file') ?? -1), q.get('name') || '');
+    await played;
     if (got.error) return corsError(request, got.error, got.status);
     if (got.progress !== undefined) {
       return new Response(JSON.stringify({ progress: got.progress }), {
@@ -1035,14 +1041,15 @@ async function audio(request, env, hash) {
     status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...corsHeaders(request) },
   });
   const now = Date.now();
-  const known = await env.DB.prepare('SELECT tracks, t FROM audio WHERE hash = ?').bind(hash).first();
-  if (known && known.tracks !== 'null') return json({ tracks: JSON.parse(known.tracks) });
-  if (known && now - known.t < RETRY_UNREADABLE) return corsError(request, 'Its audio couldn\'t be read today.', 502);
+  const known = await audioRow(env, hash);
+  if (settled(known)) {
+    return known.tracks !== 'null' ? json({ tracks: JSON.parse(known.tracks) })
+      : corsError(request, 'Its audio couldn\'t be read today.', 502);
+  }
   const spent = await env.DB.prepare('SELECT SUM(t > ?) minute, COUNT(*) hour FROM probes WHERE t > ?')
     .bind(now - 60_000, now - 3_600_000).first();
   if ((spent?.minute || 0) >= PROBES_MINUTE || (spent?.hour || 0) >= PROBES_HOUR) return json({ later: true }, 429);
   await env.DB.prepare('DELETE FROM probes WHERE t <= ?').bind(now - 3_600_000).run();
-  await env.DB.prepare('DELETE FROM plays WHERE t <= ?').bind(now - 3_600_000).run();
   await env.DB.prepare('INSERT INTO probes (t) VALUES (?)').bind(now).run();
   const q = new URL(request.url).searchParams;
   let got;
@@ -1055,31 +1062,83 @@ async function audio(request, env, hash) {
   } catch {
     return corsError(request, 'TorBox unavailable.', 502);
   }
-  const tracks = got.link ? await rememberAudio(env, hash, got.link) : null;
-  // Our add out of the account again (the user's list stays theirs: what they played), unless it was played this
-  // hour (before the probe too: autoplay's Play and this row's probe start together); one still downloading too (not
-  // cached after all: it would download)
-  if (mine === undefined && got.id !== undefined
-    && !(await env.DB.prepare('SELECT 1 FROM plays WHERE hash = ?').bind(hash).first())) {
-    await torboxApi(env, 'controltorrent', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ torrent_id: got.id, operation: 'delete' }),
-    }).catch(() => {});
+  // our add: out of the account again at night unless played by then (dropProbeAdds), not now: the user may be
+  // pressing OK on this very row
+  if (mine === undefined && got.id !== undefined) {
+    await env.DB.prepare('INSERT OR REPLACE INTO added (hash, id, t) VALUES (?, ?, ?)').bind(hash, got.id, now).run();
   }
+  const tracks = got.link ? await rememberAudio(env, hash, got.link) : null;
   if (!got.link) return corsError(request, got.error || 'Not on TorBox yet.', 502);
   return tracks ? json({ tracks }) : corsError(request, 'Couldn\'t read its audio.', 502);
 }
 
 const RETRY_UNREADABLE = 86_400_000; // a file whose audio couldn't be read: asked again a day later
+const audioRow = (env, hash) => env.DB.prepare('SELECT tracks, t FROM audio WHERE hash = ?').bind(hash).first();
+// read (tracks), or unreadable less than RETRY_UNREADABLE ago: not read again
+const settled = (k) => Boolean(k) && (k.tracks !== 'null' || Date.now() - k.t < RETRY_UNREADABLE);
+
+// The torrents probes added (audio), taken out of the account in the night's quiet hours (the hourly cron at 01-03
+// UTC, 20 a run beside For you's 25 subrequests) unless played since: then they're the user's. ponytail: check, then
+// delete; a Play of that very torrent in between (at 4 am) could lose its link.
+async function dropProbeAdds(env, now) {
+  await env.DB.prepare('DELETE FROM added WHERE EXISTS (SELECT 1 FROM plays p WHERE p.hash = added.hash AND '
+    + 'p.t >= added.t)').run(); // played since: the user's now
+  await env.DB.prepare('DELETE FROM plays WHERE t < ?').bind(now - 7 * 86_400_000).run();
+  const { results } = await env.DB.prepare('SELECT hash, id FROM added WHERE t < ? LIMIT 20').bind(now - 3_600_000)
+    .all();
+  await Promise.all(results.map(({ id }) => torboxApi(env, 'controltorrent', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ torrent_id: id, operation: 'delete' }),
+  }).catch(() => {})));
+  for (const { hash } of results) await env.DB.prepare('DELETE FROM added WHERE hash = ?').bind(hash).run();
+}
+
+// MaxVol (jr.maxvol.pro, a Jacred of Russian trackers: what Lampa's torbox plugin searches) lists TorrServer's ffprobe
+// of most releases it has, so their audio tracks without reading anything: ~90% of Torrentio's Rutor/Rutracker rows,
+// none of the others (Wakanda Forever 17/19 and 0/50, Dune: Part Two 41/44 and 0/97; 2026-11-09). No Atmos in it (a
+// track named so only). A film's hash -> tracks (as audioTracks'), kept a day in D1 (an hour when it had none or
+// failed). Its search wants a title: TMDB's find by the IMDb id, the original one when it's in Latin letters.
+const MAXVOL = 'https://jr.maxvol.pro/api/v2.0/indexers/all/results';
+const FF_CODECS = { truehd: 'TrueHD', eac3: 'DD+', ac3: 'DD', aac: 'AAC', flac: 'FLAC', opus: 'Opus', mp3: 'MP3',
+  vorbis: 'Vorbis' };
+const ffCodec = (st) => (st.codec_name === 'dts' ? (/HD/.test(st.profile || '') ? 'DTS-HD' : 'DTS')
+  : /^pcm/.test(st.codec_name) ? 'PCM' : FF_CODECS[st.codec_name] || String(st.codec_name || '').toUpperCase());
+
+async function maxvolAudio(env, imdb) {
+  const kept = await env.DB.prepare('SELECT tracks, t FROM maxvol WHERE imdb = ?').bind(imdb).first();
+  if (kept && Date.now() - kept.t < (kept.tracks.length > 2 ? 86_400_000 : 3_600_000)) return JSON.parse(kept.tracks);
+  const map = {};
+  try {
+    const o = await (await tmdb(env, `find/${imdb}`, '&external_source=imdb_id')).json();
+    const m = (o.movie_results || [])[0] || (o.tv_results || [])[0];
+    const original = m && (m.original_title || m.original_name || '');
+    const title = m && (/^[\x20-\x7e]+$/.test(original) ? original : m.title || m.name);
+    if (title) {
+      const year = (m.release_date || m.first_air_date || '').slice(0, 4);
+      const res = await fetch(`${MAXVOL}?${new URLSearchParams({ Query: `${title} ${year}`.trim(), title_original: title,
+        year, Category: '2000,5000' })}`);
+      for (const r of res.ok ? (await res.json()).Results || [] : []) {
+        const hash = (String(r.MagnetUri).match(/btih:([0-9a-f]{40})/i) || [])[1];
+        if (!hash || !Array.isArray(r.ffprobe)) continue;
+        map[hash.toLowerCase()] = r.ffprobe.filter((st) => st?.codec_type === 'audio').map((st) => {
+          const name = String(st.tags?.title || '').slice(0, 40);
+          return [langCode(st.tags?.language), ffCodec(st), Number(st.channels) || 0, Number(/atmos/i.test(name)), name];
+        });
+      }
+    }
+  } catch (e) {
+    console.log('maxvol', imdb, String(e)); // wrangler tail
+  }
+  await env.DB.prepare('INSERT OR REPLACE INTO maxvol (imdb, tracks, t) VALUES (?, ?, ?)')
+    .bind(imdb, JSON.stringify(map), Date.now()).run();
+  return map;
+}
 
 // Reads a release's audio and keeps it: its tracks ([] = not MKV/MP4), or null when the file couldn't be read (kept
 // as 'null': asked again after RETRY_UNREADABLE). Play's (once): not when read before. Never throws (Play's waitUntil).
 async function rememberAudio(env, hash, link, once = false) {
   try {
-    if (once) {
-      const known = await env.DB.prepare('SELECT tracks, t FROM audio WHERE hash = ?').bind(hash).first();
-      if (known && (known.tracks !== 'null' || Date.now() - known.t < RETRY_UNREADABLE)) return null;
-    }
+    if (once && settled(await audioRow(env, hash))) return null;
     let tracks = null;
     try {
       tracks = (await audioTracks(link)) || [];
@@ -2464,8 +2523,10 @@ export default {
       const empty = !(await env.DB.prepare('SELECT 1 FROM uhd LIMIT 1').first()); // the first run fills it at once
       if (new Date(event.scheduledTime).getUTCHours() === 4 || empty) return refreshUhd(env, event.scheduledTime);
       // follows beside For you (25 of the 50 subrequests), not beside New in 4K (up to 35); a failure stays theirs
+      const night = [1, 2, 3].includes(new Date(event.scheduledTime).getUTCHours());
       return Promise.all([env.GRADES && refreshForYou(env),
-        refreshFollows(env, event.scheduledTime).catch((e) => console.log('follows', e))]);
+        refreshFollows(env, event.scheduledTime).catch((e) => console.log('follows', e)),
+        night && dropProbeAdds(env, event.scheduledTime).catch((e) => console.log('adds', e))]);
     }
     return TITLE_CRONS[event.cron] ? refreshTitles(env, TITLE_CRONS[event.cron]) : undefined;
   },
@@ -2507,7 +2568,7 @@ export default {
     }
     const src = new URL(request.url).pathname.match(/^\/streams\/(movie|series)\/(tt\d+)(?:\/(\d+)\/(\d+))?$/);
     if (src && /^(GET|POST)$/.test(request.method) && (src[1] === 'series') === Boolean(src[3])) {
-      return sources(request, env, src[1], src[2], src[3], src[4]);
+      return sources(request, env, ctx, src[1], src[2], src[3], src[4]);
     }
 
     if (/^\/segments\/(jobs|own)$/.test(new URL(request.url).pathname) && env.DB) return introJobs(request, env);

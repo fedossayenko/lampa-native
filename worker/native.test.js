@@ -382,7 +382,7 @@ test('sources: RU/UA asked → only those, biggest first; the first 6 with TorBo
   // [hash, fileIdx, title, badges, size, seeders, tracker, languages, cached: 1 yes / 0 no / -1 unknown, audio: null
   // = not read yet]
   assert.deepEqual(body.streams[0], [hash(4), 0, 'Film.4.mkv', ['4K', 'DV', 'HDR'], '60 GB', 96, 'Rutracker', ['RU', 'UA'], 1,
-    null]);
+    null, null]);
   assert.deepEqual(body.streams.map((r) => r[8]), [1, 0, 1, 0, 0, 0]); // 60 GB (#4), 40.5, 33 (#8), … by size
   const check = new URL(asked.find((u) => u.includes('checkcached')));
   assert.deepEqual(check.searchParams.get('hash').split(','), ruUa.slice(0, 6).map(hash));
@@ -411,7 +411,7 @@ test('series: Torrentio is asked for the one episode; no file name → the first
   const s = { name: 'Torrentio\n1080p', title: 'Show S01 1080p\nShow.S01E02.mkv\n👤 5 💾 900 MB ⚙️ 1337x', infoHash: hash(1), fileIdx: 2 };
   tmdbAnswers({ '/stream/series/tt2:1:2.json': { streams: [s] }, '/v1/api/torrents/checkcached': { success: true, data: null } });
   const body = await (await streams('series/tt2/1/2')).json();
-  assert.deepEqual(body.streams, [[hash(1), 2, 'Show S01 1080p', ['1080p'], '900 MB', 5, '1337x', ['EN'], 0, null]]);
+  assert.deepEqual(body.streams, [[hash(1), 2, 'Show S01 1080p', ['1080p'], '900 MB', 5, '1337x', ['EN'], 0, null, null]]);
 });
 
 test('sources without a TorBox key, or with TorBox down, still come: cached unknown (-1)', async () => {
@@ -1988,14 +1988,14 @@ test('audio: only the stick; a TorBox add budget for unread releases (4 a minute
   assert.equal((await audioOf(e)).status, 200); // read before: no budget needed
 });
 
-test('audio: not MKV or MP4 → [] kept (not read again); TorBox still downloading it → our add taken out, 502', async () => {
+test('audio: not MKV or MP4 → [] kept (not read again); TorBox still downloading it → 502, our add noted', async () => {
   const e = audioEnv();
   torboxWith(cat('RIFF', new Uint8Array(1000)));
   assert.deepEqual(await (await audioOf(e)).json(), { tracks: [] });
   torboxWith(mkvFilm(), { ...fresh, 'mylist?id': { success: true, data: { ...pack, download_present: false, progress: 0.3 } },
     controltorrent: { success: true } });
   assert.equal((await audioOf(e, 'cd'.repeat(20))).status, 502);
-  assert.ok(asked.includes(JSON.stringify({ torrent_id: 11, operation: 'delete' })), asked.join('\n'));
+  assert.equal(e.DB.raw.prepare('SELECT id FROM added WHERE hash = ?').get('cd'.repeat(20)).id, 11);
 });
 
 test('play: reads the played release\'s audio in the background with its own link (no second TorBox add)', async () => {
@@ -2079,26 +2079,64 @@ test('audio: an MP4\'s AAC 5.1: channels from esds (its sample entry says 2)', a
   assert.deepEqual((await (await audioOf(audioEnv())).json()).tracks, [['EN', 'AAC', 6, 0, 'AAC']]);
 });
 
-test('audio: our add taken out of the account after reading; not when Play came meanwhile, nor one already there', async () => {
-  const deletes = () => asked.filter((x) => x === JSON.stringify({ torrent_id: 11, operation: 'delete' })).length;
+test('audio: our adds leave the account at night (01-03 UTC, an hour old); played since: kept; one there before: no add', async () => {
+  const deletes = () => asked.filter((x) => x.includes('"operation":"delete"')).map((x) => JSON.parse(x).torrent_id);
   const e = audioEnv();
-  torboxWith(mkvFilm(), { ...fresh, controltorrent: { success: true } });
-  assert.equal((await audioOf(e)).status, 200);
-  assert.equal(deletes(), 1);
-  e.DB.raw.prepare('INSERT INTO plays (hash, t) VALUES (?, ?)').run('cd'.repeat(20), Date.now() + 60_000); // Play meanwhile
-  torboxWith(mkvFilm(), { ...fresh, controltorrent: { success: true } });
-  assert.equal((await audioOf(e, 'cd'.repeat(20))).status, 200);
-  assert.equal(deletes(), 0);
-  e.DB.raw.prepare('INSERT INTO plays (hash, t) VALUES (?, ?)').run('ab'.repeat(20), Date.now() - 1000); // Play first
-  e.DB.raw.prepare('DELETE FROM audio').run();
-  torboxWith(mkvFilm(), { ...fresh, controltorrent: { success: true } });
-  assert.equal((await audioOf(e)).status, 200);
-  assert.equal(deletes(), 0);
-  // in the account before (played once): read as it is, not added, not taken out, however TorBox answers an add
-  torboxWith(mkvFilm(), { ...ready, createtorrent: { success: true, data: { torrent_id: 11 } },
-    mylist: { success: true, data: [{ id: 11, hash: 'EF'.repeat(20) }] }, controltorrent: { success: true } });
+  e.DB.raw.prepare("INSERT INTO uhd (type, id, t, pos) VALUES ('movie', 1, 1, 0)").run(); // the hour isn't New in 4K's
+  for (const h of ['ab', 'cd']) {
+    torboxWith(mkvFilm(), { ...fresh, controltorrent: { success: true } });
+    assert.equal((await audioOf(e, h.repeat(20))).status, 200);
+    assert.deepEqual(deletes(), []); // not now: the user may be pressing OK on it
+  }
+  const at = (hour) => new Date(Date.now() + 86_400_000).setUTCHours(hour, 23); // tomorrow
+  e.DB.raw.prepare('UPDATE added SET t = ?').run(at(2) - 1_800_000); // half an hour before the night's run
+  e.DB.raw.prepare('UPDATE added SET id = 12 WHERE hash = ?').run('cd'.repeat(20));
+  e.DB.raw.prepare('INSERT INTO plays (hash, t) VALUES (?, ?)').run('cd'.repeat(20), at(2) - 60_000); // played since
+  // in the account before (played once): read as it is, not added, however TorBox answers an add
+  torboxWith(mkvFilm(), { ...ready, createtorrent: { success: true, data: { torrent_id: 13 } },
+    mylist: { success: true, data: [{ id: 13, hash: 'EF'.repeat(20) }] } });
   assert.equal((await audioOf(e, 'ef'.repeat(20))).status, 200);
-  assert.deepEqual([deletes(), asked.filter((u) => u.includes('createtorrent')).length], [0, 0]);
+  assert.equal(asked.filter((u) => u.includes('createtorrent')).length, 0);
+  const run = (hour) => worker.scheduled({ cron: '23 * * * *', scheduledTime: at(hour) }, e);
+  torbox({ controltorrent: { success: true } });
+  await run(2); // not an hour old
+  e.DB.raw.prepare('UPDATE added SET t = t - 3_600_000').run();
+  await run(12); // daytime
+  assert.deepEqual(deletes(), []);
+  await run(2);
+  assert.deepEqual(deletes(), [11]);
+  assert.deepEqual(e.DB.raw.prepare('SELECT hash FROM added').all(), []); // the played one is the user's now
+});
+
+test('sources: MaxVol\'s tracks of its releases (row[10]) beside the read ones; asked once a day; MaxVol down: null', async () => {
+  const e = { ...streamsEnv, DB: d1() };
+  const ff = (language, codec_name, channels, title, profile) => ({ codec_type: 'audio', codec_name, channels, profile,
+    tags: { language, title } });
+  const maxvol = { Results: [
+    { MagnetUri: `magnet:?xt=urn:btih:${hash(4).toUpperCase()}&dn=x`, ffprobe: [{ codec_type: 'video', width: 3840 },
+      ff('rus', 'eac3', 8, 'MVO, HDrezka'), ff('ukr', 'ac3', 6), ff('eng', 'truehd', 8, 'English Atmos'),
+      ff('eng', 'dts', 6, null, 'DTS-HD MA'), ff(undefined, 'pcm_s24le', 2)] },
+    { MagnetUri: `magnet:?xt=urn:btih:${hash(5)}`, ffprobe: null },
+  ] };
+  const answers = { ...fifteen, '/v1/api/torrents/checkcached': { success: true, data: [] },
+    'find/tt1': { movie_results: [{ title: 'Film', original_title: 'Фильм', release_date: '2022-11-09' }] },
+    '/api/v2.0/indexers/all/results': maxvol };
+  tmdbAnswers(answers);
+  const body = await (await streams('movie/tt1?lang=RU,UA', e)).json();
+  const q = new URL(asked.find((u) => u.includes('maxvol'))).searchParams;
+  assert.deepEqual([q.get('title_original'), q.get('Query'), q.get('year')], ['Film', 'Film 2022', '2022']); // not Cyrillic
+  assert.deepEqual(body.streams.find((r) => r[0] === hash(4))[10], [['RU', 'DD+', 8, 0, 'MVO, HDrezka'],
+    ['UA', 'DD', 6, 0, ''], ['EN', 'TrueHD', 8, 1, 'English Atmos'], ['EN', 'DTS-HD', 6, 0, ''], ['', 'PCM', 2, 0, '']]);
+  assert.deepEqual(body.streams.filter((r) => r[0] !== hash(4)).map((r) => r[10]), Array(5).fill(null));
+  tmdbAnswers({ ...fifteen, '/v1/api/torrents/checkcached': { success: true, data: [] } }); // MaxVol and TMDB down
+  const again = await (await streams('movie/tt1?lang=RU,UA', e)).json();
+  assert.equal(again.streams.find((r) => r[0] === hash(4))[10].length, 5); // D1's
+  assert.ok(!asked.some((u) => u.includes('maxvol') || u.includes('find/')));
+  e.DB.raw.prepare('DELETE FROM maxvol').run();
+  tmdbAnswers({ ...fifteen, '/v1/api/torrents/checkcached': { success: true, data: [] } });
+  const down = await (await streams('movie/tt1?lang=RU,UA', e)).json();
+  assert.deepEqual(down.streams.map((r) => r[10]), Array(6).fill(null));
+  assert.equal(e.DB.raw.prepare('SELECT tracks FROM maxvol').get().tracks, '{}'); // asked again in an hour
 });
 
 test('audio: a file that can\'t be read (the CDN ignores Range) is asked again a day later, not on every list', async () => {

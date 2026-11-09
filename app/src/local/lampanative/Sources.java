@@ -14,13 +14,18 @@ import org.json.JSONObject;
 final class Sources {
     static final int VISION = 0xff6a1b9a, HDR = 0xffa86400, REMUX = 0xff2e7d32, AUDIO = 0xff1565c0, PLAIN = 0xff455a64;
 
-    /** cached: 1 TorBox has it (plays at once), 0 it doesn't, -1 unknown. audio: its tracks, null = not read yet. */
+    /** cached: 1 TorBox has it (plays at once), 0 it doesn't, -1 unknown. audio: its tracks read from its file, null =
+     *  not read yet; maxvol: as MaxVol lists them (its ffprobe), null = not there. */
     record Source(String hash, int fileIdx, String title, List<String> badges, String size, int seeders, String tracker,
-                  List<String> languages, int cached, List<Track> audio) {
+                  List<String> languages, int cached, List<Track> audio, List<Track> maxvol) {
         Source withAudio(List<Track> tracks) {
-            return new Source(hash, fileIdx, title, badges, size, seeders, tracker, languages, cached, tracks);
+            return new Source(hash, fileIdx, title, badges, size, seeders, tracker, languages, cached, tracks, maxvol);
         }
     }
+
+    /** A row's audio chips and where they come from: "file" (read from it), "MaxVol", or "file = MaxVol" when both
+     *  say the same. Both shown side by side for now, to see which one tells the truth. */
+    record Heard(String from, List<String> chips) {}
 
     /** An audio track read from the release's file (the worker's /audio): lang the app's code (RU, UA, EN; "" not
      *  said), codec (TrueHD, DTS-HD, DTS, DD+, DD, AAC…), channels, Atmos (TrueHD's 16 channels or E-AC-3's
@@ -76,10 +81,10 @@ final class Sources {
         List<Source> streams = new ArrayList<>(rows.length());
         for (int i = 0; i < rows.length(); i++) {
             JSONArray r = rows.getJSONArray(i);
-            JSONArray audio = r.optJSONArray(9); // null: not read yet
+            JSONArray audio = r.optJSONArray(9), maxvol = r.optJSONArray(10); // null: not read yet, not on MaxVol
             streams.add(new Source(r.getString(0), r.getInt(1), r.getString(2), strings(r.getJSONArray(3)),
                 r.getString(4), r.getInt(5), r.getString(6), strings(r.getJSONArray(7)), r.getInt(8),
-                audio == null ? null : tracks(audio)));
+                audio == null ? null : tracks(audio), maxvol == null ? null : tracks(maxvol)));
         }
         List<Language> languages = new ArrayList<>(langs.length());
         for (int i = 0; i < langs.length(); i++) {
@@ -110,14 +115,28 @@ final class Sources {
 
     static final List<String> NAMED_AUDIO = List.of("Atmos", "TrueHD", "DTS", "DD+", "DD");
 
-    // A row's chips: the release's own (4K, DV, REMUX, HEVC…), then its audio: read → the best track of each language
-    // shown (audio: audioChips'), not read → what its name says (Atmos, TrueHD, DTS, DD+, DD: some, for any language).
-    static List<String> chips(Source s, List<String> audio) {
-        if (audio.isEmpty()) return s.badges();
+    // A row's own chips (4K, DV, REMUX, HEVC…), and what its name says of its audio (Atmos, TrueHD, DTS, DD+, DD: some,
+    // for any language) unless its tracks are heard (heard()'s chips follow then).
+    static List<String> badges(Source s, boolean heard) {
+        if (!heard) return s.badges();
         List<String> out = new ArrayList<>();
         for (String b : s.badges()) if (!NAMED_AUDIO.contains(b)) out.add(b);
-        out.addAll(audio);
         return out;
+    }
+
+    // Its audio chips (audioChips') from the file and from MaxVol: one group when they agree, else each with its own.
+    static List<Heard> heard(Source s, String langs) {
+        List<String> file = audioChips(s.audio(), langs), maxvol = audioChips(s.maxvol(), langs);
+        List<Heard> out = new ArrayList<>();
+        if (!file.isEmpty()) out.add(new Heard(file.equals(maxvol) ? "file = MaxVol" : "file", file));
+        if (!maxvol.isEmpty() && !maxvol.equals(file)) out.add(new Heard("MaxVol", maxvol));
+        return out;
+    }
+
+    // Whether a row asks the worker to read its file's audio (GET /audio): cached, not read yet, while the list's
+    // reads last (reads: the ones left), and not the release autoplay plays (Play reads that one itself).
+    static boolean readsAudio(Source s, boolean autoplay, String prefer, int reads) {
+        return s.cached() == 1 && s.audio() == null && !(autoplay && s.hash().equals(prefer)) && reads > 0;
     }
 
     // "RU DD+ 7.1", "EN TrueHD Atmos": per language, the picked ones in their order then English (the original),
