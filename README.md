@@ -23,8 +23,9 @@ Measured on the stick (the same 39 remote presses; details in [PLAN.md](PLAN.md)
 - Home: Continue browsing, My list, For you, New in 4K and TMDB's rows; a tab bar with Search, Coming up and Settings.
 - Film and series pages: scores (TMDB, IMDb, Rotten Tomatoes, Metacritic, Letterboxd), cast, collection, trailer,
   seasons and episodes with watch marks, Story so far, More like this, a person's films, follow a person.
-- Sources: a Torrentio-style Stremio addon's releases filtered by audio language, TorBox's cached ones marked; ▶ Play
-  picks the biggest cached one in your languages.
+- Sources: a Torrentio-style Stremio addon's releases filtered by audio language, TorBox's cached ones marked, each
+  cached one's audio per language read from its file ("RU DD+ 7.1", "EN TrueHD Atmos"); ▶ Play picks the biggest
+  cached one in your languages.
 - Plays in DDD player with the resume point, and keeps it in sync with Lampa (resume points through the worker,
   history, My list, marks and grades through a CUB account).
 - Voice search with the Fire TV remote's microphone button.

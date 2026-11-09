@@ -795,11 +795,12 @@ async function introJobs(request, env) {
 }
 
 // GET /streams/movie/<imdb id> or /streams/series/<imdb id>/<season>/<episode>[?lang=RU,UA][&from=6] -> lampa-native's
-// sources: {streams: [[hash, fileIdx, title, badges, size, seeders, tracker, languages, cached]], next, total,
+// sources: {streams: [[hash, fileIdx, title, badges, size, seeders, tracker, languages, cached, audio]], next, total,
 // languages: [[code, releases]]}. Torrentio's list (Cloudflare caches it: 3-8 ms from here), each torrent once,
 // only the asked audio languages (none = all), biggest first, whole discs last. TorBox's cache is checked for the first FIRST only
 // (5 rows fit on the stick's screen, measured; +1 half seen) so they come fast; the app asks from=FIRST for the rest.
-// cached: 1 yes, 0 no, -1 unknown (no TORBOX_API_KEY secret, or TorBox down).
+// cached: 1 yes, 0 no, -1 unknown (no TORBOX_API_KEY secret, or TorBox down). audio: its tracks when read before
+// (GET /audio), else null.
 // POST, the same path: Torrentio's answer in the body, from the stick. Torrentio answers here 429 at times
 // (Cloudflare's IPs are shared and rate-limited) while the stick's home IP gets it: the app then asks Torrentio
 // itself and posts that here (≤ 4 MB; the stick's X-Play-Token only: a list spends TorBox checks on any hashes).
@@ -909,6 +910,8 @@ async function sources(request, env, kind, imdb, season, episode) {
   const batch = shown.slice(from, from ? MAX : FIRST).map(({ row }) => row);
   const cached = await cachedOnTorBox(env, batch.map(([hash]) => hash));
   for (const row of batch) row.push(cached ? Number(cached.has(row[0])) : -1);
+  const audioOf = await audioKnown(env, batch.map(([hash]) => hash));
+  for (const row of batch) row.push(audioOf.get(row[0]) ?? null);
   return new Response(JSON.stringify({
     streams: batch,
     next: !from && shown.length > FIRST ? FIRST : 0,
@@ -957,41 +960,52 @@ async function resumePoint(env, tl) {
   }
 }
 
+// TorBox's link to a release's file: adds the torrent to the account (one already there is found in the list) and
+// picks the file Torrentio meant (by name, else its index, else the biggest video). {id, files, file, link, added},
+// {id, progress, added} while TorBox still downloads it, or {error, status}. Throws when TorBox is down.
+async function torboxLink(env, hash, fileIdx, name) {
+  const form = new FormData();
+  form.append('magnet', `magnet:?xt=urn:btih:${hash}`);
+  const answer = await torboxApi(env, 'createtorrent', { method: 'POST', body: form });
+  let id = answer?.data?.torrent_id ?? answer?.data?.id;
+  const added = id !== undefined;
+  if (!added) { // already in the account (or refused): look for it there
+    const all = await torboxApi(env, 'mylist?bypass_cache=true');
+    id = (all?.data || []).find((t) => String(t.hash).toLowerCase() === hash)?.id;
+  }
+  if (id === undefined) return { error: answer?.detail || answer?.error || 'TorBox refused it.', status: 502 };
+  const t = (await torboxApi(env, `mylist?id=${id}&bypass_cache=true`))?.data;
+  if (!t) return { error: 'TorBox lost it.', status: 502 };
+  if (!t.download_present) return { id, progress: Math.round((t.progress || 0) * 100), added };
+  const files = t.files || [];
+  const file = (name && files.find((f) => f.short_name === name || String(f.name).split('/').pop() === name))
+    || files.find((f) => f.id === fileIdx && VIDEO.test(f.name))
+    || files.filter((f) => VIDEO.test(f.name)).sort((a, b) => b.size - a.size)[0];
+  if (!file) return { error: 'No video in it.', status: 404 };
+  // requestdl takes the key as a parameter (it is built for browser redirects); server to server only
+  const dl = await torboxApi(env, `requestdl?token=${encodeURIComponent(env.TORBOX_API_KEY)}&torrent_id=${id}&file_id=${file.id}`);
+  if (typeof dl?.data !== 'string') return { error: dl?.detail || 'No link.', status: 502 };
+  return { id, files, file, link: dl.data, added };
+}
+
 async function play(request, env, ctx, hash) {
   if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
   const q = new URL(request.url).searchParams;
-  const fileIdx = Number(q.get('file') ?? -1);
-  const name = q.get('name') || '';
   const resume = resumePoint(env, q.get('tl')); // alongside TorBox's three calls
   try {
-    const form = new FormData();
-    form.append('magnet', `magnet:?xt=urn:btih:${hash}`);
-    const added = await torboxApi(env, 'createtorrent', { method: 'POST', body: form });
-    let id = added?.data?.torrent_id ?? added?.data?.id;
-    if (id === undefined) { // already in the account (or refused): look for it there
-      const all = await torboxApi(env, 'mylist?bypass_cache=true');
-      id = (all?.data || []).find((t) => String(t.hash).toLowerCase() === hash)?.id;
-    }
-    if (id === undefined) return corsError(request, added?.detail || added?.error || 'TorBox refused it.', 502);
-    const t = (await torboxApi(env, `mylist?id=${id}&bypass_cache=true`))?.data;
-    if (!t) return corsError(request, 'TorBox lost it.', 502);
-    if (!t.download_present) {
-      return new Response(JSON.stringify({ progress: Math.round((t.progress || 0) * 100) }), {
+    const got = await torboxLink(env, hash, Number(q.get('file') ?? -1), q.get('name') || '');
+    if (got.error) return corsError(request, got.error, got.status);
+    if (got.progress !== undefined) {
+      return new Response(JSON.stringify({ progress: got.progress }), {
         status: 202, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...corsHeaders(request) },
       });
     }
-    const files = t.files || [];
-    const file = (name && files.find((f) => f.short_name === name || String(f.name).split('/').pop() === name))
-      || files.find((f) => f.id === fileIdx && VIDEO.test(f.name))
-      || files.filter((f) => VIDEO.test(f.name)).sort((a, b) => b.size - a.size)[0];
-    if (!file) return corsError(request, 'No video in it.', 404);
-    // requestdl takes the key as a parameter (it is built for browser redirects); server to server only
-    const dl = await torboxApi(env, `requestdl?token=${encodeURIComponent(env.TORBOX_API_KEY)}&torrent_id=${id}&file_id=${file.id}`);
-    if (typeof dl?.data !== 'string') return corsError(request, dl?.detail || 'No link.', 502);
+    // its audio for the source chips, with the link in hand: no TorBox add spent on it
+    if (env.DB && ctx) ctx.waitUntil(rememberAudio(env, hash, got.link));
     const playlist = q.has('series')
-      ? await episodesFrom(request, env, ctx, id, files, file, q.get('series'), dl.data, q.has('probe')) : [];
+      ? await episodesFrom(request, env, ctx, got.id, got.files, got.file, q.get('series'), got.link, q.has('probe')) : [];
     return new Response(JSON.stringify(playlist.length
-      ? { url: playlist[0][4], ...(await resume), playlist } : { url: dl.data, ...(await resume) }), {
+      ? { url: playlist[0][4], ...(await resume), playlist } : { url: got.link, ...(await resume) }), {
       headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...corsHeaders(request) },
     });
   } catch {
@@ -999,7 +1013,492 @@ async function play(request, env, ctx, hash) {
   }
 }
 
-// A series' episode in a file name: S01E09 (S1.E9, S01 E09) or 1x09; null when it says none.
+// GET /audio/<info hash>?file=<Torrentio's fileIdx>&name=<its file name> with header X-Play-Token -> {tracks: [[lang,
+// codec, channels, atmos, name], ...]} (audioTracks): a cached release's audio, for the chips on its source row. Read
+// once and kept (the audio table; Play reads the one played for free). Reading one nobody played spends a TorBox add,
+// so at most PROBES_MINUTE a minute and PROBES_HOUR an hour (TorBox allows ~10 a minute and ~50 an hour, and Play
+// needs its own): 429 {later: true} past that.
+const PROBES_MINUTE = 4;
+const PROBES_HOUR = 20;
+
+async function audio(request, env, hash) {
+  if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
+  if (!env.DB) return corsError(request, 'No database.', 503);
+  const json = (body, status = 200) => new Response(JSON.stringify(body), {
+    status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...corsHeaders(request) },
+  });
+  const known = await env.DB.prepare('SELECT tracks FROM audio WHERE hash = ?').bind(hash).first();
+  if (known) return json({ tracks: JSON.parse(known.tracks) });
+  const now = Date.now();
+  const spent = await env.DB.prepare('SELECT SUM(t > ?) minute, COUNT(*) hour FROM probes WHERE t > ?')
+    .bind(now - 60_000, now - 3_600_000).first();
+  if ((spent?.minute || 0) >= PROBES_MINUTE || (spent?.hour || 0) >= PROBES_HOUR) return json({ later: true }, 429);
+  await env.DB.prepare('DELETE FROM probes WHERE t <= ?').bind(now - 3_600_000).run();
+  await env.DB.prepare('INSERT INTO probes (t) VALUES (?)').bind(now).run();
+  const q = new URL(request.url).searchParams;
+  let got;
+  try {
+    got = await torboxLink(env, hash, Number(q.get('file') ?? -1), q.get('name') || '');
+  } catch {
+    return corsError(request, 'TorBox unavailable.', 502);
+  }
+  if (got.progress !== undefined && got.added) { // not cached after all: our add would download it, take it out
+    await fetch(`${TORBOX_API}controltorrent`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${env.TORBOX_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ torrent_id: got.id, operation: 'delete' }),
+    }).catch(() => {});
+  }
+  if (!got.link) return corsError(request, got.error || 'Not on TorBox yet.', 502);
+  const tracks = await rememberAudio(env, hash, got.link);
+  return tracks ? json({ tracks }) : corsError(request, 'Couldn\'t read its audio.', 502);
+}
+
+// Reads a release's audio once and keeps it: its tracks ([] = not MKV/MP4), or null when the file couldn't be read
+// (asked again next time). Never throws (Play's waitUntil).
+async function rememberAudio(env, hash, link) {
+  try {
+    if (await env.DB.prepare('SELECT 1 FROM audio WHERE hash = ?').bind(hash).first()) return null;
+    const tracks = (await audioTracks(link)) || [];
+    await env.DB.prepare('INSERT OR REPLACE INTO audio (hash, tracks, t) VALUES (?, ?, ?)')
+      .bind(hash, JSON.stringify(tracks), Date.now()).run();
+    return tracks;
+  } catch (e) {
+    console.log('audio', hash, String(e));
+    return null;
+  }
+}
+
+// The audio of the rows asked: hash -> tracks for the ones read before (none without the table).
+async function audioKnown(env, hashes) {
+  if (!env.DB || !hashes.length) return new Map();
+  try {
+    const { results } = await env.DB.prepare(`SELECT hash, tracks FROM audio WHERE hash IN (${hashes.map(() => '?')})`)
+      .bind(...hashes).all();
+    return new Map(results.map((r) => [r.hash, JSON.parse(r.tracks)]));
+  } catch {
+    return new Map(); // no table yet (audio.sql not applied): the rows come without
+  }
+}
+
+// A video file's audio tracks from its first bytes, over a few Range requests (the free plan: 50 subrequests and
+// 10 ms of CPU a request, so never a whole index): [[lang, codec, channels, atmos 0/1, name], ...] in the file's order.
+// lang: the app's codes (Torrentio's flags: RU, UA, EN…; '' unknown); codec: TrueHD, DTS-HD, DTS, DD+, DD, AAC, FLAC,
+// Opus, PCM…; atmos: TrueHD's 16-channel presentation or E-AC-3's JOC objects, read from the track's first frame as
+// Media3's Ac3Util does (else a track named "Atmos"). null: neither MKV nor MP4 (AVI, TS: not read).
+const LANGS = {
+  ru: 'RU', rus: 'RU', uk: 'UA', ukr: 'UA', en: 'EN', eng: 'EN', be: 'BY', bel: 'BY', kk: 'KZ', kaz: 'KZ',
+  de: 'DE', ger: 'DE', deu: 'DE', fr: 'FR', fre: 'FR', fra: 'FR', es: 'ES', spa: 'ES', it: 'IT', ita: 'IT',
+  ja: 'JP', jpn: 'JP', ko: 'KR', kor: 'KR', zh: 'CN', chi: 'CN', zho: 'CN', pl: 'PL', pol: 'PL', pt: 'PT',
+  por: 'PT', tr: 'TR', tur: 'TR', hi: 'IN', hin: 'IN',
+};
+const langCode = (l) => {
+  const k = String(l || '').toLowerCase().split('-')[0];
+  return !k || k === 'und' ? '' : LANGS[k] || k.slice(0, 2).toUpperCase();
+};
+const uint = (b, s, e) => {
+  let v = 0;
+  for (let i = s; i < e; i++) v = v * 256 + b[i];
+  return v;
+};
+const ascii = (b, s, e) => String.fromCharCode(...b.subarray(s, e));
+const utf8 = (b, s, e) => new TextDecoder().decode(b.subarray(s, e)).replace(/\0+$/, '').trim();
+const findBytes = (b, pattern) => {
+  outer: for (let i = 0; i + pattern.length <= b.length; i++) {
+    for (let j = 0; j < pattern.length; j++) if (b[i + j] !== pattern[j]) continue outer;
+    return i;
+  }
+  return -1;
+};
+
+async function audioTracks(link) {
+  let reads = 0;
+  const read = async (from, n) => {
+    if (++reads > 24) throw new Error('too many reads');
+    const res = await fetch(link, { headers: { Range: `bytes=${from}-${from + n - 1}` } });
+    if (res.status !== 206) { // 200 would be the whole film
+      await res.body?.cancel();
+      throw new Error(`range: HTTP ${res.status}`);
+    }
+    return new Uint8Array(await res.arrayBuffer());
+  };
+  const head = await read(0, 256 * 1024);
+  if (uint(head, 0, 4) === 0x1a45dfa3) return mkvAudio(head, read);
+  if (ascii(head, 4, 8) === 'ftyp') return mp4Audio(head, read);
+  return null;
+}
+
+// Matroska. An EBML number at p: {v, n}; an id keeps its length marker (0x1A45DFA3), a size doesn't, and a size of
+// all ones (unknown: a live Segment or Cluster) is Infinity. null: not all of it in b.
+function vint(b, p, id = false) {
+  if (p >= b.length) return null;
+  let n = 1;
+  while (n <= 8 && !(b[p] & (0x100 >> n))) n++;
+  if (n > 8 || p + n > b.length) return null;
+  let v = id ? b[p] : b[p] & (0xff >> n);
+  let ones = v === 0xff >> n;
+  for (let i = 1; i < n; i++) {
+    v = v * 256 + b[p + i];
+    ones = ones && b[p + i] === 0xff;
+  }
+  return { v: !id && ones ? Infinity : v, n };
+}
+
+// An element at p: {id, at, data, end} (positions in b), null when its head isn't all in b.
+function ebml(b, p) {
+  const id = vint(b, p, true);
+  const size = id && vint(b, p + id.n);
+  if (!size) return null;
+  const data = p + id.n + size.n;
+  return { id: id.v, at: p, data, end: data + size.v };
+}
+
+// The elements in b[s, e) (e may lie past b: as far as b goes).
+function* ebmlKids(b, s, e) {
+  while (s < Math.min(e, b.length)) {
+    const x = ebml(b, s);
+    if (!x) return;
+    yield x;
+    if (x.end === Infinity) return;
+    s = x.end;
+  }
+}
+
+const SEGMENT = 0x18538067;
+const TRACKS = 0x1654ae6b;
+const CLUSTER = 0x1f43b675;
+const MKV_CODECS = [[/^A_TRUEHD/, 'TrueHD'], [/^A_DTS\/(LOSSLESS|EXPRESS)/, 'DTS-HD'], [/^A_DTS/, 'DTS'],
+  [/^A_EAC3/, 'DD+'], [/^A_AC3/, 'DD'], [/^A_AAC/, 'AAC'], [/^A_FLAC/, 'FLAC'], [/^A_OPUS/, 'Opus'], [/^A_PCM/, 'PCM'],
+  [/^A_MPEG/, 'MP3'], [/^A_VORBIS/, 'Vorbis']];
+
+async function mkvAudio(head, read) {
+  const top = ebml(head, 0);
+  const seg = top && ebml(head, top.end);
+  if (!seg || seg.id !== SEGMENT) return [];
+  // Tracks and the first Cluster: by the SeekHead, else as met; after: where the next element we didn't see starts
+  let tracksAt = -1;
+  let clusterAt = -1;
+  let after = seg.data;
+  for (const x of ebmlKids(head, seg.data, seg.end)) {
+    if (x.id === 0x114d9b74) {
+      for (const seek of ebmlKids(head, x.data, x.end)) {
+        let id = 0;
+        let pos = -1;
+        for (const f of ebmlKids(head, seek.data, seek.end)) {
+          if (f.id === 0x53ab) id = uint(head, f.data, f.end);
+          if (f.id === 0x53ac) pos = seg.data + uint(head, f.data, f.end);
+        }
+        if (id === TRACKS) tracksAt = pos;
+        if (id === CLUSTER && clusterAt < 0) clusterAt = pos;
+      }
+    }
+    if (x.id === TRACKS) tracksAt = x.at;
+    if (x.id === CLUSTER) {
+      clusterAt = x.at;
+      break;
+    }
+    after = x.end;
+  }
+  if (tracksAt < 0) return [];
+  let b = head;
+  let t = ebml(b, tracksAt);
+  if (!t || t.end > b.length) {
+    b = await read(tracksAt, 256 * 1024);
+    t = ebml(b, 0);
+    if (!t) return [];
+  }
+  const tracks = [];
+  for (const e of ebmlKids(b, t.data, t.end)) {
+    if (e.id !== 0xae) continue;
+    const tr = { lang: 'eng', name: '', ch: 0, codec: '' }; // Matroska's default language is English
+    let bcp = '';
+    for (const f of ebmlKids(b, e.data, e.end)) {
+      if (f.id === 0xd7) tr.num = uint(b, f.data, f.end);
+      else if (f.id === 0x83) tr.type = uint(b, f.data, f.end);
+      else if (f.id === 0x86) tr.codec = utf8(b, f.data, f.end);
+      else if (f.id === 0x22b59c) tr.lang = utf8(b, f.data, f.end);
+      else if (f.id === 0x22b59d) bcp = utf8(b, f.data, f.end);
+      else if (f.id === 0x536e) tr.name = utf8(b, f.data, f.end);
+      else if (f.id === 0xe1) for (const a of ebmlKids(b, f.data, f.end)) if (a.id === 0x9f) tr.ch = uint(b, a.data, a.end);
+    }
+    if (bcp) tr.lang = bcp;
+    if (tr.type === 2) tracks.push(tr);
+  }
+  const want = new Map(tracks.filter((x) => /^A_(TRUEHD|EAC3|DTS)/.test(x.codec)).map((x) => [x.num, x]));
+  if (want.size) {
+    if (clusterAt < 0) clusterAt = await hopTo(read, after, CLUSTER);
+    if (clusterAt >= 0) await firstFrames(read, clusterAt, want);
+  }
+  return tracks.map((x) => {
+    let codec = (MKV_CODECS.find(([re]) => re.test(x.codec)) || [, x.codec.replace(/^A_/, '')])[1];
+    if (codec === 'DTS' && x.hd) codec = 'DTS-HD';
+    return [langCode(x.lang), codec, x.ch, Number(x.atmos ?? /atmos/i.test(x.name)), x.name];
+  });
+}
+
+// From a top-level element at `at`, element by element (16 bytes read each) to the first with this id: its place, -1.
+async function hopTo(read, at, id) {
+  for (let hops = 0; hops < 8 && Number.isFinite(at); hops++) {
+    const x = ebml(await read(at, 16), 0);
+    if (!x) return -1;
+    if (x.id === id) return at;
+    at += x.end;
+  }
+  return -1;
+}
+
+// The first block of each wanted track, from the first Cluster on: 256 KB at a time, stepping over the video's big
+// blocks without reading them (a 4K key frame is a few MB). Sets atmos / hd on the tracks.
+async function firstFrames(read, at, want) {
+  const WINDOW = 256 * 1024;
+  let b = await read(at, WINDOW);
+  let base = at;
+  const cluster = ebml(b, 0);
+  if (!cluster || cluster.id !== CLUSTER) return;
+  let p = base + cluster.data;
+  const left = new Set(want.keys());
+  for (let reads = 1; left.size && reads < 8;) {
+    if (p - base + 64 > b.length && b.length === WINDOW) { // near its end, and not the file's (a short read)
+      b = await read(p, WINDOW);
+      base = p;
+      reads++;
+    }
+    const x = ebml(b, p - base);
+    if (!x) return;
+    if (x.id === CLUSTER) { // the next one: into it
+      p = base + x.data;
+      continue;
+    }
+    if (x.end === Infinity || ![0xe7, 0xa3, 0xa0, 0xab, 0xa7].includes(x.id)) return; // past the clusters
+    const block = x.id === 0xa0 ? [...ebmlKids(b, x.data, x.end)].find((k) => k.id === 0xa1) : x;
+    const track = block && vint(b, block.data);
+    if (track && left.has(track.v)) {
+      left.delete(track.v);
+      const s = block.data + track.n + 3; // the track, a 2-byte time, flags
+      let frame = b.subarray(s, Math.min(block.end, b.length));
+      if (block.end > b.length && frame.length < 4096) {
+        frame = await read(base + s, Math.min(block.end - s, 16 * 1024));
+        reads++;
+      }
+      firstFrame(want.get(track.v), frame);
+    }
+    p = base + x.end;
+  }
+}
+
+function firstFrame(tr, b) {
+  if (tr.codec.startsWith('A_TRUEHD')) { // major sync, its signature 0xB752, then substream_info: bit 7 = 16 channels
+    const p = findBytes(b, [0xf8, 0x72, 0x6f, 0xba]);
+    if (p >= 0 && p + 18 <= b.length && b[p + 8] === 0xb7 && b[p + 9] === 0x52) tr.atmos = (b[p + 17] & 0x80) !== 0;
+  } else if (tr.codec.startsWith('A_EAC3')) {
+    const p = findBytes(b, [0x0b, 0x77]);
+    if (p >= 0) tr.atmos = eac3Joc(b.subarray(p));
+  } else if (findBytes(b, [0x64, 0x58, 0x20, 0x25]) >= 0) { // DTS: an extension substream after the core
+    tr.hd = true;
+  }
+}
+
+// An E-AC-3 syncframe's addbsi says JOC (Atmos): Media3's Ac3Util.parseAc3SyncframeInfo, bit for bit, to that field.
+// undefined: too short to tell.
+function eac3Joc(b) {
+  let pos = 0;
+  const bits = (n) => {
+    let v = 0;
+    for (let i = 0; i < n; i++, pos++) {
+      if (pos >> 3 >= b.length) throw new Error('short');
+      v = v * 2 + ((b[pos >> 3] >> (7 - (pos & 7))) & 1);
+    }
+    return v;
+  };
+  const skip = (n) => { pos += n; };
+  const bit = () => bits(1) === 1;
+  try {
+    pos = 40;
+    if (bits(5) <= 10) return false; // bsid: AC-3
+    pos = 16; // syncword
+    const strmtyp = bits(2);
+    skip(3 + 11); // substreamid, frmsiz
+    const fscod = bits(2);
+    let numblkscod = 3;
+    let blocks = 6;
+    if (fscod === 3) skip(2);
+    else {
+      numblkscod = bits(2);
+      blocks = [1, 2, 3, 6][numblkscod];
+    }
+    const acmod = bits(3);
+    const lfeon = bit();
+    skip(5 + 5); // bsid, dialnorm
+    if (bit()) skip(8); // compr
+    if (acmod === 0) {
+      skip(5);
+      if (bit()) skip(8);
+    }
+    if (strmtyp === 1 && bit()) skip(16); // chanmap
+    if (bit()) { // mixmdate
+      if (acmod > 2) skip(2);
+      if ((acmod & 1) && acmod > 2) skip(6);
+      if (acmod & 4) skip(6);
+      if (lfeon && bit()) skip(5);
+      if (strmtyp === 0) {
+        if (bit()) skip(6);
+        if (acmod === 0 && bit()) skip(6);
+        if (bit()) skip(6);
+        const mixdef = bits(2);
+        if (mixdef === 1) skip(5);
+        else if (mixdef === 2) skip(12);
+        else if (mixdef === 3) {
+          const mixdeflen = bits(5);
+          if (bit()) { // mixdata2e
+            skip(5);
+            for (let i = 0; i < 7; i++) if (bit()) skip(4);
+            if (bit()) { // addche
+              if (bit()) skip(4);
+              if (bit()) skip(4);
+            }
+          }
+          if (bit()) { // mixdata3e
+            skip(5);
+            if (bit()) {
+              skip(7);
+              if (bit()) skip(8);
+            }
+          }
+          skip(8 * (mixdeflen + 2));
+          pos = Math.ceil(pos / 8) * 8;
+        }
+        if (acmod < 2) {
+          if (bit()) skip(14);
+          if (acmod === 0 && bit()) skip(14);
+        }
+        if (bit()) { // frmmixcfginfoe
+          if (numblkscod === 0) skip(5);
+          else for (let i = 0; i < blocks; i++) if (bit()) skip(5);
+        }
+      }
+    }
+    if (bit()) { // infomdate
+      skip(5);
+      if (acmod === 2) skip(4);
+      if (acmod >= 6) skip(2);
+      if (bit()) skip(8);
+      if (acmod === 0 && bit()) skip(8);
+      if (fscod < 3) skip(1);
+    }
+    if (strmtyp === 0 && numblkscod !== 3) skip(1); // convsync
+    if (strmtyp === 2 && (numblkscod === 3 || bit())) skip(6); // blkid
+    return bit() && bits(6) === 1 && bits(8) === 1; // addbsie, addbsil, addbsi
+  } catch {
+    return undefined;
+  }
+}
+
+// MP4: the top-level boxes to moov, then each trak's head where it starts (64 KB: its stsd comes before the sample
+// tables, which are the MBs of a moov).
+const MP4_CODECS = {
+  'ac-3': 'DD', 'ec-3': 'DD+', mlpa: 'TrueHD', dtsc: 'DTS', dtsh: 'DTS-HD', dtsl: 'DTS-HD', dtse: 'DTS-HD',
+  dtsx: 'DTS-HD', mp4a: 'AAC', Opus: 'Opus', fLaC: 'FLAC', 'ac-4': 'AC-4', ipcm: 'PCM', lpcm: 'PCM', '.mp3': 'MP3',
+};
+const ACMOD_CHANNELS = [2, 1, 2, 3, 3, 4, 4, 5];
+
+function mp4Box(b, s) {
+  if (s < 0 || s + 8 > b.length) return null;
+  let size = uint(b, s, s + 4);
+  let hl = 8;
+  if (size === 1) {
+    if (s + 16 > b.length) return null;
+    size = uint(b, s + 8, s + 16);
+    hl = 16;
+  } else if (size === 0) size = Infinity; // to the end of the file
+  return size < hl ? null : { type: ascii(b, s + 4, s + 8), at: s, data: s + hl, end: s + size };
+}
+
+function* mp4Kids(b, s, e) {
+  while (s < Math.min(e, b.length)) {
+    const x = mp4Box(b, s);
+    if (!x) return;
+    yield x;
+    s = x.end;
+  }
+}
+
+const mp4Find = (b, s, e, path) => {
+  for (const x of mp4Kids(b, s, e)) {
+    if (x.type === path[0]) return path.length === 1 ? x : mp4Find(b, x.data, Math.min(x.end, e), path.slice(1));
+  }
+  return null;
+};
+
+async function mp4Audio(head, read) {
+  let b = head;
+  let base = 0;
+  const box = async (at) => { // the box at `at`, with the 64 KB from it in b when it isn't
+    if (at + 16 > base + b.length || at < base) {
+      b = await read(at, 64 * 1024);
+      base = at;
+    }
+    return mp4Box(b, at - base);
+  };
+  let at = 0;
+  let moov = null;
+  for (let hops = 0; hops < 8 && Number.isFinite(at); hops++) {
+    const x = await box(at);
+    if (!x) return [];
+    if (x.type === 'moov') {
+      moov = { data: at + x.data - x.at, end: at + x.end - x.at };
+      break;
+    }
+    at += x.end - x.at;
+  }
+  if (!moov) return [];
+  const tracks = [];
+  for (let p = moov.data; p + 8 <= moov.end;) {
+    let x = await box(p);
+    if (!x) break;
+    if (x.type === 'trak' && p - base + 32 * 1024 > b.length && p + 32 * 1024 < moov.end) {
+      b = await read(p, 64 * 1024);
+      base = p;
+      x = mp4Box(b, 0);
+    }
+    const track = x.type === 'trak' && mp4Track(b, x.data, Math.min(x.end, b.length));
+    if (track) tracks.push(track);
+    p += x.end - x.at;
+  }
+  return tracks;
+}
+
+function mp4Track(b, s, e) {
+  const hdlr = mp4Find(b, s, e, ['mdia', 'hdlr']);
+  if (!hdlr || ascii(b, hdlr.data + 8, hdlr.data + 12) !== 'soun') return null;
+  const mdhd = mp4Find(b, s, e, ['mdia', 'mdhd']);
+  let lang = '';
+  if (mdhd) {
+    const at = mdhd.data + (b[mdhd.data] === 1 ? 32 : 20);
+    const l = uint(b, at, at + 2);
+    lang = String.fromCharCode(((l >> 10) & 31) + 96, ((l >> 5) & 31) + 96, (l & 31) + 96);
+  }
+  const stsd = mp4Find(b, s, e, ['mdia', 'minf', 'stbl', 'stsd']);
+  const entry = stsd && mp4Box(b, stsd.data + 8);
+  if (!entry) return null;
+  let ch = uint(b, entry.data + 16, entry.data + 18);
+  let atmos = 0;
+  for (const c of mp4Kids(b, entry.data + 28, Math.min(entry.end, e))) {
+    const d = b.subarray(c.data, Math.min(c.end, b.length));
+    if (c.type === 'dac3' && d.length >= 2) ch = ACMOD_CHANNELS[(d[1] >> 3) & 7] + ((d[1] >> 2) & 1);
+    if (c.type === 'dec3' && d.length >= 5) { // the first independent substream, its dependent's channels, JOC
+      const dependent = (d[4] >> 1) & 15;
+      const chanLoc = dependent ? ((d[4] & 1) << 8) | d[5] : 0;
+      let extra = 0;
+      for (let bit = 0; bit < 9; bit++) if (chanLoc & (1 << bit)) extra += [0, 1, 4, 5, 6].includes(bit) ? 2 : 1;
+      ch = ACMOD_CHANNELS[(d[3] >> 1) & 7] + (d[3] & 1) + extra;
+      const after = 2 + (dependent ? 4 : 3);
+      atmos = Number(d.length > after && (d[after] & 1) === 1);
+    }
+  }
+  const name = utf8(b, hdlr.data + 24, Math.min(hdlr.end, e));
+  return [langCode(lang), MP4_CODECS[entry.type] || entry.type, ch, atmos || Number(/atmos/i.test(name)), name];
+}
+
 function episodeOf(name) {
   const m = String(name).match(/S(\d{1,2})[ ._-]?E(\d{1,3})(?!\d)/i) || String(name).match(/(?:^|[^\d])(\d{1,2})x(\d{2,3})(?!\d)/i);
   return m ? [Number(m[1]), Number(m[2])] : null;
@@ -1952,6 +2451,8 @@ export default {
     if (/^\/segments\/(jobs|own)$/.test(new URL(request.url).pathname) && env.DB) return introJobs(request, env);
     const skip = new URL(request.url).pathname.match(/^\/segments\/(movie|tv)\/(\d+)\/(tt\d+)$/);
     if (skip && request.method === 'GET') return segments(request, env, skip[1], skip[2], skip[3]);
+    const tracks = new URL(request.url).pathname.match(/^\/audio\/([0-9a-f]{40})$/);
+    if (tracks && request.method === 'GET') return audio(request, env, tracks[1]);
     const link = new URL(request.url).pathname.match(/^\/play\/([0-9a-f]{40})$/);
     if (link && request.method === 'GET') return play(request, env, ctx, link[1]);
     const file = new URL(request.url).pathname.match(/^\/stream\/(\d+)\/(\d+)$/);

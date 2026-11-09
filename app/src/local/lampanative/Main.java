@@ -94,6 +94,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -1673,7 +1674,7 @@ public class Main extends Activity {
         Future<?> before = preload;
         preload = null;
         SourceList req = new SourceList(f, c, season, episode, title, langs(), list, status, sub, audio,
-            new ArrayDeque<>(), t, prefer, autoplay);
+            new ArrayDeque<>(), t, prefer, autoplay, new AtomicInteger(AUDIO_READS));
         ((View) list.getParent()).setTag(req); // onSaveInstanceState: the list to open again after process death
         loadSources(req, 0, before);
     }
@@ -1683,9 +1684,10 @@ public class Main extends Activity {
     }
 
     // One source list being filled: what it lists, where, the rows not built yet, and when Watch was pressed.
+    // audioReads: how many more rows may ask the worker for their audio.
     record SourceList(Film f, Home.Card c, int season, int episode, String title, String langs, LinearLayout list,
                       TextView status, TextView sub, TextView audio, ArrayDeque<Sources.Source> pending, long t,
-                      String prefer, boolean autoplay) {}
+                      String prefer, boolean autoplay, AtomicInteger audioReads) {}
 
     // Torrentio refusing the worker (its 502: 429 from Cloudflare's shared IPs) sends this and the next 10 minutes'
     // pages through the stick.
@@ -1783,21 +1785,41 @@ public class Main extends Activity {
         }
     }
 
-    // ⚡ Cached, the badges on their colors, then size · seeders · tracker · languages.
+    // ⚡ Cached, the badges on their colors, then size · seeders · tracker · languages. A cached release whose audio
+    // isn't read yet (the first AUDIO_READS of a list) asks the worker for it and gets its line again with the tracks.
     View sourceRow(Sources.Source s, SourceList req) {
+        SpannableStringBuilder cached = new SpannableStringBuilder(Sources.cachedLabel(s.cached()));
+        cached.setSpan(s.cached() == 1 ? new Tint(Home.GREEN, 0xff0a7d3e) : new Tint(0xff8a8a8a, 0xff4a4a4a), 0,
+            cached.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        LinearLayout r = row(s.title(), sourceLine(s, req.langs()), cached, v -> play(req.f(), req.c(), req.season(),
+            req.episode(), s.hash(), s.fileIdx(), s.title(), (View) req.list().getParent()));
+        if (s.cached() == 1 && s.audio() == null && req.audioReads().getAndDecrement() > 0) {
+            TextView detail = (TextView) ((LinearLayout) r.getChildAt(0)).getChildAt(1); // row(): [lines [title, detail], end]
+            background.execute(() -> { // one at a time, low priority: posters and pages first
+                try {
+                    Answer a = ask(Sources.audioPath(s), null);
+                    if (a.code() != 200) return; // 429: the worker's TorBox budget, next time; 502: not readable
+                    Sources.Source read = s.withAudio(Sources.tracks(new JSONObject(a.body()).getJSONArray("tracks")));
+                    ui.post(() -> detail.setText(sourceLine(read, req.langs())));
+                } catch (Exception e) {
+                    Log.w(TAG, "audio " + s.hash(), e);
+                }
+            });
+        }
+        return r;
+    }
+
+    static final int AUDIO_READS = 4; // the first page's cached ones (5 rows fit on the screen)
+
+    SpannableStringBuilder sourceLine(Sources.Source s, String langs) {
         SpannableStringBuilder line = new SpannableStringBuilder();
-        for (String b : s.badges()) {
+        for (String b : Sources.chips(s, langs)) {
             int start = line.length();
             line.append(b);
             line.setSpan(new Chip(b, Sources.badgeColor(b)), start, line.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             line.append("  ");
         }
-        line.append(Sources.details(s));
-        SpannableStringBuilder cached = new SpannableStringBuilder(Sources.cachedLabel(s.cached()));
-        cached.setSpan(s.cached() == 1 ? new Tint(Home.GREEN, 0xff0a7d3e) : new Tint(0xff8a8a8a, 0xff4a4a4a), 0,
-            cached.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        return row(s.title(), line, cached, v -> play(req.f(), req.c(), req.season(), req.episode(), s.hash(),
-            s.fileIdx(), s.title(), (View) req.list().getParent()));
+        return line.append(Sources.details(s, langs));
     }
 
     // A text color that follows its view's focus (a list row turns white under focus): a span can't take a

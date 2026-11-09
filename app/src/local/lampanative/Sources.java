@@ -1,8 +1,11 @@
 package local.lampanative;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.regex.Pattern;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -11,9 +14,18 @@ import org.json.JSONObject;
 final class Sources {
     static final int VISION = 0xff6a1b9a, HDR = 0xffa86400, REMUX = 0xff2e7d32, AUDIO = 0xff1565c0, PLAIN = 0xff455a64;
 
-    /** cached: 1 TorBox has it (plays at once), 0 it doesn't, -1 unknown. */
+    /** cached: 1 TorBox has it (plays at once), 0 it doesn't, -1 unknown. audio: its tracks, null = not read yet. */
     record Source(String hash, int fileIdx, String title, List<String> badges, String size, int seeders, String tracker,
-                  List<String> languages, int cached) {}
+                  List<String> languages, int cached, List<Track> audio) {
+        Source withAudio(List<Track> tracks) {
+            return new Source(hash, fileIdx, title, badges, size, seeders, tracker, languages, cached, tracks);
+        }
+    }
+
+    /** An audio track read from the release's file (the worker's /audio): lang the app's code (RU, UA, EN; "" not
+     *  said), codec (TrueHD, DTS-HD, DTS, DD+, DD, AAC…), channels, Atmos (TrueHD's 16 channels or E-AC-3's
+     *  objects, from its first frame), and its name ("Дубляж Red Head Sound"). */
+    record Track(String lang, String codec, int channels, boolean atmos, String name) {}
 
     record Language(String code, int releases) {}
 
@@ -64,8 +76,10 @@ final class Sources {
         List<Source> streams = new ArrayList<>(rows.length());
         for (int i = 0; i < rows.length(); i++) {
             JSONArray r = rows.getJSONArray(i);
+            JSONArray audio = r.optJSONArray(9); // null: not read yet
             streams.add(new Source(r.getString(0), r.getInt(1), r.getString(2), strings(r.getJSONArray(3)),
-                r.getString(4), r.getInt(5), r.getString(6), strings(r.getJSONArray(7)), r.getInt(8)));
+                r.getString(4), r.getInt(5), r.getString(6), strings(r.getJSONArray(7)), r.getInt(8),
+                audio == null ? null : tracks(audio)));
         }
         List<Language> languages = new ArrayList<>(langs.length());
         for (int i = 0; i < langs.length(); i++) {
@@ -74,16 +88,99 @@ final class Sources {
         return new Page(streams, o.getInt("next"), o.getInt("total"), languages);
     }
 
+    // The worker's [[lang, codec, channels, atmos, name], ...] (a /streams row's, or /audio's "tracks").
+    static List<Track> tracks(JSONArray a) throws JSONException {
+        List<Track> out = new ArrayList<>(a.length());
+        for (int i = 0; i < a.length(); i++) {
+            JSONArray t = a.getJSONArray(i);
+            out.add(new Track(t.getString(0), t.getString(1), t.getInt(2), t.getInt(3) == 1, t.optString(4)));
+        }
+        return out;
+    }
+
+    // GET /audio/<hash>?file=&name= (ask(): the play token): a cached release's tracks, read from its file the first
+    // time (~1-3 s, a TorBox add the worker budgets), at once after that. The file Play would pick.
+    static String audioPath(Source s) {
+        return "/audio/" + s.hash() + "?file=" + s.fileIdx() + "&name=" + URLEncoder.encode(s.title(), StandardCharsets.UTF_8);
+    }
+
+    static final List<String> NAMED_AUDIO = List.of("Atmos", "TrueHD", "DTS", "DD+", "DD");
+
+    // A row's chips: the release's own (4K, DV, REMUX, HEVC…), then its audio: read → the best track of each language
+    // shown (audioChips), not read → what its name says (Atmos, TrueHD, DTS, DD+, DD: some, for any language).
+    static List<String> chips(Source s, String langs) {
+        List<String> audio = s.audio() == null ? List.of() : audioChips(s.audio(), langs);
+        if (audio.isEmpty()) return s.badges();
+        List<String> out = new ArrayList<>();
+        for (String b : s.badges()) if (!NAMED_AUDIO.contains(b)) out.add(b);
+        out.addAll(audio);
+        return out;
+    }
+
+    // "RU DD+ 7.1", "EN TrueHD Atmos": per language, the picked ones in their order then English (the original),
+    // its best track: Atmos, then more channels, then the better codec. Commentaries left out. langs "" (every
+    // language): the release's first language and English.
+    static List<String> audioChips(List<Track> audio, String langs) {
+        List<String> order = codes(langs);
+        if (order.isEmpty()) for (Track t : audio) if (!t.lang().isEmpty() && !commentary(t)) {
+            order.add(t.lang());
+            break;
+        }
+        if (!order.contains("EN")) order.add("EN");
+        List<String> chips = new ArrayList<>();
+        for (String lang : order) {
+            Track best = null;
+            for (Track t : audio) {
+                if (t.lang().equals(lang) && !commentary(t) && (best == null || better(t, best))) best = t;
+            }
+            if (best != null) chips.add(lang + " " + best.codec() + " " + (best.atmos() ? "Atmos" : layout(best.channels())));
+        }
+        return chips;
+    }
+
+    private static final Pattern COMMENTARY = Pattern.compile("(?iu)comment|коммент");
+    // Lossless first, then by how much each carries
+    private static final List<String> CODECS = List.of("TrueHD", "DTS-HD", "FLAC", "PCM", "DD+", "DTS", "DD", "AAC",
+        "Opus");
+
+    private static boolean commentary(Track t) {
+        return COMMENTARY.matcher(t.name()).find();
+    }
+
+    private static boolean better(Track a, Track b) {
+        if (a.atmos() != b.atmos()) return a.atmos();
+        if (a.channels() != b.channels()) return a.channels() > b.channels();
+        return rank(a.codec()) < rank(b.codec());
+    }
+
+    private static int rank(String codec) {
+        int i = CODECS.indexOf(codec);
+        return i < 0 ? CODECS.size() : i;
+    }
+
+    static String layout(int channels) {
+        return switch (channels) {
+            case 8 -> "7.1";
+            case 7 -> "6.1";
+            case 6 -> "5.1";
+            case 2 -> "2.0";
+            case 1 -> "1.0";
+            default -> channels + "ch";
+        };
+    }
+
     private static List<String> strings(JSONArray a) throws JSONException {
         List<String> out = new ArrayList<>(a.length());
         for (int i = 0; i < a.length(); i++) out.add(a.getString(i));
         return out;
     }
 
-    // Seeders only matter when TorBox has to download it; a cached one streams from TorBox's own copy.
-    static String details(Source s) {
+    // Seeders only matter when TorBox has to download it; a cached one streams from TorBox's own copy. The languages
+    // only while the audio isn't read (then its chips say them, the line fits).
+    static String details(Source s, String shown) {
         String seeders = s.cached() == 1 ? "" : s.seeders() + " seeders · ";
-        String langs = s.languages().isEmpty() ? "" : " · " + String.join(" ", s.languages());
+        boolean chips = s.audio() != null && !audioChips(s.audio(), shown).isEmpty();
+        String langs = s.languages().isEmpty() || chips ? "" : " · " + String.join(" ", s.languages());
         return s.size() + " · " + seeders + s.tracker() + langs;
     }
 
@@ -136,7 +233,7 @@ final class Sources {
             case "HDR", "HDR10+" -> HDR;
             case "REMUX" -> REMUX;
             case "Atmos", "TrueHD", "DTS", "DD+", "DD" -> AUDIO;
-            default -> PLAIN;
+            default -> badge.contains(" ") ? AUDIO : PLAIN; // a read track: "RU DD+ 7.1"
         };
     }
 

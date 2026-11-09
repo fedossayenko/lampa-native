@@ -13,7 +13,7 @@ class SourcesTest {
         Sources.Page p = Sources.parse(JSON);
         assert p.streams().equals(List.of(new Sources.Source("9c1cf8aa4f0a00fda70d149238e7d0fe0b352a00", 0,
             "Dune.Part.Two.2024.2160p.UHD.BDREMUX.mkv", List.of("4K", "DV", "HDR", "REMUX"), "69.35 GB", 359,
-            "Rutracker", List.of("RU", "UA", "EN"), 1))) : p.streams();
+            "Rutracker", List.of("RU", "UA", "EN"), 1, null))) : p.streams();
         assert p.next() == 8 && p.total() == 39 : p;
         assert p.languages().equals(List.of(new Sources.Language("RU", 39), new Sources.Language("UA", 33),
             new Sources.Language("EN", 100))) : p.languages();
@@ -22,7 +22,7 @@ class SourcesTest {
     // The row a source list focuses: the release asked for (Continue), else the first.
     void testFocus() {
         java.util.function.Function<String, Sources.Source> src = h -> new Sources.Source(h, 0, "", List.of(), "", 0,
-            "", List.of(), 1);
+            "", List.of(), 1, null);
         List<Sources.Source> list = List.of(src.apply("a"), src.apply("b"), src.apply("c"));
         assert Sources.focus(list, "c") == 2;
         assert Sources.focus(list, "x") == 0 && Sources.focus(list, null) == 0;
@@ -55,16 +55,16 @@ class SourcesTest {
     // (then TorBox has to download it, and seeders say how fast; a cached one streams from TorBox's copy).
     void testDetails() throws Exception {
         Sources.Source s = Sources.parse(JSON).streams().get(0);
-        assert Sources.details(s).equals("69.35 GB · Rutracker · RU UA EN") : Sources.details(s);
+        assert Sources.details(s, "RU,UA").equals("69.35 GB · Rutracker · RU UA EN") : Sources.details(s, "RU,UA");
         for (int cached : new int[] {0, -1}) {
             Sources.Source other = new Sources.Source(s.hash(), s.fileIdx(), s.title(), s.badges(), s.size(), s.seeders(),
-                s.tracker(), s.languages(), cached);
-            assert Sources.details(other).equals("69.35 GB · 359 seeders · Rutracker · RU UA EN") : Sources.details(other);
+                s.tracker(), s.languages(), cached, null);
+            assert Sources.details(other, "RU,UA").equals("69.35 GB · 359 seeders · Rutracker · RU UA EN") : Sources.details(other, "RU,UA");
         }
         assert Sources.cachedLabel(1).equals("⚡\uFE0E Cached") && Sources.cachedLabel(0).equals("Not cached");
         assert Sources.cachedLabel(-1).isEmpty() : "unknown: say nothing";
-        Sources.Source bare = new Sources.Source("h", 0, "t", List.of(), "1 GB", 5, "1337x", List.of(), 1);
-        assert Sources.details(bare).equals("1 GB · 1337x") : "no languages, no trailing dot: " + Sources.details(bare);
+        Sources.Source bare = new Sources.Source("h", 0, "t", List.of(), "1 GB", 5, "1337x", List.of(), 1, null);
+        assert Sources.details(bare, "RU,UA").equals("1 GB · 1337x") : "no languages, no trailing dot: " + Sources.details(bare, "RU,UA");
     }
 
     void testBadgeColorsByKind() {
@@ -100,11 +100,11 @@ class SourcesTest {
 
     // ▶ Play's pick: the biggest cached, never a disc; its line.
     void testBest() {
-        Sources.Source disc = new Sources.Source("a", 0, "Disc", List.of("Disc", "4K"), "90 GB", 9, "x", List.of("RU"), 1);
+        Sources.Source disc = new Sources.Source("a", 0, "Disc", List.of("Disc", "4K"), "90 GB", 9, "x", List.of("RU"), 1, null);
         Sources.Source big = new Sources.Source("b", 0, "Big", List.of("4K", "DV", "REMUX", "HEVC", "Atmos"), "74.3 GB", 9, "x",
-            List.of("RU"), 0);
+            List.of("RU"), 0, null);
         Sources.Source cached = new Sources.Source("c", 0, "Cached", List.of("4K", "DV", "HDR", "DD+"), "21.7 GB", 9, "x",
-            List.of("RU", "UA"), 1);
+            List.of("RU", "UA"), 1, null);
         assert Sources.best(List.of(disc, big, cached)) == cached;
         assert Sources.best(List.of(disc, big)) == null;
         assert Sources.picture(big).equals(List.of("4K", "DV", "REMUX"));
@@ -114,5 +114,61 @@ class SourcesTest {
         assert Sources.tracks(many, "RU,UA").equals("RU UA +4") : Sources.tracks(many, "RU,UA");
         assert Sources.tracks(many, "").equals("EN JP RU +3") : Sources.tracks(many, "");
         assert Sources.tracks(many, "DE").equals("EN JP RU +3");
+    }
+
+    // Read audio (the worker's /audio, or a /streams row's 10th field): Dune: Part Two's remux and Wakanda Forever's
+    // MP4 as the worker read them from TorBox (2026-11-09).
+    static final String DUNE = """
+        [["RU","DD+",6,0,"Дубляж Bravo Records Georgia / Movie Dubbing"],["RU","DD",6,0,"Дубляж Red Head Sound"],
+         ["RU","DD",2,0,"Дубляж Jaskier"],["RU","DD+",6,0,"MVO LostFilm"],["UA","DD",6,0,"Дубляж Postmodern"],
+         ["EN","TrueHD",8,1,"Original"],["EN","DD",6,0,"Original Core"],["EN","AC3",2,0,"Commentary by the director"]]""";
+    static final String WAKANDA = """
+        [["RU","DD",6,0,"Dub, MovieDalen"],["RU","DD+",8,0,"MVO, HDrezka Studio"],["RU","DD",6,0,"MVO, TVShows"],
+         ["UA","DD",6,0,"Dub, LeDoyen"],["EN","DD+",6,1,"Original"]]""";
+
+    static List<Sources.Track> tracks(String json) throws Exception {
+        return Sources.tracks(new org.json.JSONArray(json));
+    }
+
+    void testParsesReadAudio() throws Exception {
+        Sources.Page p = Sources.parse(JSON.replace(", 1]],", ", 1, " + DUNE + "]],"));
+        assert p.streams().get(0).audio().size() == 8 : p.streams().get(0);
+        assert p.streams().get(0).audio().get(5).equals(new Sources.Track("EN", "TrueHD", 8, true, "Original"));
+        assert Sources.parse(JSON).streams().get(0).audio() == null : "not read yet";
+        assert Sources.parse(JSON.replace(", 1]],", ", 1, null]],")).streams().get(0).audio() == null;
+    }
+
+    // Per language shown (picked ones, then English), its best track: Atmos, more channels, the better codec;
+    // commentaries never.
+    void testAudioChips() throws Exception {
+        assert Sources.audioChips(tracks(DUNE), "RU,UA").equals(List.of("RU DD+ 5.1", "UA DD 5.1", "EN TrueHD Atmos"))
+            : Sources.audioChips(tracks(DUNE), "RU,UA");
+        assert Sources.audioChips(tracks(WAKANDA), "RU,UA").equals(List.of("RU DD+ 7.1", "UA DD 5.1", "EN DD+ Atmos"))
+            : Sources.audioChips(tracks(WAKANDA), "RU,UA");
+        assert Sources.audioChips(tracks(WAKANDA), "").equals(List.of("RU DD+ 7.1", "EN DD+ Atmos")) : "every language";
+        assert Sources.audioChips(tracks(WAKANDA), "EN").equals(List.of("EN DD+ Atmos"));
+        List<Sources.Track> commentaryOnly = List.of(new Sources.Track("EN", "DD", 2, false, "Commentary"));
+        assert Sources.audioChips(commentaryOnly, "RU").isEmpty();
+        assert Sources.layout(7).equals("6.1") && Sources.layout(3).equals("3ch");
+    }
+
+    // Read: the name's audio guesses (Atmos, DD+…) give way to the tracks per language, the languages leave the
+    // details (the chips say them); not read: as before.
+    void testChipsOnARow() throws Exception {
+        Sources.Source s = new Sources.Source("h", 0, "Dune.mkv", List.of("4K", "DV", "HEVC", "Atmos", "DD+"), "38 GB", 9,
+            "Rutracker", List.of("RU", "UA", "EN"), 1, null);
+        assert Sources.chips(s, "RU,UA").equals(s.badges());
+        Sources.Source read = s.withAudio(tracks(DUNE));
+        assert Sources.chips(read, "RU,UA").equals(List.of("4K", "DV", "HEVC", "RU DD+ 5.1", "UA DD 5.1", "EN TrueHD Atmos"))
+            : Sources.chips(read, "RU,UA");
+        assert Sources.details(read, "RU,UA").equals("38 GB · Rutracker") : Sources.details(read, "RU,UA");
+        Sources.Source avi = s.withAudio(List.of()); // read, not MKV/MP4: as if not read
+        assert Sources.chips(avi, "RU,UA").equals(s.badges()) && Sources.details(avi, "RU,UA").endsWith("RU UA EN");
+        assert Sources.badgeColor("RU DD+ 7.1") == Sources.AUDIO && Sources.badgeColor("HEVC") == Sources.PLAIN;
+        assert Sources.audioPath(s).equals("/audio/h?file=0&name=Dune.mkv");
+        assert Sources.audioPath(s.withAudio(null)).equals("/audio/h?file=0&name=Dune.mkv");
+        Sources.Source spaced = new Sources.Source("h", 2, "Дюна 2 [4K].mkv", List.of(), "", 0, "", List.of(), 1, null);
+        assert Sources.audioPath(spaced).equals("/audio/h?file=2&name=%D0%94%D1%8E%D0%BD%D0%B0+2+%5B4K%5D.mkv")
+            : Sources.audioPath(spaced);
     }
 }

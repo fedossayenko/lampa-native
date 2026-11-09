@@ -379,8 +379,10 @@ test('sources: RU/UA asked → only those, biggest first; the first 6 with TorBo
   assert.equal(body.total, 12);
   // every language in the film's list, most releases first: the picker; no flags = English
   assert.deepEqual(body.languages, [['RU', 12], ['UA', 12], ['EN', 2], ['KR', 1]]);
-  // [hash, fileIdx, title, badges, size, seeders, tracker, languages, cached: 1 yes / 0 no / -1 unknown]
-  assert.deepEqual(body.streams[0], [hash(4), 0, 'Film.4.mkv', ['4K', 'DV', 'HDR'], '60 GB', 96, 'Rutracker', ['RU', 'UA'], 1]);
+  // [hash, fileIdx, title, badges, size, seeders, tracker, languages, cached: 1 yes / 0 no / -1 unknown, audio: null
+  // = not read yet]
+  assert.deepEqual(body.streams[0], [hash(4), 0, 'Film.4.mkv', ['4K', 'DV', 'HDR'], '60 GB', 96, 'Rutracker', ['RU', 'UA'], 1,
+    null]);
   assert.deepEqual(body.streams.map((r) => r[8]), [1, 0, 1, 0, 0, 0]); // 60 GB (#4), 40.5, 33 (#8), … by size
   const check = new URL(asked.find((u) => u.includes('checkcached')));
   assert.deepEqual(check.searchParams.get('hash').split(','), ruUa.slice(0, 6).map(hash));
@@ -409,7 +411,7 @@ test('series: Torrentio is asked for the one episode; no file name → the first
   const s = { name: 'Torrentio\n1080p', title: 'Show S01 1080p\nShow.S01E02.mkv\n👤 5 💾 900 MB ⚙️ 1337x', infoHash: hash(1), fileIdx: 2 };
   tmdbAnswers({ '/stream/series/tt2:1:2.json': { streams: [s] }, '/v1/api/torrents/checkcached': { success: true, data: null } });
   const body = await (await streams('series/tt2/1/2')).json();
-  assert.deepEqual(body.streams, [[hash(1), 2, 'Show S01 1080p', ['1080p'], '900 MB', 5, '1337x', ['EN'], 0]]);
+  assert.deepEqual(body.streams, [[hash(1), 2, 'Show S01 1080p', ['1080p'], '900 MB', 5, '1337x', ['EN'], 0, null]]);
 });
 
 test('sources without a TorBox key, or with TorBox down, still come: cached unknown (-1)', async () => {
@@ -586,6 +588,7 @@ function d1() {
   db.exec(readFileSync(new URL('./segments.sql', import.meta.url), 'utf8'));
   db.exec(readFileSync(new URL('./follows.sql', import.meta.url), 'utf8'));
   db.exec(readFileSync(new URL('./news.sql', import.meta.url), 'utf8'));
+  db.exec(readFileSync(new URL('./audio.sql', import.meta.url), 'utf8'));
   const stmt = (sql, args = []) => ({
     bind: (...a) => stmt(sql, a),
     all: async () => ({ results: db.prepare(sql).all(...args) }),
@@ -1843,4 +1846,174 @@ test('pass-through: off unless PASS_THROUGH=1; TorBox only gets the key, other h
   const pre = await worker.fetch(new Request(torbox, { method: 'OPTIONS',
     headers: { 'Access-Control-Request-Headers': 'x-api-key' } }), on);
   assert.deepEqual([pre.status, pre.headers.get('Access-Control-Allow-Headers')], [204, 'x-api-key']);
+});
+
+// Audio: a release's tracks read from its file's first bytes (GET /audio, and after Play), for the source rows' chips.
+// Synthetic MKV and MP4 files served by Range like TorBox's CDN; TorBox's API as in play.
+const cat = (...parts) => {
+  const all = parts.map((p) => (typeof p === 'string' ? new TextEncoder().encode(p) : p));
+  const out = new Uint8Array(all.reduce((n, p) => n + p.length, 0));
+  let at = 0;
+  for (const p of all) {
+    out.set(p, at);
+    at += p.length;
+  }
+  return out;
+};
+const be = (n, width) => Uint8Array.from({ length: width }, (_, i) => Math.floor(n / 256 ** (width - 1 - i)) % 256);
+// Matroska: an element with an 8-byte size; ids as written (0x1A45DFA3)
+const el = (id, ...kids) => {
+  const data = cat(...kids);
+  return cat(be(id, Math.ceil(Math.log2(id + 1) / 8)), Uint8Array.of(0x01), be(data.length, 7), data);
+};
+const elUint = (id, n) => el(id, Uint8Array.of(n));
+const block = (track, frame) => el(0xa3, Uint8Array.of(0x80 | track, 0, 0, 0x80), frame);
+// E-AC-3 5.1 syncframe head (strmtyp 0, fscod 0, numblkscod 3, acmod 7, lfe) with or without addbsi = JOC
+function eac3(joc) {
+  const bits = [];
+  const put = (v, n) => { for (let i = n - 1; i >= 0; i--) bits.push((v >> i) & 1); };
+  put(0x0b77, 16); put(0, 2); put(0, 3); put(0x2ff, 11); put(0, 2); put(3, 2); put(7, 3); put(1, 1); put(16, 5); put(31, 5);
+  put(0, 1); put(0, 1); put(0, 1); // compre, mixmdate, infomdate
+  put(joc ? 1 : 0, 1);
+  if (joc) { put(1, 6); put(1, 8); }
+  const out = new Uint8Array(Math.ceil(bits.length / 8) + 8);
+  bits.forEach((b, i) => { out[i >> 3] |= b << (7 - (i & 7)); });
+  return out;
+}
+// TrueHD access unit: major sync, signature 0xB752, substream_info bit 7 = the 16-channel (Atmos) presentation
+const truehd = (atmos) => Uint8Array.of(0x10, 0, 0, 0, 0xf8, 0x72, 0x6f, 0xba, 0, 0, 0, 0, 0xb7, 0x52, 0, 0, 0, 0, 0, 0,
+  0x40, atmos ? 0xfc : 0x0c, 0, 0);
+const mkvFilm = (dub = 'Дубляж', original = 'Original', dubFrame = eac3(true), originalFrame = truehd(true)) => cat(
+  el(0x1a45dfa3, el(0x4282, 'matroska')),
+  el(0x18538067,
+    el(0x1549a966, el(0x4d80, 'test')),
+    el(0x1654ae6b,
+      el(0xae, elUint(0xd7, 1), elUint(0x83, 1), el(0x86, 'V_MPEGH/ISO/HEVC')),
+      el(0xae, elUint(0xd7, 2), elUint(0x83, 2), el(0x86, 'A_EAC3'), el(0x22b59c, 'rus'), el(0x536e, dub),
+        el(0xe1, elUint(0x9f, 6))),
+      el(0xae, elUint(0xd7, 3), elUint(0x83, 2), el(0x86, 'A_TRUEHD'), el(0x22b59c, 'eng'), el(0x536e, original),
+        el(0xe1, elUint(0x9f, 8))),
+      el(0xae, elUint(0xd7, 4), elUint(0x83, 2), el(0x86, 'A_DTS'), el(0x22b59c, 'ukr'), el(0x22b59d, 'uk-UA'),
+        el(0xe1, elUint(0x9f, 6))),
+      el(0xae, elUint(0xd7, 5), elUint(0x83, 2), el(0x86, 'A_AC3'), el(0x536e, 'Commentary'), el(0xe1, elUint(0x9f, 2)))),
+    el(0x1f43b675, elUint(0xe7, 0),
+      block(1, new Uint8Array(300 * 1024)), // a key frame past the first 256 KB read: stepped over, not read
+      block(2, dubFrame),
+      block(3, originalFrame),
+      block(4, Uint8Array.of(0x7f, 0xfe, 0x80, 0x01, 0, 0, 0, 0, 0x64, 0x58, 0x20, 0x25)), // DTS core + HD substream
+      block(5, new Uint8Array(16)))));
+// MP4: boxes; moov after a 300 KB mdat (not in the first read), each trak's sample tables 200 KB
+const box = (type, ...kids) => {
+  const data = cat(...kids);
+  return cat(be(data.length + 8, 4), type, data);
+};
+const sound = (fourcc, ch, ...kids) => box(fourcc, new Uint8Array(16), be(ch, 2), new Uint8Array(10), ...kids);
+const trak = (handler, lang, name, entry) => box('trak', box('tkhd', new Uint8Array(84)), box('mdia',
+  box('mdhd', new Uint8Array(20), be([...lang].reduce((v, c) => v * 32 + c.charCodeAt(0) - 96, 0), 2), new Uint8Array(2)),
+  box('hdlr', new Uint8Array(8), handler, new Uint8Array(12), `${name}\0`),
+  box('minf', box('stbl', box('stsd', new Uint8Array(8), entry), box('stsz', new Uint8Array(200 * 1024))))));
+const mp4Film = () => cat(
+  box('ftyp', 'isom', new Uint8Array(4)),
+  box('mdat', new Uint8Array(300 * 1024)),
+  box('moov', box('mvhd', new Uint8Array(100)),
+    trak('vide', 'und', 'VideoHandler', box('hvc1', new Uint8Array(78))),
+    trak('soun', 'rus', 'Dub', sound('ec-3', 2, box('dec3', Uint8Array.of(0x06, 0, 0x20, 0x0f, 0, 0x01, 0x10)))),
+    trak('soun', 'rus', 'MVO', sound('ec-3', 2, box('dec3', Uint8Array.of(0x06, 0, 0x20, 0x0f, 0x02, 0x02)))),
+    trak('soun', 'eng', 'SoundHandler', sound('ac-3', 2, box('dac3', Uint8Array.of(0x10, 0x3c, 0x40))))));
+
+const LINK = 'https://store.torbox.app/dl/xyz';
+let ranges = 0;
+function torboxWith(file, answers = ready) {
+  torbox(answers);
+  const api = globalThis.fetch;
+  ranges = 0;
+  globalThis.fetch = async (url, init) => {
+    if (String(url) !== LINK) return api(url, init);
+    ranges++;
+    const [, from, to] = new Headers(init?.headers).get('Range').match(/bytes=(\d+)-(\d+)/).map(Number);
+    if (process.env.RANGES) console.log('range', from, to - from + 1, 'of', file.length);
+    return new Response(file.slice(from, to + 1), { status: 206 });
+  };
+}
+const audioEnv = () => ({ ...playEnv, DB: d1() });
+const audioOf = (e, h = H, token = 'stick-token') => worker.fetch(new Request(`https://w/audio/${h}?file=1&name=Show.S01E02.mkv`,
+  { headers: token ? { 'X-Play-Token': token } : {} }), e);
+
+test('audio: an MKV\'s tracks, Atmos from the first frames (E-AC-3 JOC, TrueHD), DTS-HD; 3 reads; kept, asked again: no TorBox', async () => {
+  const e = audioEnv();
+  torboxWith(mkvFilm());
+  const res = await audioOf(e);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('Cache-Control'), 'no-store');
+  // [lang, codec, channels, atmos, name]: Matroska's default language is English; BCP 47 wins over the old code
+  assert.deepEqual((await res.json()).tracks, [['RU', 'DD+', 6, 1, 'Дубляж'], ['EN', 'TrueHD', 8, 1, 'Original'],
+    ['UA', 'DTS-HD', 6, 0, ''], ['EN', 'DD', 2, 0, 'Commentary']]);
+  assert.equal(ranges, 3); // the head, the cluster's start, past the video's key frame
+  assert.equal(new URL(asked.find((u) => u.includes('requestdl'))).searchParams.get('file_id'), '1'); // Play's choice
+  torboxWith(mkvFilm(), {});
+  assert.equal((await (await audioOf(e)).json()).tracks.length, 4);
+  assert.deepEqual([asked, ranges], [[], 0]);
+});
+
+test('audio: the first frame wins over a name ("Atmos" without JOC or 16 channels: no); a frame too short: the name', async () => {
+  torboxWith(mkvFilm('Дубляж Atmos', 'Original Atmos', eac3(false), truehd(false)));
+  assert.deepEqual((await (await audioOf(audioEnv())).json()).tracks.slice(0, 2).map((t) => t[3]), [0, 0]);
+  torboxWith(mkvFilm('Дубляж Atmos', 'Original', Uint8Array.of(0x0b, 0x77, 0, 0), truehd(true)));
+  assert.deepEqual((await (await audioOf(audioEnv())).json()).tracks.slice(0, 2).map((t) => t[3]), [1, 1]);
+});
+
+test('audio: an MP4\'s tracks from each trak\'s head: language, dec3\'s channels and JOC, dac3\'s channels', async () => {
+  torboxWith(mp4Film());
+  const res = await audioOf(audioEnv());
+  assert.deepEqual((await res.json()).tracks, [['RU', 'DD+', 6, 1, 'Dub'], ['RU', 'DD+', 8, 0, 'MVO'],
+    ['EN', 'DD', 6, 0, 'SoundHandler']]);
+  assert.ok(ranges <= 7, String(ranges)); // the head, moov, then each trak past the last read: never the tables
+});
+
+test('audio: only the stick; a TorBox add budget for unread releases (4 a minute, 20 an hour); read ones always answer', async () => {
+  const e = audioEnv();
+  torboxWith(mkvFilm());
+  assert.equal((await audioOf(e, H, null)).status, 403);
+  assert.deepEqual(asked, []);
+  const now = Date.now();
+  for (let i = 0; i < 4; i++) e.DB.raw.prepare('INSERT INTO probes (t) VALUES (?)').run(now - 1000);
+  const busy = await audioOf(e);
+  assert.deepEqual([busy.status, await busy.json()], [429, { later: true }]);
+  assert.deepEqual(asked, []); // TorBox not asked
+  e.DB.raw.prepare('UPDATE probes SET t = ?').run(now - 120_000); // a minute later: 4 of 20 this hour
+  assert.equal((await audioOf(e)).status, 200);
+  for (let i = 0; i < 16; i++) e.DB.raw.prepare('INSERT INTO probes (t) VALUES (?)').run(now - 120_000);
+  assert.equal((await audioOf(e, 'cd'.repeat(20))).status, 429); // 21 this hour
+  assert.equal((await audioOf(e)).status, 200); // read before: no budget needed
+});
+
+test('audio: not MKV or MP4 → [] kept (not read again); TorBox still downloading it → our add taken out, 502', async () => {
+  const e = audioEnv();
+  torboxWith(cat('RIFF', new Uint8Array(1000)));
+  assert.deepEqual(await (await audioOf(e)).json(), { tracks: [] });
+  torboxWith(mkvFilm(), { ...ready, 'mylist?id': { success: true, data: { ...pack, download_present: false, progress: 0.3 } },
+    controltorrent: { success: true } });
+  assert.equal((await audioOf(e, 'cd'.repeat(20))).status, 502);
+  assert.ok(asked.includes(JSON.stringify({ torrent_id: 11, operation: 'delete' })), asked.join('\n'));
+});
+
+test('play: reads the played release\'s audio in the background with its own link (no second TorBox add)', async () => {
+  const e = audioEnv();
+  torboxWith(mkvFilm());
+  const pending = [];
+  const res = await worker.fetch(new Request(`https://w/play/${H}?file=1&name=Show.S01E02.mkv`, { headers: stick }), e,
+    { waitUntil: (p) => pending.push(p) });
+  assert.equal(res.status, 200);
+  await Promise.all(pending);
+  assert.equal(asked.filter((u) => u.includes('createtorrent')).length, 1);
+  assert.equal(JSON.parse(e.DB.raw.prepare('SELECT tracks FROM audio WHERE hash = ?').get(H).tracks).length, 4);
+});
+
+test('sources: a release read before carries its audio (row[9]); the others null', async () => {
+  const e = { ...streamsEnv, DB: d1() };
+  e.DB.raw.prepare('INSERT INTO audio (hash, tracks, t) VALUES (?, ?, 1)').run(hash(4), '[["RU","DD+",8,0,"MVO"]]');
+  tmdbAnswers({ ...fifteen, '/v1/api/torrents/checkcached': { success: true, data: [] } });
+  const body = await (await streams('movie/tt1?lang=RU,UA', e)).json();
+  assert.deepEqual(body.streams[0][9], [['RU', 'DD+', 8, 0, 'MVO']]);
+  assert.deepEqual(body.streams.slice(1).map((r) => r[9]), [null, null, null, null, null]);
 });
