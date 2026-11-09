@@ -960,23 +960,27 @@ async function resumePoint(env, tl) {
   }
 }
 
-// TorBox's link to a release's file: adds the torrent to the account (one already there is found in the list) and
-// picks the file Torrentio meant (by name, else its index, else the biggest video). {id, files, file, link, added},
-// {id, progress, added} while TorBox still downloads it, or {error, status}. Throws when TorBox is down.
-async function torboxLink(env, hash, fileIdx, name) {
-  const form = new FormData();
-  form.append('magnet', `magnet:?xt=urn:btih:${hash}`);
-  const answer = await torboxApi(env, 'createtorrent', { method: 'POST', body: form });
-  let id = answer?.data?.torrent_id ?? answer?.data?.id;
-  const added = id !== undefined;
-  if (!added) { // already in the account (or refused): look for it there
+// TorBox's link to a release's file: adds the torrent to the account (one already there is found in the list; mine:
+// its id, known: not added) and picks the file Torrentio meant (by name, else its index, else the biggest video).
+// {id, files, file, link}, {id, progress} while TorBox still downloads it, or {error, status}. Throws when TorBox is
+// down.
+async function torboxLink(env, hash, fileIdx, name, mine) {
+  let id = mine;
+  let answer;
+  if (id === undefined) {
+    const form = new FormData();
+    form.append('magnet', `magnet:?xt=urn:btih:${hash}`);
+    answer = await torboxApi(env, 'createtorrent', { method: 'POST', body: form });
+    id = answer?.data?.torrent_id ?? answer?.data?.id;
+  }
+  if (id === undefined) { // already in the account (or refused): look for it there
     const all = await torboxApi(env, 'mylist?bypass_cache=true');
     id = (all?.data || []).find((t) => String(t.hash).toLowerCase() === hash)?.id;
   }
   if (id === undefined) return { error: answer?.detail || answer?.error || 'TorBox refused it.', status: 502 };
   const t = (await torboxApi(env, `mylist?id=${id}&bypass_cache=true`))?.data;
   if (!t) return { error: 'TorBox lost it.', status: 502 };
-  if (!t.download_present) return { id, progress: Math.round((t.progress || 0) * 100), added };
+  if (!t.download_present) return { id, progress: Math.round((t.progress || 0) * 100) };
   const files = t.files || [];
   const file = (name && files.find((f) => f.short_name === name || String(f.name).split('/').pop() === name))
     || files.find((f) => f.id === fileIdx && VIDEO.test(f.name))
@@ -985,19 +989,18 @@ async function torboxLink(env, hash, fileIdx, name) {
   // requestdl takes the key as a parameter (it is built for browser redirects); server to server only
   const dl = await torboxApi(env, `requestdl?token=${encodeURIComponent(env.TORBOX_API_KEY)}&torrent_id=${id}&file_id=${file.id}`);
   if (typeof dl?.data !== 'string') return { error: dl?.detail || 'No link.', status: 502 };
-  return { id, files, file, link: dl.data, added };
+  return { id, files, file, link: dl.data };
 }
 
 async function play(request, env, ctx, hash) {
   if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
   const q = new URL(request.url).searchParams;
   const resume = resumePoint(env, q.get('tl')); // alongside TorBox's three calls
-  // played: a probe reading it now leaves the torrent in the account (audio)
-  const played = env.DB?.prepare('INSERT OR REPLACE INTO plays (hash, t) VALUES (?, ?)').bind(hash, Date.now()).run()
-    .catch(() => {});
   try {
+    // played, before TorBox is asked: a probe reading it now leaves the torrent in the account (audio)
+    await env.DB?.prepare('INSERT OR REPLACE INTO plays (hash, t) VALUES (?, ?)').bind(hash, Date.now()).run()
+      .catch(() => {});
     const got = await torboxLink(env, hash, Number(q.get('file') ?? -1), q.get('name') || '');
-    await played;
     if (got.error) return corsError(request, got.error, got.status);
     if (got.progress !== undefined) {
       return new Response(JSON.stringify({ progress: got.progress }), {
@@ -1039,18 +1042,24 @@ async function audio(request, env, hash) {
     .bind(now - 60_000, now - 3_600_000).first();
   if ((spent?.minute || 0) >= PROBES_MINUTE || (spent?.hour || 0) >= PROBES_HOUR) return json({ later: true }, 429);
   await env.DB.prepare('DELETE FROM probes WHERE t <= ?').bind(now - 3_600_000).run();
+  await env.DB.prepare('DELETE FROM plays WHERE t <= ?').bind(now - 3_600_000).run();
   await env.DB.prepare('INSERT INTO probes (t) VALUES (?)').bind(now).run();
   const q = new URL(request.url).searchParams;
   let got;
+  let mine;
   try {
-    got = await torboxLink(env, hash, Number(q.get('file') ?? -1), q.get('name') || '');
+    // in the account already (played before): read as it is, no add, and left there
+    mine = ((await torboxApi(env, 'mylist?bypass_cache=true'))?.data || [])
+      .find((t) => String(t.hash).toLowerCase() === hash)?.id;
+    got = await torboxLink(env, hash, Number(q.get('file') ?? -1), q.get('name') || '', mine);
   } catch {
     return corsError(request, 'TorBox unavailable.', 502);
   }
   const tracks = got.link ? await rememberAudio(env, hash, got.link) : null;
   // Our add out of the account again (the user's list stays theirs: what they played), unless Play came meanwhile;
   // one still downloading too (not cached after all: it would download)
-  if (got.added && !(await env.DB.prepare('SELECT 1 FROM plays WHERE hash = ? AND t >= ?').bind(hash, now).first())) {
+  if (mine === undefined && got.id !== undefined
+    && !(await env.DB.prepare('SELECT 1 FROM plays WHERE hash = ? AND t >= ?').bind(hash, now).first())) {
     await torboxApi(env, 'controltorrent', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ torrent_id: got.id, operation: 'delete' }),

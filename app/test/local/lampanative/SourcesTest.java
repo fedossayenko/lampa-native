@@ -166,7 +166,6 @@ class SourcesTest {
         assert Sources.audioChips(List.of(), "RU,UA").isEmpty() : "read, not MKV/MP4: as if not read";
         assert Sources.badgeColor("RU DD+ 7.1") == Sources.AUDIO && Sources.badgeColor("HEVC") == Sources.PLAIN;
         assert Sources.audioPath(s).equals("/audio/h?file=0&name=Dune.mkv");
-        assert Sources.audioPath(s.withAudio(null)).equals("/audio/h?file=0&name=Dune.mkv");
         Sources.Source spaced = new Sources.Source("h", 2, "Дюна 2 [4K].mkv", List.of(), "", 0, "", List.of(), 1, null);
         assert Sources.audioPath(spaced).equals("/audio/h?file=2&name=%D0%94%D1%8E%D0%BD%D0%B0+2+%5B4K%5D.mkv")
             : Sources.audioPath(spaced);

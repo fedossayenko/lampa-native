@@ -93,8 +93,9 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.FutureTask;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -127,8 +128,8 @@ public class Main extends Activity {
         return th;
     });
     // Source rows' audio reads (~1-3 s each, up to the worker's 30 s): their own low-priority thread, one at a time,
-    // so neither the pool's pages nor background's preloads wait behind them.
-    final ExecutorService audioReads = Executors.newSingleThreadExecutor(r -> {
+    // so neither the pool's pages nor background's preloads wait behind them. The thread goes 5 s after the last.
+    final ExecutorService audioReads = new ThreadPoolExecutor(0, 1, 5, TimeUnit.SECONDS, new LinkedBlockingQueue<>(), r -> {
         Thread th = new Thread(r, "audio");
         th.setPriority(Thread.MIN_PRIORITY);
         return th;
@@ -191,7 +192,7 @@ public class Main extends Activity {
     // 0.1 ms pause) frees them, and new posters reuse the textures. Measured by hand: native 37 → 24 MB.
     final Runnable collect = () -> pool.execute(Runtime.getRuntime()::gc); // collectSoon()
     String prefetched; // the film (its /card URL) whose page was last preloaded or opened
-    boolean stopped;
+    volatile boolean stopped; // audioReads' thread reads it too
     static final int PLAY = 1;
     static final String DDD = "top.rootu.dddplayer";
     Timeline.Playing playing; // the playback DDD will answer about
@@ -342,6 +343,7 @@ public class Main extends Activity {
         ui.removeCallbacksAndMessages(null);
         pool.shutdownNow();
         background.shutdownNow();
+        audioReads.shutdownNow();
         super.onDestroy();
     }
 
@@ -1681,7 +1683,7 @@ public class Main extends Activity {
         Future<?> before = preload;
         preload = null;
         SourceList req = new SourceList(f, c, season, episode, title, langs(), list, status, sub, audio,
-            new ArrayDeque<>(), t, prefer, autoplay, new AtomicInteger(AUDIO_READS));
+            new ArrayDeque<>(), t, prefer, autoplay, new int[] {AUDIO_READS});
         ((View) list.getParent()).setTag(req); // onSaveInstanceState: the list to open again after process death
         loadSources(req, 0, before);
     }
@@ -1691,10 +1693,10 @@ public class Main extends Activity {
     }
 
     // One source list being filled: what it lists, where, the rows not built yet, and when Watch was pressed.
-    // audioReads: how many more rows may ask the worker for their audio.
+    // audioReads[0]: how many more rows may ask the worker for their audio (rows are built on the UI thread).
     record SourceList(Film f, Home.Card c, int season, int episode, String title, String langs, LinearLayout list,
                       TextView status, TextView sub, TextView audio, ArrayDeque<Sources.Source> pending, long t,
-                      String prefer, boolean autoplay, AtomicInteger audioReads) {}
+                      String prefer, boolean autoplay, int[] audioReads) {}
 
     // Torrentio refusing the worker (its 502: 429 from Cloudflare's shared IPs) sends this and the next 10 minutes'
     // pages through the stick.
@@ -1800,13 +1802,13 @@ public class Main extends Activity {
             cached.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         LinearLayout r = row(s.title(), sourceLine(s, req.langs()), cached, v -> play(req.f(), req.c(), req.season(),
             req.episode(), s.hash(), s.fileIdx(), s.title(), (View) req.list().getParent()));
-        if (s.cached() == 1 && s.audio() == null && req.audioReads().getAndDecrement() > 0) {
+        if (s.cached() == 1 && s.audio() == null && req.audioReads()[0]-- > 0) {
             TextView detail = r.findViewWithTag(DETAIL);
             View level = (View) req.list().getParent();
             audioReads.execute(() -> {
-                // left before its turn: no TorBox add for a row nobody sees (alive() is the UI thread's; a level
-                // taken off the page is detached)
-                if (!level.isAttachedToWindow()) return;
+                // left before its turn, or DDD plays: no TorBox add for a row nobody sees (alive() is the UI
+                // thread's; a level taken off the page is detached)
+                if (stopped || !level.isAttachedToWindow()) return;
                 try {
                     Answer a = ask(Sources.audioPath(s), null);
                     if (a.code() != 200) return; // 429: the worker's TorBox budget, next time; 502: not readable

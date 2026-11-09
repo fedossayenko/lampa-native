@@ -1923,7 +1923,8 @@ const mp4Film = () => cat(
 
 const LINK = 'https://store.torbox.app/dl/xyz';
 let ranges = 0;
-function torboxWith(file, answers = ready) {
+const fresh = { ...ready, mylist: { success: true, data: [] } }; // nothing of it in the account yet
+function torboxWith(file, answers = fresh) {
   torbox(answers);
   const api = globalThis.fetch;
   ranges = 0;
@@ -1991,7 +1992,7 @@ test('audio: not MKV or MP4 → [] kept (not read again); TorBox still downloadi
   const e = audioEnv();
   torboxWith(cat('RIFF', new Uint8Array(1000)));
   assert.deepEqual(await (await audioOf(e)).json(), { tracks: [] });
-  torboxWith(mkvFilm(), { ...ready, 'mylist?id': { success: true, data: { ...pack, download_present: false, progress: 0.3 } },
+  torboxWith(mkvFilm(), { ...fresh, 'mylist?id': { success: true, data: { ...pack, download_present: false, progress: 0.3 } },
     controltorrent: { success: true } });
   assert.equal((await audioOf(e, 'cd'.repeat(20))).status, 502);
   assert.ok(asked.includes(JSON.stringify({ torrent_id: 11, operation: 'delete' })), asked.join('\n'));
@@ -2081,22 +2082,23 @@ test('audio: an MP4\'s AAC 5.1: channels from esds (its sample entry says 2)', a
 test('audio: our add taken out of the account after reading; not when Play came meanwhile, nor one already there', async () => {
   const deletes = () => asked.filter((x) => x === JSON.stringify({ torrent_id: 11, operation: 'delete' })).length;
   const e = audioEnv();
-  torboxWith(mkvFilm(), { ...ready, controltorrent: { success: true } });
+  torboxWith(mkvFilm(), { ...fresh, controltorrent: { success: true } });
   assert.equal((await audioOf(e)).status, 200);
   assert.equal(deletes(), 1);
   e.DB.raw.prepare('INSERT INTO plays (hash, t) VALUES (?, ?)').run('cd'.repeat(20), Date.now() + 60_000); // Play meanwhile
-  torboxWith(mkvFilm(), { ...ready, controltorrent: { success: true } });
+  torboxWith(mkvFilm(), { ...fresh, controltorrent: { success: true } });
   assert.equal((await audioOf(e, 'cd'.repeat(20))).status, 200);
   assert.equal(deletes(), 0);
-  torboxWith(mkvFilm(), { ...ready, createtorrent: { success: false, error: 'DOWNLOAD_EXISTS' },
-    mylist: { success: true, data: [{ id: 11, hash: 'ef'.repeat(20) }] }, controltorrent: { success: true } });
+  // in the account before (played once): read as it is, not added, not taken out, however TorBox answers an add
+  torboxWith(mkvFilm(), { ...ready, createtorrent: { success: true, data: { torrent_id: 11 } },
+    mylist: { success: true, data: [{ id: 11, hash: 'EF'.repeat(20) }] }, controltorrent: { success: true } });
   assert.equal((await audioOf(e, 'ef'.repeat(20))).status, 200);
-  assert.equal(deletes(), 0); // the user's own
+  assert.deepEqual([deletes(), asked.filter((u) => u.includes('createtorrent')).length], [0, 0]);
 });
 
 test('audio: a file that can\'t be read (the CDN ignores Range) is asked again a day later, not on every list', async () => {
   const e = audioEnv();
-  torbox(ready);
+  torbox(fresh);
   const api = globalThis.fetch;
   let whole = 0;
   globalThis.fetch = async (url, init) => (String(url) === LINK ? (whole++, new Response('the whole film')) : api(url, init));
