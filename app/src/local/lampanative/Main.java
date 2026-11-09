@@ -1802,12 +1802,15 @@ public class Main extends Activity {
             cached.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         LinearLayout r = row(s.title(), sourceLine(s, req.langs()), cached, v -> play(req.f(), req.c(), req.season(),
             req.episode(), s.hash(), s.fileIdx(), s.title(), (View) req.list().getParent()));
-        if (s.cached() == 1 && s.audio() == null && req.audioReads()[0]-- > 0) {
+        // (not the one autoplay plays: Play reads its audio itself)
+        if (s.cached() == 1 && s.audio() == null && !(req.autoplay() && s.hash().equals(req.prefer()))
+            && req.audioReads()[0]-- > 0) {
             TextView detail = r.findViewWithTag(DETAIL);
             View level = (View) req.list().getParent();
             audioReads.execute(() -> {
                 // left before its turn, or DDD plays: no TorBox add for a row nobody sees (alive() is the UI
-                // thread's; a level taken off the page is detached)
+                // thread's; a level taken off the page is detached). ponytail: one already asking runs on (a socket
+                // waiting <= 30 s): cut off, the worker would stop before taking its add out of the account again.
                 if (stopped || !level.isAttachedToWindow()) return;
                 try {
                     Answer a = ask(Sources.audioPath(s), null);

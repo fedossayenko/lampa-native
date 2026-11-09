@@ -2089,6 +2089,11 @@ test('audio: our add taken out of the account after reading; not when Play came 
   torboxWith(mkvFilm(), { ...fresh, controltorrent: { success: true } });
   assert.equal((await audioOf(e, 'cd'.repeat(20))).status, 200);
   assert.equal(deletes(), 0);
+  e.DB.raw.prepare('INSERT INTO plays (hash, t) VALUES (?, ?)').run('ab'.repeat(20), Date.now() - 1000); // Play first
+  e.DB.raw.prepare('DELETE FROM audio').run();
+  torboxWith(mkvFilm(), { ...fresh, controltorrent: { success: true } });
+  assert.equal((await audioOf(e)).status, 200);
+  assert.equal(deletes(), 0);
   // in the account before (played once): read as it is, not added, not taken out, however TorBox answers an add
   torboxWith(mkvFilm(), { ...ready, createtorrent: { success: true, data: { torrent_id: 11 } },
     mylist: { success: true, data: [{ id: 11, hash: 'EF'.repeat(20) }] }, controltorrent: { success: true } });

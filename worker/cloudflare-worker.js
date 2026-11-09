@@ -908,9 +908,9 @@ async function sources(request, env, kind, imdb, season, episode) {
     .sort((a, b) => a.disc - b.disc || b.bytes - a.bytes).slice(0, MAX); // stable: equal sizes keep Torrentio's order
   const from = Number(params.get('from')) || 0;
   const batch = shown.slice(from, from ? MAX : FIRST).map(({ row }) => row);
-  const cached = await cachedOnTorBox(env, batch.map(([hash]) => hash));
+  const hashes = batch.map(([hash]) => hash);
+  const [cached, audioOf] = await Promise.all([cachedOnTorBox(env, hashes), audioKnown(env, hashes)]);
   for (const row of batch) row.push(cached ? Number(cached.has(row[0])) : -1);
-  const audioOf = await audioKnown(env, batch.map(([hash]) => hash));
   for (const row of batch) row.push(audioOf.get(row[0]) ?? null);
   return new Response(JSON.stringify({
     streams: batch,
@@ -1056,10 +1056,11 @@ async function audio(request, env, hash) {
     return corsError(request, 'TorBox unavailable.', 502);
   }
   const tracks = got.link ? await rememberAudio(env, hash, got.link) : null;
-  // Our add out of the account again (the user's list stays theirs: what they played), unless Play came meanwhile;
-  // one still downloading too (not cached after all: it would download)
+  // Our add out of the account again (the user's list stays theirs: what they played), unless it was played this
+  // hour (before the probe too: autoplay's Play and this row's probe start together); one still downloading too (not
+  // cached after all: it would download)
   if (mine === undefined && got.id !== undefined
-    && !(await env.DB.prepare('SELECT 1 FROM plays WHERE hash = ? AND t >= ?').bind(hash, now).first())) {
+    && !(await env.DB.prepare('SELECT 1 FROM plays WHERE hash = ?').bind(hash).first())) {
     await torboxApi(env, 'controltorrent', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ torrent_id: got.id, operation: 'delete' }),

@@ -235,8 +235,7 @@ final class Sources {
             case "DV" -> VISION;
             case "HDR", "HDR10+" -> HDR;
             case "REMUX" -> REMUX;
-            case "Atmos", "TrueHD", "DTS", "DD+", "DD" -> AUDIO;
-            default -> badge.contains(" ") ? AUDIO : PLAIN; // a read track: "RU DD+ 7.1"
+            default -> NAMED_AUDIO.contains(badge) || badge.contains(" ") ? AUDIO : PLAIN; // " ": "RU DD+ 7.1"
         };
     }
 
