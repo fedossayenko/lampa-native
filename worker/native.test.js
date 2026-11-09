@@ -2095,9 +2095,17 @@ test('audio: our adds leave the account at night (01-03 UTC, an hour old); playe
   // in the account before (played once): read as it is, not added, however TorBox answers an add
   torboxWith(mkvFilm(), { ...ready, createtorrent: { success: true, data: { torrent_id: 13 } },
     mylist: { success: true, data: [{ id: 13, hash: 'EF'.repeat(20) }] } });
+  const spent = () => e.DB.raw.prepare('SELECT COUNT(*) n FROM probes').get().n;
+  const before = spent();
   assert.equal((await audioOf(e, 'ef'.repeat(20))).status, 200);
   assert.equal(asked.filter((u) => u.includes('createtorrent')).length, 0);
+  assert.equal(spent(), before); // no add: none of the budget
   const run = (hour) => worker.scheduled({ cron: '23 * * * *', scheduledTime: at(hour) }, e);
+  torbox({ controltorrent: { success: false, error: 'DATABASE_ERROR' } }); // refused: the row stays for the next run
+  e.DB.raw.prepare('UPDATE added SET t = t - 3_600_000').run();
+  await run(2);
+  assert.equal(e.DB.raw.prepare('SELECT COUNT(*) n FROM added').get().n, 1);
+  e.DB.raw.prepare('UPDATE added SET t = t + 3_600_000').run();
   torbox({ controltorrent: { success: true } });
   await run(2); // not an hour old
   e.DB.raw.prepare('UPDATE added SET t = t - 3_600_000').run();
@@ -2110,6 +2118,8 @@ test('audio: our adds leave the account at night (01-03 UTC, an hour old); playe
 
 test('sources: MaxVol\'s tracks of its releases (row[10]) beside the read ones; asked once a day; MaxVol down: null', async () => {
   const e = { ...streamsEnv, DB: d1() };
+  e.SELF = { fetch: (url, init) => worker.fetch(new Request(url, init), e) }; // its own call (GET /maxvol)
+  assert.equal((await e.SELF.fetch('https://self/maxvol/tt1')).status, 403); // the stick's token only
   const ff = (language, codec_name, channels, title, profile) => ({ codec_type: 'audio', codec_name, channels, profile,
     tags: { language, title } });
   const maxvol = { Results: [
@@ -2154,6 +2164,13 @@ test('audio: a file that can\'t be read (the CDN ignores Range) is asked again a
   e.DB.raw.prepare('UPDATE audio SET t = t - 86400000').run();
   await audioOf(e);
   assert.equal(whole, 2);
-  // /streams: a row whose audio couldn't be read is as one not read
   assert.equal(JSON.parse(e.DB.raw.prepare('SELECT tracks FROM audio WHERE hash = ?').get(H).tracks), null);
+  // /streams: [] while it's not asked again (the stick doesn't ask), null after a day (it asks)
+  tmdbAnswers({ ...fifteen, '/v1/api/torrents/checkcached': { success: true, data: [] } });
+  const [first, second] = (await (await streams('movie/tt1?lang=RU,UA', e)).json()).streams.map((r) => r[0]);
+  e.DB.raw.prepare("INSERT INTO audio (hash, tracks, t) VALUES (?, 'null', ?), (?, 'null', ?)").run(first, Date.now(),
+    second, Date.now() - 86_400_000);
+  tmdbAnswers({ ...fifteen, '/v1/api/torrents/checkcached': { success: true, data: [] } });
+  const rows = (await (await streams('movie/tt1?lang=RU,UA', e)).json()).streams;
+  assert.deepEqual([rows[0][9], rows[1][9]], [[], null]);
 });

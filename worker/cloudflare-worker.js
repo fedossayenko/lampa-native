@@ -911,7 +911,7 @@ async function sources(request, env, ctx, kind, imdb, season, episode) {
   const batch = shown.slice(from, from ? MAX : FIRST).map(({ row }) => row);
   const hashes = batch.map(([hash]) => hash);
   // MaxVol: up to 1.5 s (~0.7-2 s the first time a day, then D1's), the rest kept for the next list
-  const mv = env.DB ? maxvolAudio(env, imdb).catch(() => ({})) : Promise.resolve({});
+  const mv = env.DB ? maxvolOf(env, imdb).catch(() => ({})) : Promise.resolve({});
   if (ctx) ctx.waitUntil(mv);
   const [cached, audioOf, maxvol] = await Promise.all([cachedOnTorBox(env, hashes), audioKnown(env, hashes),
     Promise.race([mv, new Promise((done) => setTimeout(() => done({}), 1500))])]);
@@ -1050,14 +1050,14 @@ async function audio(request, env, hash) {
     .bind(now - 60_000, now - 3_600_000).first();
   if ((spent?.minute || 0) >= PROBES_MINUTE || (spent?.hour || 0) >= PROBES_HOUR) return json({ later: true }, 429);
   await env.DB.prepare('DELETE FROM probes WHERE t <= ?').bind(now - 3_600_000).run();
-  await env.DB.prepare('INSERT INTO probes (t) VALUES (?)').bind(now).run();
   const q = new URL(request.url).searchParams;
   let got;
   let mine;
   try {
-    // in the account already (played before): read as it is, no add, and left there
+    // in the account already (played before): read as it is, no add (none spent), and left there
     mine = ((await torboxApi(env, 'mylist?bypass_cache=true'))?.data || [])
       .find((t) => String(t.hash).toLowerCase() === hash)?.id;
+    if (mine === undefined) await env.DB.prepare('INSERT INTO probes (t) VALUES (?)').bind(now).run();
     got = await torboxLink(env, hash, Number(q.get('file') ?? -1), q.get('name') || '', mine);
   } catch {
     return corsError(request, 'TorBox unavailable.', 502);
@@ -1078,19 +1078,23 @@ const audioRow = (env, hash) => env.DB.prepare('SELECT tracks, t FROM audio WHER
 const settled = (k) => Boolean(k) && (k.tracks !== 'null' || Date.now() - k.t < RETRY_UNREADABLE);
 
 // The torrents probes added (audio), taken out of the account in the night's quiet hours (the hourly cron at 01-03
-// UTC, 20 a run beside For you's 25 subrequests) unless played since: then they're the user's. ponytail: check, then
-// delete; a Play of that very torrent in between (at 4 am) could lose its link.
+// UTC, DROPS a run beside For you's 25 and follows' FOLLOWS_FETCH of the 50 subrequests) unless played since: then
+// they're the user's. A delete TorBox refused (or down) stays for the next run. ponytail: check, then delete; a Play
+// of that very torrent in between (at 4 am) could lose its link.
+const DROPS = 50 - 25 - FOLLOWS_FETCH - 2;
 async function dropProbeAdds(env, now) {
   await env.DB.prepare('DELETE FROM added WHERE EXISTS (SELECT 1 FROM plays p WHERE p.hash = added.hash AND '
     + 'p.t >= added.t)').run(); // played since: the user's now
   await env.DB.prepare('DELETE FROM plays WHERE t < ?').bind(now - 7 * 86_400_000).run();
-  const { results } = await env.DB.prepare('SELECT hash, id FROM added WHERE t < ? LIMIT 20').bind(now - 3_600_000)
-    .all();
-  await Promise.all(results.map(({ id }) => torboxApi(env, 'controltorrent', {
+  const { results } = await env.DB.prepare(`SELECT hash, id FROM added WHERE t < ? ORDER BY t LIMIT ${DROPS}`)
+    .bind(now - 3_600_000).all();
+  const done = await Promise.all(results.map(({ id }) => torboxApi(env, 'controltorrent', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ torrent_id: id, operation: 'delete' }),
-  }).catch(() => {})));
-  for (const { hash } of results) await env.DB.prepare('DELETE FROM added WHERE hash = ?').bind(hash).run();
+  }).then((a) => a?.success === true, () => false)));
+  for (const [i, { hash }] of results.entries()) {
+    if (done[i]) await env.DB.prepare('DELETE FROM added WHERE hash = ?').bind(hash).run();
+  }
 }
 
 // MaxVol (jr.maxvol.pro, a Jacred of Russian trackers: what Lampa's torbox plugin searches) lists TorrServer's ffprobe
@@ -1104,9 +1108,17 @@ const FF_CODECS = { truehd: 'TrueHD', eac3: 'DD+', ac3: 'DD', aac: 'AAC', flac: 
 const ffCodec = (st) => (st.codec_name === 'dts' ? (/HD/.test(st.profile || '') ? 'DTS-HD' : 'DTS')
   : /^pcm/.test(st.codec_name) ? 'PCM' : FF_CODECS[st.codec_name] || String(st.codec_name || '').toUpperCase());
 
-async function maxvolAudio(env, imdb) {
+async function maxvolOf(env, imdb) {
   const kept = await env.DB.prepare('SELECT tracks, t FROM maxvol WHERE imdb = ?').bind(imdb).first();
   if (kept && Date.now() - kept.t < (kept.tracks.length > 2 ? 86_400_000 : 3_600_000)) return JSON.parse(kept.tracks);
+  // asked in a call of its own (SELF, GET /maxvol): MaxVol's parse (1.5-5 ms, measured on a Mac) on top of the list's
+  // could pass the free plan's 10 ms and kill the list itself, before D1 keeps it (so on every opening)
+  if (!env.SELF) return maxvolAudio(env, imdb); // no binding (node tests)
+  return (await env.SELF.fetch(`https://self/maxvol/${imdb}`, { headers: { 'X-Play-Token': env.PLAY_TOKEN } })).json();
+}
+
+// GET /maxvol/<IMDb id> (the play token; the worker's own call, maxvolOf): MaxVol asked, its map kept and answered.
+async function maxvolAudio(env, imdb) {
   const map = {};
   try {
     const o = await (await tmdb(env, `find/${imdb}`, '&external_source=imdb_id')).json();
@@ -1158,9 +1170,10 @@ async function rememberAudio(env, hash, link, once = false) {
 async function audioKnown(env, hashes) {
   if (!env.DB || !hashes.length) return new Map();
   try {
-    const { results } = await env.DB.prepare(`SELECT hash, tracks FROM audio WHERE hash IN (${hashes.map(() => '?')})`)
+    const { results } = await env.DB.prepare(`SELECT hash, tracks, t FROM audio WHERE hash IN (${hashes.map(() => '?')})`)
       .bind(...hashes).all();
-    return new Map(results.map((r) => [r.hash, JSON.parse(r.tracks)]));
+    // unreadable: [] (as not MKV/MP4: the stick doesn't ask) until it's asked again
+    return new Map(results.filter(settled).map((r) => [r.hash, JSON.parse(r.tracks) ?? []]));
   } catch {
     return new Map(); // no table yet (audio.sql not applied): the rows come without
   }
@@ -2561,6 +2574,13 @@ export default {
     const picked = new URL(request.url).pathname.match(/^\/discover\/([a-z-]+)$/);
     if (picked && request.method === 'GET') return edgeCached(request, ctx, () => discover(request, env, picked[1]));
     if (new URL(request.url).pathname === '/torbox' && request.method === 'GET') return torboxAccount(request, env);
+    const mv = new URL(request.url).pathname.match(/^\/maxvol\/(tt\d+)$/);
+    if (mv && request.method === 'GET') {
+      if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
+      return env.DB ? new Response(JSON.stringify(await maxvolAudio(env, mv[1])), {
+        headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' },
+      }) : corsError(request, 'No database.', 503);
+    }
     // The streams addon's address, for the app to ask it itself when it refuses the worker (Cloudflare's shared IPs)
     if (new URL(request.url).pathname === '/addon' && request.method === 'GET') {
       if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);

@@ -1807,8 +1807,9 @@ public class Main extends Activity {
             TextView detail = r.findViewWithTag(DETAIL);
             View level = (View) req.list().getParent();
             audioReads.execute(() -> {
-                // left before its turn, or DDD plays: no TorBox add for a row nobody sees (alive() is the UI
-                // thread's; a level taken off the page is detached). ponytail: one already asking runs on (a socket
+                // left before its turn (or covered by a page: asked again when the list is next opened), or DDD
+                // plays: no TorBox add for a row nobody sees (alive() is the UI thread's; a level off screen is
+                // detached). ponytail: one already asking runs on (a socket
                 // waiting <= 30 s): cut off, the worker would stop before taking its add out of the account again.
                 if (stopped || !level.isAttachedToWindow()) return;
                 try {

@@ -19,6 +19,12 @@ database_id = "<D1_ID>"
 [ai]
 binding = "AI"
 
+# lampa-native audio chips: MaxVol's ~0.5 MB answer read in a call of the worker's own (GET /maxvol), so its parse
+# gets its own 10 ms of CPU, not the source list's (maxvolOf). The worker's own name.
+[[services]]
+binding = "SELF"
+service = "lampa-native"
+
 # The search index (titles.sql): English at 03:07, Russian at 03:37 UTC (TITLE_CRONS in the worker); hourly: New in 4K
 # at 04 UTC (uhd.sql), For you and the people you follow the other hours (HOURLY_CRON).
 # The Lampa plugin's ?url= pass-through to TorBox and two parsers, open to anyone: only if you use that plugin.
