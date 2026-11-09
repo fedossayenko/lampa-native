@@ -945,7 +945,7 @@ function sameSecret(a, b) {
 }
 
 async function torboxApi(env, path, init = {}) {
-  const res = await fetch(TORBOX_API + path, { ...init, headers: { Authorization: `Bearer ${env.TORBOX_API_KEY}` } });
+  const res = await fetch(TORBOX_API + path, { ...init, headers: { ...init.headers, Authorization: `Bearer ${env.TORBOX_API_KEY}` } });
   if (!res.ok && res.status >= 500) throw new Error(`TorBox ${res.status}`);
   return res.json();
 }
@@ -992,8 +992,12 @@ async function play(request, env, ctx, hash) {
   if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
   const q = new URL(request.url).searchParams;
   const resume = resumePoint(env, q.get('tl')); // alongside TorBox's three calls
+  // played: a probe reading it now leaves the torrent in the account (audio)
+  const played = env.DB?.prepare('INSERT OR REPLACE INTO plays (hash, t) VALUES (?, ?)').bind(hash, Date.now()).run()
+    .catch(() => {});
   try {
     const got = await torboxLink(env, hash, Number(q.get('file') ?? -1), q.get('name') || '');
+    await played;
     if (got.error) return corsError(request, got.error, got.status);
     if (got.progress !== undefined) {
       return new Response(JSON.stringify({ progress: got.progress }), {
@@ -1001,7 +1005,7 @@ async function play(request, env, ctx, hash) {
       });
     }
     // its audio for the source chips, with the link in hand: no TorBox add spent on it
-    if (env.DB && ctx) ctx.waitUntil(rememberAudio(env, hash, got.link));
+    if (env.DB && ctx) ctx.waitUntil(rememberAudio(env, hash, got.link, true));
     const playlist = q.has('series')
       ? await episodesFrom(request, env, ctx, got.id, got.files, got.file, q.get('series'), got.link, q.has('probe')) : [];
     return new Response(JSON.stringify(playlist.length
@@ -1027,9 +1031,10 @@ async function audio(request, env, hash) {
   const json = (body, status = 200) => new Response(JSON.stringify(body), {
     status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...corsHeaders(request) },
   });
-  const known = await env.DB.prepare('SELECT tracks FROM audio WHERE hash = ?').bind(hash).first();
-  if (known) return json({ tracks: JSON.parse(known.tracks) });
   const now = Date.now();
+  const known = await env.DB.prepare('SELECT tracks, t FROM audio WHERE hash = ?').bind(hash).first();
+  if (known && known.tracks !== 'null') return json({ tracks: JSON.parse(known.tracks) });
+  if (known && now - known.t < RETRY_UNREADABLE) return corsError(request, 'Its audio couldn\'t be read today.', 502);
   const spent = await env.DB.prepare('SELECT SUM(t > ?) minute, COUNT(*) hour FROM probes WHERE t > ?')
     .bind(now - 60_000, now - 3_600_000).first();
   if ((spent?.minute || 0) >= PROBES_MINUTE || (spent?.hour || 0) >= PROBES_HOUR) return json({ later: true }, 429);
@@ -1042,24 +1047,35 @@ async function audio(request, env, hash) {
   } catch {
     return corsError(request, 'TorBox unavailable.', 502);
   }
-  if (got.progress !== undefined && got.added) { // not cached after all: our add would download it, take it out
-    await fetch(`${TORBOX_API}controltorrent`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${env.TORBOX_API_KEY}`, 'Content-Type': 'application/json' },
+  const tracks = got.link ? await rememberAudio(env, hash, got.link) : null;
+  // Our add out of the account again (the user's list stays theirs: what they played), unless Play came meanwhile;
+  // one still downloading too (not cached after all: it would download)
+  if (got.added && !(await env.DB.prepare('SELECT 1 FROM plays WHERE hash = ? AND t >= ?').bind(hash, now).first())) {
+    await torboxApi(env, 'controltorrent', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ torrent_id: got.id, operation: 'delete' }),
     }).catch(() => {});
   }
   if (!got.link) return corsError(request, got.error || 'Not on TorBox yet.', 502);
-  const tracks = await rememberAudio(env, hash, got.link);
   return tracks ? json({ tracks }) : corsError(request, 'Couldn\'t read its audio.', 502);
 }
 
-// Reads a release's audio once and keeps it: its tracks ([] = not MKV/MP4), or null when the file couldn't be read
-// (asked again next time). Never throws (Play's waitUntil).
-async function rememberAudio(env, hash, link) {
+const RETRY_UNREADABLE = 86_400_000; // a file whose audio couldn't be read: asked again a day later
+
+// Reads a release's audio and keeps it: its tracks ([] = not MKV/MP4), or null when the file couldn't be read (kept
+// as 'null': asked again after RETRY_UNREADABLE). Play's (once): not when read before. Never throws (Play's waitUntil).
+async function rememberAudio(env, hash, link, once = false) {
   try {
-    if (await env.DB.prepare('SELECT 1 FROM audio WHERE hash = ?').bind(hash).first()) return null;
-    const tracks = (await audioTracks(link)) || [];
+    if (once) {
+      const known = await env.DB.prepare('SELECT tracks, t FROM audio WHERE hash = ?').bind(hash).first();
+      if (known && (known.tracks !== 'null' || Date.now() - known.t < RETRY_UNREADABLE)) return null;
+    }
+    let tracks = null;
+    try {
+      tracks = (await audioTracks(link)) || [];
+    } catch (e) {
+      console.log('audio', hash, String(e)); // wrangler tail
+    }
     await env.DB.prepare('INSERT OR REPLACE INTO audio (hash, tracks, t) VALUES (?, ?, ?)')
       .bind(hash, JSON.stringify(tracks), Date.now()).run();
     return tracks;
@@ -1210,7 +1226,7 @@ async function mkvAudio(head, read) {
   const tracks = [];
   for (const e of ebmlKids(b, t.data, t.end)) {
     if (e.id !== 0xae) continue;
-    const tr = { lang: 'eng', name: '', ch: 0, codec: '' }; // Matroska's default language is English
+    const tr = { lang: 'eng', name: '', ch: 1, codec: '' }; // Matroska's defaults: English, one channel
     let bcp = '';
     for (const f of ebmlKids(b, e.data, e.end)) {
       if (f.id === 0xd7) tr.num = uint(b, f.data, f.end);
@@ -1467,6 +1483,41 @@ async function mp4Audio(head, read) {
   return tracks;
 }
 
+// AAC's channels from esds: ES_Descriptor (3) → DecoderConfigDescriptor (4) → DecoderSpecificInfo (5), the
+// AudioSpecificConfig's channelConfiguration (7 = 7.1). 0: not said (a program config element).
+function aacChannels(d) {
+  let p = 4; // version, flags
+  const descriptor = () => { // its tag and where its body starts and ends
+    const tag = d[p++];
+    let size = 0;
+    for (let i = 0; i < 4; i++) {
+      const x = d[p++];
+      size = size * 128 + (x & 0x7f);
+      if (!(x & 0x80)) break;
+    }
+    return { tag, body: p, end: p + size };
+  };
+  let x = descriptor();
+  if (x.tag !== 3) return 0;
+  const flags = d[p + 2];
+  p += 3 + (flags & 0x80 ? 2 : 0) + (flags & 0x40 ? 1 + d[p + 3] : 0) + (flags & 0x20 ? 2 : 0);
+  x = descriptor();
+  if (x.tag !== 4) return 0;
+  p += 13;
+  x = descriptor();
+  if (x.tag !== 5 || x.end > d.length) return 0;
+  let bit = p * 8;
+  const bits = (n) => {
+    let v = 0;
+    for (let i = 0; i < n; i++, bit++) v = v * 2 + ((d[bit >> 3] >> (7 - (bit & 7))) & 1);
+    return v;
+  };
+  if (bits(5) === 31) bits(6); // object type
+  if (bits(4) === 15) bits(24); // sampling frequency
+  const config = bits(4);
+  return config === 7 ? 8 : config <= 6 ? config : 0;
+}
+
 function mp4Track(b, s, e) {
   const hdlr = mp4Find(b, s, e, ['mdia', 'hdlr']);
   if (!hdlr || ascii(b, hdlr.data + 8, hdlr.data + 12) !== 'soun') return null;
@@ -1485,6 +1536,7 @@ function mp4Track(b, s, e) {
   for (const c of mp4Kids(b, entry.data + 28, Math.min(entry.end, e))) {
     const d = b.subarray(c.data, Math.min(c.end, b.length));
     if (c.type === 'dac3' && d.length >= 2) ch = ACMOD_CHANNELS[(d[1] >> 3) & 7] + ((d[1] >> 2) & 1);
+    if (c.type === 'esds') ch = aacChannels(d) || ch; // the sample entry says 2 even for 5.1
     if (c.type === 'dec3' && d.length >= 5) { // the first independent substream, its dependent's channels, JOC
       const dependent = (d[4] >> 1) & 15;
       const chanLoc = dependent ? ((d[4] & 1) << 8) | d[5] : 0;

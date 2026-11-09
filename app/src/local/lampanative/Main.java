@@ -126,6 +126,13 @@ public class Main extends Activity {
         th.setPriority(Thread.MIN_PRIORITY);
         return th;
     });
+    // Source rows' audio reads (~1-3 s each, up to the worker's 30 s): their own low-priority thread, one at a time,
+    // so neither the pool's pages nor background's preloads wait behind them.
+    final ExecutorService audioReads = Executors.newSingleThreadExecutor(r -> {
+        Thread th = new Thread(r, "audio");
+        th.setPriority(Thread.MIN_PRIORITY);
+        return th;
+    });
     final Handler ui = new Handler(Looper.getMainLooper());
     final List<ImageView> posters = new ArrayList<>(); // Home's
     List<ImageView> pictures = List.of(); // the page's top level's: its poster, photos, collection posters
@@ -1794,13 +1801,19 @@ public class Main extends Activity {
         LinearLayout r = row(s.title(), sourceLine(s, req.langs()), cached, v -> play(req.f(), req.c(), req.season(),
             req.episode(), s.hash(), s.fileIdx(), s.title(), (View) req.list().getParent()));
         if (s.cached() == 1 && s.audio() == null && req.audioReads().getAndDecrement() > 0) {
-            TextView detail = (TextView) ((LinearLayout) r.getChildAt(0)).getChildAt(1); // row(): [lines [title, detail], end]
-            background.execute(() -> { // one at a time, low priority: posters and pages first
+            TextView detail = r.findViewWithTag(DETAIL);
+            View level = (View) req.list().getParent();
+            audioReads.execute(() -> {
+                // left before its turn: no TorBox add for a row nobody sees (alive() is the UI thread's; a level
+                // taken off the page is detached)
+                if (!level.isAttachedToWindow()) return;
                 try {
                     Answer a = ask(Sources.audioPath(s), null);
                     if (a.code() != 200) return; // 429: the worker's TorBox budget, next time; 502: not readable
                     Sources.Source read = s.withAudio(Sources.tracks(new JSONObject(a.body()).getJSONArray("tracks")));
-                    ui.post(() -> detail.setText(sourceLine(read, req.langs())));
+                    ui.post(() -> {
+                        if (alive(level)) detail.setText(sourceLine(read, req.langs()));
+                    });
                 } catch (Exception e) {
                     Log.w(TAG, "audio " + s.hash(), e);
                 }
@@ -1810,16 +1823,18 @@ public class Main extends Activity {
     }
 
     static final int AUDIO_READS = 4; // the first page's cached ones (5 rows fit on the screen)
+    static final String DETAIL = "detail";
 
     SpannableStringBuilder sourceLine(Sources.Source s, String langs) {
         SpannableStringBuilder line = new SpannableStringBuilder();
-        for (String b : Sources.chips(s, langs)) {
+        List<String> audio = Sources.audioChips(s.audio(), langs);
+        for (String b : Sources.chips(s, audio)) {
             int start = line.length();
             line.append(b);
             line.setSpan(new Chip(b, Sources.badgeColor(b)), start, line.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             line.append("  ");
         }
-        return line.append(Sources.details(s, langs));
+        return line.append(Sources.details(s, audio.isEmpty()));
     }
 
     // A text color that follows its view's focus (a list row turns white under focus): a span can't take a
@@ -3423,6 +3438,7 @@ public class Main extends Activity {
             d.setSingleLine();
             d.setEllipsize(TextUtils.TruncateAt.END);
             d.setPadding(0, dp(6), 0, 0);
+            d.setTag(DETAIL); // a source row's, set again when its audio is read
             lines.addView(d);
         }
         if (end != null) {

@@ -4,9 +4,14 @@
 --   npx wrangler@4 d1 execute <database> --remote --file audio.sql
 CREATE TABLE IF NOT EXISTS audio (
   hash TEXT PRIMARY KEY, -- the torrent's info hash (a season's torrent: its first file read, episodes share tracks)
-  tracks TEXT NOT NULL,  -- JSON [[lang, codec, channels, atmos 0/1, name], ...]; [] = not MKV/MP4 or no audio
+  tracks TEXT NOT NULL,  -- JSON [[lang, codec, channels, atmos 0/1, name], ...]; [] = not MKV/MP4 or no audio;
+                         -- null = couldn't be read (asked again a day later)
   t INTEGER NOT NULL     -- read at (ms)
 );
 CREATE TABLE IF NOT EXISTS probes (
   t INTEGER NOT NULL     -- a TorBox add for reading one (ms); rows older than an hour go
+);
+CREATE TABLE IF NOT EXISTS plays (
+  hash TEXT PRIMARY KEY, -- a release Play asked for (ms): a probe reading it then leaves the torrent in the account
+  t INTEGER NOT NULL
 );

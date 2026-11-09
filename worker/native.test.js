@@ -2017,3 +2017,98 @@ test('sources: a release read before carries its audio (row[9]); the others null
   assert.deepEqual(body.streams[0][9], [['RU', 'DD+', 8, 0, 'MVO']]);
   assert.deepEqual(body.streams.slice(1).map((r) => r[9]), [null, null, null, null, null]);
 });
+
+// Real remuxes: a SeekHead points at Tracks and the first Cluster, and fonts (Attachments, MBs) lie before them
+const elFixed = (id, n, width) => el(id, be(n, width));
+const seek = (id, pos) => el(0x4dbb, el(0x53ab, be(id, 4)), elFixed(0x53ac, pos, 8));
+function remux({ seekHead, frame = eac3Rich(true) }) {
+  const info = el(0x1549a966, el(0x4d80, 'test'));
+  const fonts = el(0x1941a469, new Uint8Array(300 * 1024));
+  const tags = el(0x1254c367, new Uint8Array(300 * 1024));
+  const tracks = el(0x1654ae6b,
+    el(0xae, elUint(0xd7, 1), elUint(0x83, 2), el(0x86, 'A_EAC3'), el(0x22b59c, 'rus'), el(0xe1, elUint(0x9f, 6))),
+    el(0xae, elUint(0xd7, 2), elUint(0x83, 2), el(0x86, 'A_AC3'), el(0x22b59c, 'ukr'))); // no Channels: 1
+  const cluster = el(0x1f43b675, elUint(0xe7, 0), block(1, frame), block(2, new Uint8Array(16)));
+  // SeekHead first, its size fixed (8-byte positions); positions from the Segment's data
+  const head = (posTracks, posCluster) => el(0x114d9b74, seek(0x1654ae6b, posTracks), seek(0x1f43b675, posCluster));
+  const size = head(0, 0).length;
+  const children = seekHead
+    ? [head(size + info.length + fonts.length, size + info.length + fonts.length + tracks.length), info, fonts, tracks, cluster]
+    : [info, tracks, fonts, tags, cluster]; // the Cluster found by hopping over fonts and tags
+  return cat(el(0x1a45dfa3, el(0x4282, 'matroska')), el(0x18538067, ...children));
+}
+// E-AC-3 as streams send it: compr, mix metadata (5.1: dmixmod, levels, LFE mix, program scale, mixdef 1, per-block
+// mix config) and info metadata (bsmod…, dsurexmod, audioprodi, sourcefscod) before addbsi
+function eac3Rich(joc) {
+  const bits = [];
+  const put = (v, n) => { for (let i = n - 1; i >= 0; i--) bits.push((v >> i) & 1); };
+  put(0x0b77, 16); put(0, 2); put(0, 3); put(0x2ff, 11); put(0, 2); put(3, 2); put(7, 3); put(1, 1); put(16, 5); put(31, 5);
+  put(1, 1); put(0xa5, 8); // compre, compr
+  put(1, 1); put(2, 2); put(0x2d, 6); put(0x1b, 6); put(1, 1); put(9, 5); // mixmdate: dmixmod, c, sur, lfemixlevcod
+  put(1, 1); put(0x21, 6); put(0, 1); put(1, 2); put(0x15, 5); // pgmscl, no extpgmscl, mixdef 1
+  put(1, 1); for (let blk = 0; blk < 6; blk++) { put(blk % 2, 1); if (blk % 2) put(0x11, 5); } // frmmixcfginfoe
+  put(1, 1); put(0x13, 5); put(2, 2); put(1, 1); put(0x6c, 8); put(1, 1); // infomdate: …, dsurexmod, audioprodi, sourcefscod
+  put(joc ? 1 : 0, 1);
+  if (joc) { put(1, 6); put(1, 8); }
+  const out = new Uint8Array(Math.ceil(bits.length / 8) + 8);
+  bits.forEach((b, i) => { out[i >> 3] |= b << (7 - (i & 7)); });
+  return out;
+}
+
+test('audio: a remux by its SeekHead (Tracks and the Cluster past 300 KB of fonts); E-AC-3 with mix and info metadata', async () => {
+  torboxWith(remux({ seekHead: true }));
+  assert.deepEqual((await (await audioOf(audioEnv())).json()).tracks, [['RU', 'DD+', 6, 1, ''], ['UA', 'DD', 1, 0, '']]);
+  assert.equal(ranges, 3); // the head, Tracks, the Cluster: never the fonts
+  torboxWith(remux({ seekHead: true, frame: eac3Rich(false) }));
+  assert.equal((await (await audioOf(audioEnv())).json()).tracks[0][3], 0);
+});
+
+test('audio: no SeekHead: the first Cluster found by hopping over fonts and tags (16 bytes read each)', async () => {
+  torboxWith(remux({ seekHead: false }));
+  assert.deepEqual((await (await audioOf(audioEnv())).json()).tracks[0], ['RU', 'DD+', 6, 1, '']);
+  assert.equal(ranges, 4); // the head, the Tags' head, the Cluster's head (found), the Cluster
+});
+
+test('audio: an MP4\'s AAC 5.1: channels from esds (its sample entry says 2)', async () => {
+  // ES_Descriptor → DecoderConfigDescriptor (13 bytes) → DecoderSpecificInfo: AAC LC, 48 kHz, channelConfiguration 6
+  const esds = box('esds', new Uint8Array(4), Uint8Array.of(3, 22, 0, 1, 0, 4, 17, 0x40, 0x15, ...new Uint8Array(11), 5, 2,
+    0x11, 0xb0));
+  const film = cat(box('ftyp', 'isom', new Uint8Array(4)), box('moov', trak('soun', 'eng', 'AAC', sound('mp4a', 2, esds))));
+  torboxWith(film);
+  assert.deepEqual((await (await audioOf(audioEnv())).json()).tracks, [['EN', 'AAC', 6, 0, 'AAC']]);
+});
+
+test('audio: our add taken out of the account after reading; not when Play came meanwhile, nor one already there', async () => {
+  const deletes = () => asked.filter((x) => x === JSON.stringify({ torrent_id: 11, operation: 'delete' })).length;
+  const e = audioEnv();
+  torboxWith(mkvFilm(), { ...ready, controltorrent: { success: true } });
+  assert.equal((await audioOf(e)).status, 200);
+  assert.equal(deletes(), 1);
+  e.DB.raw.prepare('INSERT INTO plays (hash, t) VALUES (?, ?)').run('cd'.repeat(20), Date.now() + 60_000); // Play meanwhile
+  torboxWith(mkvFilm(), { ...ready, controltorrent: { success: true } });
+  assert.equal((await audioOf(e, 'cd'.repeat(20))).status, 200);
+  assert.equal(deletes(), 0);
+  torboxWith(mkvFilm(), { ...ready, createtorrent: { success: false, error: 'DOWNLOAD_EXISTS' },
+    mylist: { success: true, data: [{ id: 11, hash: 'ef'.repeat(20) }] }, controltorrent: { success: true } });
+  assert.equal((await audioOf(e, 'ef'.repeat(20))).status, 200);
+  assert.equal(deletes(), 0); // the user's own
+});
+
+test('audio: a file that can\'t be read (the CDN ignores Range) is asked again a day later, not on every list', async () => {
+  const e = audioEnv();
+  torbox(ready);
+  const api = globalThis.fetch;
+  let whole = 0;
+  globalThis.fetch = async (url, init) => (String(url) === LINK ? (whole++, new Response('the whole film')) : api(url, init));
+  assert.equal((await audioOf(e)).status, 502);
+  assert.equal(whole, 1);
+  assert.equal(e.DB.raw.prepare('SELECT tracks FROM audio WHERE hash = ?').get(H).tracks, 'null');
+  asked = [];
+  assert.equal((await audioOf(e)).status, 502);
+  assert.deepEqual([asked, whole], [[], 1]); // TorBox not asked, nothing read
+  e.DB.raw.prepare('UPDATE audio SET t = t - 86400000').run();
+  await audioOf(e);
+  assert.equal(whole, 2);
+  // /streams: a row whose audio couldn't be read is as one not read
+  assert.equal(JSON.parse(e.DB.raw.prepare('SELECT tracks FROM audio WHERE hash = ?').get(H).tracks), null);
+});

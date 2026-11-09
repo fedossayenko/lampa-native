@@ -1,7 +1,7 @@
 package local.lampanative;
 
+import java.io.UnsupportedEncodingException;
 import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -101,15 +101,18 @@ final class Sources {
     // GET /audio/<hash>?file=&name= (ask(): the play token): a cached release's tracks, read from its file the first
     // time (~1-3 s, a TorBox add the worker budgets), at once after that. The file Play would pick.
     static String audioPath(Source s) {
-        return "/audio/" + s.hash() + "?file=" + s.fileIdx() + "&name=" + URLEncoder.encode(s.title(), StandardCharsets.UTF_8);
+        try { // the String charset form: (String, Charset) is Android 13's
+            return "/audio/" + s.hash() + "?file=" + s.fileIdx() + "&name=" + URLEncoder.encode(s.title(), "UTF-8");
+        } catch (UnsupportedEncodingException e) {
+            throw new AssertionError(e); // UTF-8 is always there
+        }
     }
 
     static final List<String> NAMED_AUDIO = List.of("Atmos", "TrueHD", "DTS", "DD+", "DD");
 
     // A row's chips: the release's own (4K, DV, REMUX, HEVC…), then its audio: read → the best track of each language
-    // shown (audioChips), not read → what its name says (Atmos, TrueHD, DTS, DD+, DD: some, for any language).
-    static List<String> chips(Source s, String langs) {
-        List<String> audio = s.audio() == null ? List.of() : audioChips(s.audio(), langs);
+    // shown (audio: audioChips'), not read → what its name says (Atmos, TrueHD, DTS, DD+, DD: some, for any language).
+    static List<String> chips(Source s, List<String> audio) {
         if (audio.isEmpty()) return s.badges();
         List<String> out = new ArrayList<>();
         for (String b : s.badges()) if (!NAMED_AUDIO.contains(b)) out.add(b);
@@ -119,8 +122,9 @@ final class Sources {
 
     // "RU DD+ 7.1", "EN TrueHD Atmos": per language, the picked ones in their order then English (the original),
     // its best track: Atmos, then more channels, then the better codec. Commentaries left out. langs "" (every
-    // language): the release's first language and English.
+    // language): the release's first language and English. Not read (null): none.
     static List<String> audioChips(List<Track> audio, String langs) {
+        if (audio == null) return List.of();
         List<String> order = codes(langs);
         if (order.isEmpty()) for (Track t : audio) if (!t.lang().isEmpty() && !commentary(t)) {
             order.add(t.lang());
@@ -176,11 +180,10 @@ final class Sources {
     }
 
     // Seeders only matter when TorBox has to download it; a cached one streams from TorBox's own copy. The languages
-    // only while the audio isn't read (then its chips say them, the line fits).
-    static String details(Source s, String shown) {
+    // unless audio chips say them (then the line fits).
+    static String details(Source s, boolean languages) {
         String seeders = s.cached() == 1 ? "" : s.seeders() + " seeders · ";
-        boolean chips = s.audio() != null && !audioChips(s.audio(), shown).isEmpty();
-        String langs = s.languages().isEmpty() || chips ? "" : " · " + String.join(" ", s.languages());
+        String langs = s.languages().isEmpty() || !languages ? "" : " · " + String.join(" ", s.languages());
         return s.size() + " · " + seeders + s.tracker() + langs;
     }
 

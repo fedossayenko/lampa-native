@@ -55,16 +55,16 @@ class SourcesTest {
     // (then TorBox has to download it, and seeders say how fast; a cached one streams from TorBox's copy).
     void testDetails() throws Exception {
         Sources.Source s = Sources.parse(JSON).streams().get(0);
-        assert Sources.details(s, "RU,UA").equals("69.35 GB · Rutracker · RU UA EN") : Sources.details(s, "RU,UA");
+        assert Sources.details(s, true).equals("69.35 GB · Rutracker · RU UA EN") : Sources.details(s, true);
         for (int cached : new int[] {0, -1}) {
             Sources.Source other = new Sources.Source(s.hash(), s.fileIdx(), s.title(), s.badges(), s.size(), s.seeders(),
                 s.tracker(), s.languages(), cached, null);
-            assert Sources.details(other, "RU,UA").equals("69.35 GB · 359 seeders · Rutracker · RU UA EN") : Sources.details(other, "RU,UA");
+            assert Sources.details(other, true).equals("69.35 GB · 359 seeders · Rutracker · RU UA EN") : Sources.details(other, true);
         }
         assert Sources.cachedLabel(1).equals("⚡\uFE0E Cached") && Sources.cachedLabel(0).equals("Not cached");
         assert Sources.cachedLabel(-1).isEmpty() : "unknown: say nothing";
         Sources.Source bare = new Sources.Source("h", 0, "t", List.of(), "1 GB", 5, "1337x", List.of(), 1, null);
-        assert Sources.details(bare, "RU,UA").equals("1 GB · 1337x") : "no languages, no trailing dot: " + Sources.details(bare, "RU,UA");
+        assert Sources.details(bare, true).equals("1 GB · 1337x") : "no languages, no trailing dot: " + Sources.details(bare, true);
     }
 
     void testBadgeColorsByKind() {
@@ -157,13 +157,13 @@ class SourcesTest {
     void testChipsOnARow() throws Exception {
         Sources.Source s = new Sources.Source("h", 0, "Dune.mkv", List.of("4K", "DV", "HEVC", "Atmos", "DD+"), "38 GB", 9,
             "Rutracker", List.of("RU", "UA", "EN"), 1, null);
-        assert Sources.chips(s, "RU,UA").equals(s.badges());
-        Sources.Source read = s.withAudio(tracks(DUNE));
-        assert Sources.chips(read, "RU,UA").equals(List.of("4K", "DV", "HEVC", "RU DD+ 5.1", "UA DD 5.1", "EN TrueHD Atmos"))
-            : Sources.chips(read, "RU,UA");
-        assert Sources.details(read, "RU,UA").equals("38 GB · Rutracker") : Sources.details(read, "RU,UA");
-        Sources.Source avi = s.withAudio(List.of()); // read, not MKV/MP4: as if not read
-        assert Sources.chips(avi, "RU,UA").equals(s.badges()) && Sources.details(avi, "RU,UA").endsWith("RU UA EN");
+        assert Sources.audioChips(s.audio(), "RU,UA").isEmpty() : "not read";
+        assert Sources.chips(s, List.of()).equals(s.badges());
+        List<String> audio = Sources.audioChips(tracks(DUNE), "RU,UA");
+        assert Sources.chips(s, audio).equals(List.of("4K", "DV", "HEVC", "RU DD+ 5.1", "UA DD 5.1", "EN TrueHD Atmos"))
+            : Sources.chips(s, audio);
+        assert Sources.details(s, false).equals("38 GB · Rutracker") : Sources.details(s, false);
+        assert Sources.audioChips(List.of(), "RU,UA").isEmpty() : "read, not MKV/MP4: as if not read";
         assert Sources.badgeColor("RU DD+ 7.1") == Sources.AUDIO && Sources.badgeColor("HEVC") == Sources.PLAIN;
         assert Sources.audioPath(s).equals("/audio/h?file=0&name=Dune.mkv");
         assert Sources.audioPath(s.withAudio(null)).equals("/audio/h?file=0&name=Dune.mkv");
