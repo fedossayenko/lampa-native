@@ -599,26 +599,47 @@ public class Main extends Activity {
         return ux.tile(frame, cardW, cardH, 10 * dp, c.name(), c.year());
     }
 
-    // A poster's badges (all its frame holds but the picture), again when /mine changes them (showMine).
+    // A poster's badges (all its frame holds but the picture), again when /mine changes them (showMine): each corner's
+    // chip is changed where it sits, so a /mine that changes nothing on a card touches none of its views (taking them
+    // all off and making them again laid the whole Home out again, for each of its 160 cards).
     void badges(FrameLayout frame, Home.Card c, String sure) {
-        frame.removeViews(1, frame.getChildCount() - 1);
         String key = Timeline.card(c);
         String fresh = cub.fresh().get(key);
         String[] grade = fresh == null && sure == null ? Cub.posterGrade(cub.grades().get(key)) : null;
-        if (fresh != null || sure != null || grade != null) {
-            TextView badge = fresh != null ? ux.text("New · " + fresh, 15, 0xff111111)
-                : sure != null ? ux.text(sure, 15, Color.WHITE)
-                : ux.text(grade[1], 15, Color.parseColor(grade[2])); // GRADES' own colors (CubTest checks each)
-            frame.addView(ux.chip(badge, fresh != null ? 0xff21d07a : 0xcc000000), ux.badge(Gravity.TOP | Gravity.START));
-        }
-        String left = Timeline.posterLeft(cub.left().get(key));
-        if (left != null) {
-            frame.addView(ux.chip(ux.text(left, 15, Color.WHITE), 0xcc000000), ux.badge(Gravity.TOP | Gravity.END));
-        }
+        if (fresh != null) chip(frame, Gravity.TOP | Gravity.START, "New · " + fresh, 0xff111111, 0xff21d07a);
+        else if (sure != null) chip(frame, Gravity.TOP | Gravity.START, sure, Color.WHITE, 0xcc000000);
+        else if (grade != null) { // GRADES' own colors (CubTest checks each)
+            chip(frame, Gravity.TOP | Gravity.START, grade[1], Color.parseColor(grade[2]), 0xcc000000);
+        } else chip(frame, Gravity.TOP | Gravity.START, null, 0, 0);
+        chip(frame, Gravity.TOP | Gravity.END, Timeline.posterLeft(cub.left().get(key)), Color.WHITE, 0xcc000000);
         int score = c.score();
-        if (score > 0) {
-            frame.addView(ux.chip(ux.text(String.valueOf(score), 15, Home.scoreColor(score)), 0xcc000000),
-                ux.badge(Gravity.BOTTOM | Gravity.END));
+        chip(frame, Gravity.BOTTOM | Gravity.END, score > 0 ? String.valueOf(score) : null, Home.scoreColor(score),
+            0xcc000000);
+    }
+
+    // The chip in one corner of a frame: text null takes it off, else it is made or changed in place (its background's
+    // color is its tag).
+    void chip(FrameLayout frame, int gravity, String text, int color, int background) {
+        TextView chip = null;
+        for (int i = 1; i < frame.getChildCount() && chip == null; i++) {
+            View v = frame.getChildAt(i);
+            if (((FrameLayout.LayoutParams) v.getLayoutParams()).gravity == gravity) chip = (TextView) v;
+        }
+        if (text == null) {
+            if (chip != null) frame.removeView(chip);
+            return;
+        }
+        if (chip == null) {
+            chip = ux.chip(ux.text(text, 15, color), background);
+            chip.setTag(background);
+            frame.addView(chip, ux.badge(gravity));
+            return;
+        }
+        if (!chip.getText().toString().equals(text)) chip.setText(text);
+        if (chip.getCurrentTextColor() != color) chip.setTextColor(color);
+        if (!Integer.valueOf(background).equals(chip.getTag())) {
+            chip.setTag(background);
+            ((GradientDrawable) chip.getBackground()).setColor(background);
         }
     }
 
