@@ -23,6 +23,7 @@ final class SignIn extends Main.Part {
     View level;
     Cub.Code c;
     long until;
+    volatile String approved; // the token once the code is confirmed, until the profiles are in
 
     SignIn(Main m, Runnable done) {
         super(m);
@@ -84,11 +85,19 @@ final class SignIn extends Main.Part {
         Cub.Code asked = c;
         m.async(() -> {
             try {
-                Answer a = cub("device/token", "device_code=" + URLEncoder.encode(asked.device(), "UTF-8"), null);
-                String token = a.code() == 200 ? Cub.token(a.body()) : null;
+                // approved already: only the profiles are asked again (the code is used up once it is confirmed, so
+                // asking device/token again would answer a refusal and send the user to their phone for a new code)
+                String token = approved;
+                Answer a = null;
+                if (token == null) {
+                    a = cub("device/token", "device_code=" + URLEncoder.encode(asked.device(), "UTF-8"), null);
+                    token = a.code() == 200 ? Cub.token(a.body()) : null;
+                }
                 if (token != null) {
+                    approved = token;
                     List<Cub.Profile> all = Cub.profiles(cub("profiles/all", null, token).body());
-                    m.ui.post(() -> pick(token, all));
+                    String approvedToken = token;
+                    m.ui.post(() -> pick(approvedToken, all));
                 } else if (a.code() != 200 && Cub.newCode(a.body())) {
                     m.ui.post(() -> {
                         if (m.alive(level)) newCode();
