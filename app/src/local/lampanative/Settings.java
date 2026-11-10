@@ -109,8 +109,9 @@ final class Settings extends Main.Part {
                 TextView value = (TextView) ((LinearLayout) v).getChildAt(1);
                 speedLine = "Testing…";
                 value.setText(speedLine);
+                long end = Net.armSpeed(8000); // here: an onStop before the thread runs still stops it
                 new Thread(() -> { // its own: pool's 3 stay for posters meanwhile
-                    double mbps = Net.mbps(Net.SPEED, 4, 8000);
+                    double mbps = Net.mbpsUntil(Net.SPEED, 4, end);
                     String shown = mbps < 0 ? "" : Net.speedLine(mbps); // stopped (onStop): no result
                     m.ui.post(() -> {
                         speedLine = shown;

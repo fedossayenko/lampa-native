@@ -140,8 +140,11 @@ public class Main extends Activity {
     Runnable overlayBack; // Back on a sheet opened from another (Settings → Profile): that one again
     Runnable prefetch;
     // The process ends behind DDD (onStop): the state is saved, the "playing" file is on disk
+    // (Progress's report of a pause or onStop still being sent: 1 s later, so the position isn't lost with it)
     final Runnable endBehindPlayer = () -> {
-        if (this.stopped && this.playing != null) Process.killProcess(Process.myPid());
+        if (!this.stopped || this.playing == null) return;
+        if (Progress.SENDING.get() > 0) this.ui.postDelayed(this.endBehindPlayer, 1000);
+        else Process.killProcess(Process.myPid());
     };
     Runnable prefetchBackdrop; // 1.5 s of rest on the same card
     String prefetched; // the film (its /card URL) whose page was last preloaded or opened
@@ -330,6 +333,8 @@ public class Main extends Activity {
         for (Level l : levels) for (ImageView p : l.pictures()) p.setImageDrawable(empty); // a film under a list
         if (page != null) pageBackdrop.setImageDrawable(null);
         pix.collectSoon();
+        ui.removeCallbacks(prefetch); // a card rested on just before Play or Home: no /card or backdrop behind DDD
+        ui.removeCallbacks(prefetchBackdrop);
         if (Timeline.endsBehindPlayer(!soft, playing != null, pageTop != null)) {
             ui.postDelayed(endBehindPlayer, Timeline.END_BEHIND_PLAYER_MS);
         }
@@ -709,6 +714,9 @@ public class Main extends Activity {
     // switching it off mid-film lost the whole evening's position. Now 30 s at most.
     // Only the worker's point: Home's rows and marks catch up from /mine when the app is back.
     public static class Progress extends BroadcastReceiver {
+        // Reports still being sent (endBehindPlayer waits for them; a receiver of this process, so static)
+        static final java.util.concurrent.atomic.AtomicInteger SENDING = new java.util.concurrent.atomic.AtomicInteger();
+
         @Override
         public void onReceive(Context context, Intent data) {
             Timeline.Playing started = Timeline.Playing.fromJson(
@@ -723,6 +731,7 @@ public class Main extends Activity {
             if (t == null) return;
             byte[] json = p.body(t).getBytes(StandardCharsets.UTF_8);
             PendingResult done = goAsync(); // ~10 s for the request before Android counts it hung
+            SENDING.incrementAndGet(); // endBehindPlayer waits for it
             new Thread(() -> {
                 try {
                     HttpURLConnection c = open(Home.worker + "/timeline", 8000); // set: it answered the link; the
@@ -732,6 +741,7 @@ public class Main extends Activity {
                 } catch (IOException e) {
                     Log.w(TAG, "progress", e); // the next report, 30 s on, tries again
                 } finally {
+                    SENDING.decrementAndGet();
                     done.finish();
                 }
             }).start();
