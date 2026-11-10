@@ -491,7 +491,7 @@ shaping; custom-drawn rows would only save Java heap, which is 3 MB. Re-checked 
     logs `setup: connected to …` or `setup: kept …`, which connect.sh prints). Every request to the worker carries the
     token; `/streams` now needs it too, and the plugin's `?url=` pass-through is off unless `PASS_THROUGH=1`. The home server
     (Claude for voice search and Story so far) is the build's `HOME_SERVER` (`app/local.env`), plain http to it only,
-    and gets HMAC(play token, "home") instead of the token. Progress acts only on the address playing. Icon, banner,
+    and signs each request (X-Home-Time in ms, X-Home-Sig = HMAC(play token, "home\n" + time + "\n" + body), once within 60 s) instead of sending the token. Progress acts only on the address playing. Icon, banner,
     Settings → Worker and About (TMDB's logo and notice). Audio languages default to all.
 
 11. **Extensions: a Learn button** (2026-11-10, branch `learn`, not deployed). Worker: `/ext/<name>/<path>` over a service
