@@ -22,6 +22,14 @@ out=build/check
 rm -rf "$out"
 javac --release 21 -Xlint:all -Werror -encoding UTF-8 -cp "$JAR" -d "$out/app" app/src/local/lampanative/*.java
 
+# One file that every screen has to be read through is how Main grew to 3,700 lines: past 2000 a screen gets its own part
+for f in app/src/local/lampanative/*.java app/test/local/lampanative/*.java; do
+    if [ "$(wc -l <"$f")" -gt 2000 ]; then
+        echo "$f is over 2000 lines: move a screen into its own file (Main.Part)" >&2
+        exit 1
+    fi
+done
+
 if [ ! -f "$JSON" ]; then
     mkdir -p tools/lib
     # to a side file: a cut-off download left at $JSON would fail the checksum on every run, never fetched again
