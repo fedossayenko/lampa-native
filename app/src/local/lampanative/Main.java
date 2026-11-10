@@ -3177,7 +3177,9 @@ public class Main extends Activity {
         if (!homeServer.isEmpty()) list.addView(claude); // Claude's recap: only with a home server
         list.addView(section("Last time"));
         String lang = Sources.storyLang(langs());
-        async(() -> {
+        // its own thread, as play()'s: the recap may wait 150 s on the home server, and one of the pool's three would
+        // sit there while posters and pages queue behind it
+        new Thread(() -> {
             // the seasons of the last three, and the one before the last's (Claude's overviews)
             Set<Integer> numbers = new java.util.TreeSet<>();
             for (int[] e : last) numbers.add(e[0]);
@@ -3230,7 +3232,7 @@ public class Main extends Activity {
             }
             String shown = text != null ? text : "Claude isn't answering (the home server): the episodes below.";
             ui.post(() -> summary.setText(shown));
-        });
+        }, "story").start();
     }
 
     // A side sheet (⋯, Settings, Audio languages): 392 dp on the right, its title, an optional gray line, then its
