@@ -34,10 +34,15 @@ final class Posters extends Main.Part {
         super(m);
     }
 
-    final Set<ImageView> loading = new HashSet<>();    // Dropped posters are garbage that the tiny Java heap (~5 MB) rarely collects, and until then their pixels
+    final Set<ImageView> loading = new HashSet<>(); // UI thread only
+
+    // Dropped posters are garbage that the tiny Java heap (~5 MB) rarely collects, and until then their pixels
     // (native) and GPU textures stay. One concurrent GC a second after scrolling stops (~33 ms on a pool thread,
     // 0.1 ms pause) frees them, and new posters reuse the textures. Measured by hand: native 37 → 24 MB.
-    final Runnable collect = () -> m.pool.execute(Runtime.getRuntime()::gc);    static final int DIM = 0xff606060;    // A Pic with its corners' radius and how far in.
+    final Runnable collect = () -> m.pool.execute(Runtime.getRuntime()::gc); // collectSoon()
+    static final int DIM = 0xff606060; // the backdrop's darkening (MULTIPLY)
+
+    // A Pic with its corners' radius and how far in.
     Pic pic(float radius, int percent) {
         return new Pic(radius, percent);
     }

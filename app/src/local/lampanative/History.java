@@ -29,9 +29,10 @@ final class History extends Main.Part {
         super(m);
     }
 
-    static final String HISTORY = "history";    View historyTile;
-
-    LinearLayout historyList;    List<Cub.Played> historyShown = List.of();
+    static final String HISTORY = "history"; // the History tile's tag (Continue browsing's last)
+    View historyTile;
+    LinearLayout historyList; // the History page's, while open
+    List<Cub.Played> historyShown = List.of();
 
     // Continue browsing's last tile: History.
     View historyTile(TextView rowTitle) {
@@ -45,6 +46,7 @@ final class History extends Main.Part {
             if (focused) m.scroll.scrollTo(0, rowTitle.getTop());
         });
         card.setOnClickListener(this::openHistory);
+        historyTile = card;
         return card;
     }
 

@@ -73,7 +73,6 @@ public class Main extends Activity {
     static final String POSTER = "https://image.tmdb.org/t/p/w300"; // 300×450 = the card at density 2, no scaling
     // w780 looked soft on the 1080p screen; w1280 costs +6 MB and +20-40 ms CPU per page, original 2× the memory
     static final String BACKDROP = "https://image.tmdb.org/t/p/w1280";
- // the cast's 185×278 px photos, cut to a circle
     static final String STILL = "https://image.tmdb.org/t/p/w300"; // an episode's 300×169 = 150×84 dp at density 2
     static final String TILE = "https://image.tmdb.org/t/p/w780"; // a Continue tile: decoded at half size, 390×219
     static final int SURFACE = 0xff1d1f20; // the screens' ground: picture corners and the backdrop's fades go to it
@@ -105,7 +104,6 @@ public class Main extends Activity {
     final Ui ux = new Ui(this); // widgets: text, buttons, rows, sheets, tiles
     final List<ImageView> posters = new ArrayList<>(); // Home's
     List<ImageView> pictures = List.of(); // the page's top level's: its poster, photos, collection posters
- // UI thread only
     // Bumped when another level is shown: a load queued for one not shown any more skips its download.
     volatile int shown;
     final int[] at = new int[2];
@@ -118,8 +116,6 @@ public class Main extends Activity {
     Cub.Mine cub = Cub.Mine.NONE; // what /mine says: marks, grades, time left, Coming up, My list, follows, What's new
     TextView bellTab; // Home's "New 3"
     View firstCard; // the card Home focuses at start: still focused when /mine comes, it moves into your rows
- // the History tile's tag (Continue browsing's last)
- // the History page's, while open
     // A card-sized stand-in while a picture isn't loaded (Pic draws it gray in its own shape): a 300×450 poster then
     // replaces a 300×450 drawable, so loading or dropping one doesn't make the ImageView request a layout pass (it
     // does from or to null).
@@ -141,20 +137,13 @@ public class Main extends Activity {
     int overlayWas;
     Runnable overlayClosed;
     Runnable overlayBack; // Back on a sheet opened from another (Settings → Profile): that one again
- // the row showSettings focuses (back from its sub-sheet), else its first
     Runnable prefetch;
- // collectSoon()
     String prefetched; // the film (its /card URL) whose page was last preloaded or opened
     volatile boolean stopped; // audioReads' thread reads it too
     Timeline.Playing playing; // the playback DDD will answer about
- // Settings → Stats overlay, while shown
     boolean soft; // Settings → Drawing: Software (pictures made their shown size: fit)
- // the backdrop's darkening (MULTIPLY)
     TextView comingTab; // "Coming up 2": episodes out with your audio (told in the app, no Telegram)
     final Map<String, TextView> homeTabs = new HashMap<>(); // Home's own: Back from a tab lands on its one
-    LinearLayout settingsList; // the Settings tab's rows: drawn again when a sheet or a level over them goes
- // beside them: what the focused one does
- // Settings' TorBox line as last read: drawn again with the rows, asked again after a minute
     View settingsButton; // Back from Search opened by the voice button lands here when nothing on Home had focus
     boolean asking; // a /play under way (UI thread)
     volatile boolean recording; // the voice button held: what is said goes to the recorder thread (listen())
@@ -164,7 +153,6 @@ public class Main extends Activity {
     final Map<String, Timeline.Point> marks = new HashMap<>();
     final Set<String> played = new HashSet<>(); // keys DDD answered about this session: newer than the worker's
     volatile long refusedAt; // when the streams addon last refused the worker (Sources.refusedLately); 0: never
- // its address (the worker's /addon), asked the first time it refuses
     String homeServer; // the build's HOME_SERVER, "host:port" ("" none): Claude for voice search and Story so far
     Optional<Cub.Account> cubAccount; // account(): null until files/cub is read
     long startedAt;
@@ -436,7 +424,7 @@ public class Main extends Activity {
                 if (rate) card.setOnClickListener(v -> filmPage.rateBar(c, v, true));
                 line.addView(card);
             }
-            if (tiles) line.addView(historyScreen.historyTile = historyScreen.historyTile(title));
+            if (tiles) line.addView(historyScreen.historyTile(title));
         }
         minePosters.addAll(posters.subList(before, posters.size()));
         List<Home.Card> tags = new ArrayList<>();
@@ -671,7 +659,6 @@ public class Main extends Activity {
         return level == pageTop || levels.stream().anyMatch(l -> l.view() == level);
     }
 
- // the first page's cached ones (5 rows fit on the screen)
 
     // Our DDD fork's report while it plays (return_progress: every 30 s, on pause, when it leaves the screen), saved
     // like its answer above. The answer comes only when DDD closes: the projector powers the stick by USB, and
@@ -1317,7 +1304,7 @@ public class Main extends Activity {
                 View on = page == null ? scroll.findFocus() : page.findFocus(); // ≡ on a Home poster: its own sheet
                 if (page == null && on != null && on.getTag() instanceof Home.Card c) quick(c, on);
                 else if (on != null && on.getTag() instanceof Cub.Played p) historyScreen.historySheet(p); // on a History row
-                else if (settingsList == null || !settingsList.isAttachedToWindow()) settingsScreen.showSettings(); // not on its tab
+                else settingsScreen.menu(); // the settings sheet, unless the tab is the screen
             }
             return true;
         }

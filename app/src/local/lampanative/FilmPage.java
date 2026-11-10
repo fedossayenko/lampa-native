@@ -46,7 +46,9 @@ final class FilmPage extends Main.Part {
         super(m);
     }
 
-    static final String PHOTO = "https://image.tmdb.org/t/p/w185";    // The film page; sources: after process death, the source list {season, episode} to open again over it.
+    static final String PHOTO = "https://image.tmdb.org/t/p/w185"; // the cast's 185×278 px photos, cut to a circle
+
+    // The film page; sources: after process death, the source list {season, episode} to open again over it.
     void openFilm(Home.Card c, View card, int[] sources) {
         m.openPage(card);
         m.prefetched = Film.url(c); // in the disk cache now: resting on this card again after Back reads nothing
@@ -655,7 +657,9 @@ final class FilmPage extends Main.Part {
 
     // How was it?: back from DDD with a film watched to the end and not graded, its page's
     // grade bar opens by itself with Later. The film's ★ sets what to run (its page may be built after DDD answers).
-    String askGradeFor;    String askGradeKey;    Runnable askGradeRun;
+    String askGradeFor; // the film ("movie_603") whose grade to ask, until its page shows
+    String askGradeKey; // the film whose ★ is on the page, and what opens its bar
+    Runnable askGradeRun;
 
     void askGrade() {
         if (askGradeFor == null || !askGradeFor.equals(askGradeKey) || askGradeRun == null) return;

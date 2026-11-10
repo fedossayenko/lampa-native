@@ -22,6 +22,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Consumer;
 import org.json.JSONObject;
 
 /**
@@ -34,13 +35,23 @@ final class Settings extends Main.Part {
         super(m);
     }
 
-    String settingsAt;    MeterView meter;    TextView settingsHelp;    String torboxLine = "…";    long torboxAt;
+    String settingsAt; // the row showSettings focuses (back from its sub-sheet), else its first
+    MeterView meter; // Settings → Stats overlay, while shown
+    LinearLayout settingsList; // the Settings tab's rows: drawn again when a sheet or a level over them goes
+    TextView settingsHelp; // beside them: what the focused one does
+    String torboxLine = "…"; // Settings' TorBox line as last read: drawn again with the rows, asked again after a minute
+    long torboxAt;
 
     // ≡ or Home's Settings: a side sheet over whatever is shown: each setting's name and
     // value, what the focused one does at the sheet's foot. OK flips or picks. Drawing restarts the app: a window's
     // GPU is chosen before it is shown, and the GPU's context and driver pools stay with the process once made.
     void showSettings() {
         showSettings(null);
+    }
+
+    // ≡ on the remote: the sheet, except on the Settings tab itself (its rows are there).
+    void menu() {
+        if (settingsList == null || !settingsList.isAttachedToWindow()) showSettings();
     }
 
     void showSettings(String at) {
@@ -55,9 +66,9 @@ final class Settings extends Main.Part {
         m.openPage(from);
         LinearLayout tab = m.tabPage("Settings");
         LinearLayout cols = new LinearLayout(m);
-        m.settingsList = new LinearLayout(m);
-        m.settingsList.setOrientation(LinearLayout.VERTICAL);
-        cols.addView(m.settingsList, m.dp(560), -2);
+        settingsList = new LinearLayout(m);
+        settingsList.setOrientation(LinearLayout.VERTICAL);
+        cols.addView(settingsList, m.dp(560), -2);
         settingsHelp = m.ux.text("", 18, 0xff9a9a9a);
         LinearLayout.LayoutParams hp = new LinearLayout.LayoutParams(0, -2, 1);
         hp.setMarginStart(m.dp(48));
@@ -65,14 +76,14 @@ final class Settings extends Main.Part {
         cols.addView(settingsHelp, hp);
         tab.addView(cols);
         settingsAt = "Drawing"; // its first row, as Search's first key and Coming up's first day
-        settingsRows(m.settingsList, settingsHelp, false);
+        settingsRows(settingsList, settingsHelp, false);
     }
 
     // The Settings tab shown again (a sheet over it closed, a level over it went): its values may have changed.
     void settingsAgain() {
-        if (m.settingsList == null || !m.settingsList.isAttachedToWindow()) return;
-        m.settingsList.removeAllViews();
-        settingsRows(m.settingsList, settingsHelp, false); // focus on the row it had (settingsAt)
+        if (settingsList == null || !settingsList.isAttachedToWindow()) return;
+        settingsList.removeAllViews();
+        settingsRows(settingsList, settingsHelp, false); // focus on the row it had (settingsAt)
     }
 
     // sheet: ≡'s (Back from its sub-sheets opens it again), else the tab's (shown again by settingsAgain()).
@@ -141,19 +152,16 @@ final class Settings extends Main.Part {
         if (now - torboxAt < 60_000) return; // the tab's rows drawn again after a sub-sheet: no new request, no "…"
         torboxAt = now;
         // TorBox's plan and torrents (~0.5 s)
+        Consumer<String> show = line -> {
+            torboxLine = line;
+            if (torbox.isAttachedToWindow()) ((TextView) torbox.getChildAt(1)).setText(line);
+            else settingsAgain(); // the tab's rows drawn again meanwhile
+        };
         m.load(null, "torbox", () -> {
             Answer t = m.ask("/torbox", null);
             JSONObject o = new JSONObject(t.body());
             return t.code() == 200 ? o.getString("plan") + " · " + o.getInt("torrents") + " torrents" : "Not reachable";
-        }, shown -> {
-            torboxLine = shown;
-            if (torbox.isAttachedToWindow()) ((TextView) torbox.getChildAt(1)).setText(shown);
-            else settingsAgain(); // the tab's rows drawn again meanwhile
-        }, () -> {
-            torboxLine = "Not reachable";
-            if (torbox.isAttachedToWindow()) ((TextView) torbox.getChildAt(1)).setText(torboxLine);
-            else settingsAgain();
-        });
+        }, show, () -> show.accept("Not reachable"));
     }
 
     @SuppressLint("DiscouragedApi") // by name: build.sh makes no R class

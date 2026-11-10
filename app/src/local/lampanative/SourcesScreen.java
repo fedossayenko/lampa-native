@@ -27,8 +27,7 @@ final class SourcesScreen extends Main.Part {
         super(m);
     }
 
-    volatile String addon; // the film ("movie_603") whose grade to ask, until its page shows
- // the film whose ★ is on the page, and what opens its bar
+    volatile String addon; // its address (the worker's /addon), asked the first time it refuses
 
     // TorBox sources, biggest first, in the chosen audio languages: the first 6 (5 rows fit on the screen), then the
     // rest is asked for at once and built as focus nears it (addRows).
@@ -189,7 +188,9 @@ final class SourcesScreen extends Main.Part {
         return r;
     }
 
-    static final int AUDIO_READS = 4;    SpannableStringBuilder sourceLine(Sources.Source s, String langs) {
+    static final int AUDIO_READS = 4; // the first page's cached ones (5 rows fit on the screen)
+
+    SpannableStringBuilder sourceLine(Sources.Source s, String langs) {
         SpannableStringBuilder line = new SpannableStringBuilder();
         List<Sources.Heard> heard = Sources.heard(s, langs);
         for (String b : Sources.badges(s, Sources.fileRead(s))) m.ux.chip(line, b);
