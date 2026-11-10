@@ -279,6 +279,7 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == '__main__':
     spare = start()
     threading.Thread(target=refresh, daemon=True).start()
-    where = lan_address()
+    # LAMPA_BIND (the address HOME_SERVER names) when a VPN owns the default route and lan_address() would pick it
+    where = os.environ.get('LAMPA_BIND') or lan_address()
     log(f'listening on {where}:{PORT},', MODEL)
     ThreadingHTTPServer((where, PORT), Handler).serve_forever()

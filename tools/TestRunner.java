@@ -34,8 +34,9 @@ public class TestRunner {
                     m.invoke(make.newInstance());
                 } catch (InvocationTargetException e) {
                     failed++;
+                    StackTraceElement[] at = e.getCause().getStackTrace(); // empty for an exception made without one
                     System.out.println("FAIL " + c.getSimpleName() + "." + m.getName() + ": " + e.getCause()
-                        + " at " + e.getCause().getStackTrace()[0]);
+                        + (at.length > 0 ? " at " + at[0] : ""));
                 }
             }
         }

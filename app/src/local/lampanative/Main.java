@@ -902,7 +902,7 @@ public class Main extends Activity {
                 Bitmap done = b;
                 ui.post(() -> {
                     if (stopped || pageTop != top) { // left meanwhile
-                        done.recycle(); // 4 MB of pixels (native) that no one will see
+                        if (done != null) done.recycle(); // 4 MB of pixels (native) that no one will see; null: the GPU copy failed
                         return;
                     }
                     pageBackdrop.setImageBitmap(done);
