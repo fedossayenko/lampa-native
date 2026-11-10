@@ -34,41 +34,41 @@ class CubTest {
     }
 
     void testLearned() {
-        assert Cub.learned("{\"rows\":[],\"learned\":{\"movie_603\":93}}").equals(java.util.Map.of("movie_603", "93"));
-        assert Cub.learned("{\"rows\":[]}").isEmpty() && Cub.learned("").isEmpty();
-        assert Cub.learnBound("{\"learned\":{}}") && Cub.learnBound("{\"learned\":{\"movie_1\":5}}");
-        assert !Cub.learnBound("{\"rows\":[]}") && !Cub.learnBound("");
+        assert Cub.Mine.parse("{\"rows\":[],\"learned\":{\"movie_603\":93}}").learned().equals(java.util.Map.of("movie_603", "93"));
+        assert Cub.Mine.parse("{\"rows\":[]}").learned().isEmpty() && Cub.Mine.parse("").learned().isEmpty();
+        assert Cub.Mine.parse("{\"learned\":{}}").learnBound() && Cub.Mine.parse("{\"learned\":{\"movie_1\":5}}").learnBound();
+        assert !Cub.Mine.parse("{\"rows\":[]}").learnBound() && !Cub.Mine.parse("").learnBound();
     }
 
     void testMarks() {
-        assert Cub.marks("{\"rows\":[],\"marks\":{\"tv_93740\":\"scheduled\",\"movie_7340\":\"thrown\"}}")
+        assert Cub.Mine.parse("{\"rows\":[],\"marks\":{\"tv_93740\":\"scheduled\",\"movie_7340\":\"thrown\"}}").marks()
             .equals(java.util.Map.of("tv_93740", "scheduled", "movie_7340", "thrown"));
-        assert Cub.marks("{\"rows\":[]}").isEmpty() && Cub.marks("").isEmpty();
+        assert Cub.Mine.parse("{\"rows\":[]}").marks().isEmpty() && Cub.Mine.parse("").marks().isEmpty();
         assert Cub.markName("scheduled").equals("Finish later") && Cub.markName("look") == null && Cub.markName(null) == null;
     }
 
     void testGrades() throws Exception {
-        assert Cub.grades("{\"rows\":[],\"grades\":{\"movie_603\":2,\"tv_1399\":-1,\"movie_10\":\"skip\"}}")
+        assert Cub.Mine.parse("{\"rows\":[],\"grades\":{\"movie_603\":2,\"tv_1399\":-1,\"movie_10\":\"skip\"}}").grades()
             .equals(java.util.Map.of("movie_603", "2", "tv_1399", "-1", "movie_10", "skip"));
-        assert Cub.grades("{\"rows\":[]}").isEmpty() && Cub.grades("").isEmpty();
-        assert Cub.fresh("{\"rows\":[],\"new\":{\"tv_93740\":\"S3 E5\"}}").equals(java.util.Map.of("tv_93740", "S3 E5"));
-        assert Cub.fresh("{\"rows\":[]}").isEmpty();
-        assert Cub.left("{\"rows\":[],\"left\":{\"movie_603\":4000}}").equals(java.util.Map.of("movie_603", "4000"));
-        assert Cub.left("{\"rows\":[]}").isEmpty();
-        assert Cub.percent("{\"rows\":[],\"percent\":{\"movie_603\":43}}").equals(java.util.Map.of("movie_603", "43"));
+        assert Cub.Mine.parse("{\"rows\":[]}").grades().isEmpty() && Cub.Mine.parse("").grades().isEmpty();
+        assert Cub.Mine.parse("{\"rows\":[],\"new\":{\"tv_93740\":\"S3 E5\"}}").fresh().equals(java.util.Map.of("tv_93740", "S3 E5"));
+        assert Cub.Mine.parse("{\"rows\":[]}").fresh().isEmpty();
+        assert Cub.Mine.parse("{\"rows\":[],\"left\":{\"movie_603\":4000}}").left().equals(java.util.Map.of("movie_603", "4000"));
+        assert Cub.Mine.parse("{\"rows\":[]}").left().isEmpty();
+        assert Cub.Mine.parse("{\"rows\":[],\"percent\":{\"movie_603\":43}}").percent().equals(java.util.Map.of("movie_603", "43"));
         // a poster says your grade (Lampa's tag); "not mine" says nothing
         assert Cub.posterGrade("2")[1].equals("Loved") && Cub.posterGrade("-1")[1].equals("Bad");
         assert Cub.posterGrade("skip") == null && Cub.posterGrade(null) == null;
         // the colors are the app's own (GRADES), never the worker's: each one Color.parseColor reads
         for (String[] g : Cub.GRADES) assert g[2].matches("#[0-9a-f]{6}") : g[2];
-        assert Cub.listed("{\"rows\":[],\"mylist\":[\"movie_603\",\"tv_1399\"]}").equals(java.util.Set.of("movie_603", "tv_1399"));
-        assert Cub.listed("{\"rows\":[]}").isEmpty() && Cub.listed("").isEmpty();
-        assert Cub.seen("{\"rows\":[],\"seen\":[\"movie_8\"]}").equals(java.util.Set.of("movie_8"));
-        java.util.Map<String, String> grades = java.util.Map.of("movie_1", "skip"), marks = java.util.Map.of(
-            "movie_2", "viewed", "movie_3", "thrown", "movie_4", "scheduled");
-        java.util.Set<String> seen = java.util.Set.of("movie_5");
-        for (String k : new String[] {"movie_1", "movie_2", "movie_3", "movie_5"}) assert Cub.watched(k, grades, marks, seen) : k;
-        assert !Cub.watched("movie_4", grades, marks, seen) && !Cub.watched("movie_6", grades, marks, seen); // Finish later: not yet
+        assert Cub.Mine.parse("{\"rows\":[],\"mylist\":[\"movie_603\",\"tv_1399\"]}").list().equals(java.util.Set.of("movie_603", "tv_1399"));
+        assert Cub.Mine.parse("{\"rows\":[]}").list().isEmpty() && Cub.Mine.parse("").list().isEmpty();
+        assert Cub.Mine.parse("{\"rows\":[],\"seen\":[\"movie_8\"]}").seen().equals(java.util.Set.of("movie_8"));
+        // a genre page hides what you watched
+        Cub.Mine watched = Cub.Mine.parse("{\"grades\":{\"movie_1\":\"skip\"},\"marks\":{\"movie_2\":\"viewed\",\"movie_3\":\"thrown\","
+            + "\"movie_4\":\"scheduled\"},\"seen\":[\"movie_5\"]}");
+        for (String k : new String[] {"movie_1", "movie_2", "movie_3", "movie_5"}) assert watched.watched(k) : k;
+        assert !watched.watched("movie_4") && !watched.watched("movie_6"); // Finish later: not yet
         assert Cub.grade("2")[1].equals("Loved") && Cub.grade("skip")[1].startsWith("Didn't watch") && Cub.grade(null) == null;
         // what Lampa's grades plugin keeps (grades-patch.js setGrade): a film's and a series' card by Lampa's fields
         org.json.JSONObject film = new org.json.JSONObject(Cub.gradeBody(
@@ -94,15 +94,15 @@ class CubTest {
         String json = "{\"rows\":[],\"next\":{\"tv_1\":\"S3 E5 · up next\"},\"coming\":[[\"2026-11-02\","
             + "[1,\"tv\",\"Foundation\",\"2021\",\"/p.jpg\",76,\"/b.jpg\"],\"S3 E5 · out with RU/UA audio\",\"out\",[3,5]],"
             + "[\"\",[2,\"movie\",\"Dune: Part Three\",\"2026\",\"\",0,\"\"],\"From My list\",\"film\"]]}";
-        assert Cub.next(json).equals(java.util.Map.of("tv_1", "S3 E5 · up next"));
+        assert Cub.Mine.parse(json).next().equals(java.util.Map.of("tv_1", "S3 E5 · up next"));
         assert java.util.Arrays.equals(Cub.episode("S3 E5 · up next"), new int[] {3, 5});
         assert java.util.Arrays.equals(Cub.episode("S12 E10 · 12m left"), new int[] {12, 10});
         assert Cub.episode(null) == null && Cub.episode("26 ep") == null;
-        List<Cub.Coming> c = Cub.coming(json);
+        List<Cub.Coming> c = Cub.Mine.parse(json).coming();
         assert c.size() == 2 && c.get(0).card().name().equals("Foundation") && c.get(0).state().equals("out") : c;
         assert c.get(0).season() == 3 && c.get(0).episode() == 5 : c;
         assert c.get(1).date().isEmpty() && c.get(1).card().type().equals("movie") && c.get(1).season() == 0 : c;
-        assert Cub.coming("{\"rows\":[]}").isEmpty(); // a /mine from before it
+        assert Cub.Mine.parse("{\"rows\":[]}").coming().isEmpty(); // a /mine from before it
         java.time.LocalDate mon = java.time.LocalDate.of(2026, 11, 2);
         assert java.util.Arrays.equals(Cub.day("2026-11-02", mon), new String[] {"Today", "Mon 2 Nov"});
         assert java.util.Arrays.equals(Cub.day("2026-11-03", mon), new String[] {"Tomorrow", "Tue 3 Nov"});
@@ -112,11 +112,11 @@ class CubTest {
     }
 
     void testNews() {
-        List<Cub.News> n = Cub.news("{\"news\":[[1762113600000,[93740,\"tv\",\"Foundation\",\"2021\",\"/f.jpg\",77,\"\"],"
-            + "\"Foundation · S3 E6\",\"Out in Russian\"]]}");
+        List<Cub.News> n = Cub.Mine.parse("{\"news\":[[1762113600000,[93740,\"tv\",\"Foundation\",\"2021\",\"/f.jpg\",77,\"\"],"
+            + "\"Foundation · S3 E6\",\"Out in Russian\"]]}").news();
         assert n.size() == 1 && n.get(0).card().id() == 93740 && n.get(0).head().equals("Foundation · S3 E6") : n;
         assert n.get(0).line().equals("Out in Russian") && n.get(0).t() == 1762113600000L;
-        assert Cub.news("{\"rows\":[]}").isEmpty() && Cub.news("").isEmpty();
+        assert Cub.Mine.parse("{\"rows\":[]}").news().isEmpty() && Cub.Mine.parse("").news().isEmpty();
         java.time.LocalDate mon = java.time.LocalDate.of(2026, 11, 2);
         java.util.function.Function<String, String> a = (at) -> Cub.ago(java.time.LocalDateTime.parse(at), mon);
         assert a.apply("2026-11-02T18:02").equals("18:02") && a.apply("2026-11-01T09:00").equals("Yesterday");
@@ -124,8 +124,8 @@ class CubTest {
     }
 
     void testFollows() {
-        assert Cub.follows("{\"follows\":[137427,505710]}").equals(java.util.Set.of(137427, 505710));
-        assert Cub.follows("{\"rows\":[]}").isEmpty() && Cub.follows("").isEmpty();
+        assert Cub.Mine.parse("{\"follows\":[137427,505710]}").follows().equals(java.util.Set.of(137427, 505710));
+        assert Cub.Mine.parse("{\"rows\":[]}").follows().isEmpty() && Cub.Mine.parse("").follows().isEmpty();
     }
 
     // /mine/history's rows, and their groups by day in the stick's time zone
@@ -161,5 +161,25 @@ class CubTest {
         assert Cub.day(Cub.date("2026-11-03"), today)[0].equals("Tomorrow");
         assert Cub.day((java.time.LocalDate) null, today)[0].equals("Later");
         assert Cub.date("") == null;
+    }
+
+    // One parse gives every part; a damaged or missing one is empty and the rest stay; the app's own changes copy it.
+    void testMineParsedOnce() {
+        Cub.Mine all = Cub.Mine.parse("{\"marks\":{\"tv_1\":\"viewed\"},\"grades\":{\"movie_1\":2},\"mylist\":[\"movie_1\"],"
+            + "\"follows\":[7],\"learned\":{},\"coming\":[[\"2026-11-02\",[1,\"tv\",\"F\",\"2021\",\"\",0,\"\"],\"x\",\"out\",[3,5]],"
+            + "[\"\",\"broken\"]],\"news\":[[1,[1,\"tv\",\"F\",\"2021\",\"\",0,\"\"],\"h\",\"l\"]]}");
+        assert all.marks().equals(java.util.Map.of("tv_1", "viewed")) && all.grades().get("movie_1").equals("2");
+        assert all.list().contains("movie_1") && all.follows().contains(7) && all.learnBound();
+        assert all.coming().size() == 1 && all.comingOut() == 1 : "a damaged row ends Coming up, what came before stays";
+        assert all.news().size() == 1 && all.seen().isEmpty() && all.fresh().isEmpty();
+        for (String none : new String[] {"", "not json", "[]", "{\"rows\":[]}"}) {
+            Cub.Mine m = Cub.Mine.parse(none);
+            assert m.equals(Cub.Mine.NONE) : none;
+            assert m.marks().isEmpty() && m.coming().isEmpty() && !m.learnBound() && m.comingOut() == 0;
+        }
+        Cub.Mine graded = all.withGrades(java.util.Map.of("movie_2", "0")).withList(java.util.Set.of()).withFollows(java.util.Set.of(8))
+            .withMarks(java.util.Map.of());
+        assert graded.grades().equals(java.util.Map.of("movie_2", "0")) && graded.list().isEmpty() && graded.follows().equals(java.util.Set.of(8));
+        assert graded.marks().isEmpty() && graded.coming().equals(all.coming()) && graded.learnBound() : "the rest is carried over";
     }
 }

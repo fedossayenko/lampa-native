@@ -261,8 +261,8 @@ final class SearchScreen extends Main.Part {
         List<Home.Card> cards = new ArrayList<>();
         for (Voice.Found f : a.results()) {
             String key = Timeline.card(f.card());
-            if (a.intent().equals("recommend") && (m.cubGrades.containsKey(key)
-                || "viewed".equals(m.cubMarks.get(key)) || "thrown".equals(m.cubMarks.get(key)))) continue;
+            if (a.intent().equals("recommend") && (m.cub.grades().containsKey(key)
+                || "viewed".equals(m.cub.marks().get(key)) || "thrown".equals(m.cub.marks().get(key)))) continue;
             String badge = Voice.badge(f.sure());
             if (badge != null) sure.put(key, badge);
             cards.add(f.card());

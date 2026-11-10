@@ -168,7 +168,7 @@ final class Discover extends Main.Part {
 
     void add(List<Home.Card> cards) {
         for (Home.Card c : cards) {
-            if (hide && Cub.watched(Timeline.card(c), m.cubGrades, m.cubMarks, m.cubSeen)) continue;
+            if (hide && m.cub.watched(Timeline.card(c))) continue;
             if (last == null || last.getChildCount() == 5) {
                 last = m.line();
                 LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);

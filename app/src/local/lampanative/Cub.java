@@ -77,50 +77,6 @@ final class Cub {
         {"viewed", "Watched it", "Out of Continue browsing"},
     };
 
-    // /mine's marks: "tv_93740" → "scheduled", one a film (Lampa's).
-    static Map<String, String> marks(String json) {
-        return strings(json, "marks");
-    }
-
-    // /mine's grades: "movie_603" → "2" (a GRADES' first item).
-    static Map<String, String> grades(String json) {
-        return strings(json, "grades");
-    }
-
-    // /mine's new episodes: "tv_93740" → "S3 E5", out with the app's audio languages since you watched the one before.
-    static Map<String, String> fresh(String json) {
-        return strings(json, "new");
-    }
-
-    // /mine's "left": a started film's seconds left, "movie_603" → "4000" (its poster says it).
-    static Map<String, String> left(String json) {
-        return strings(json, "left");
-    }
-
-    // /mine's "percent": how far in a started film is, "movie_603" → "43" (its Continue tile's bar).
-    static Map<String, String> percent(String json) {
-        return strings(json, "percent");
-    }
-
-    // /mine's "learned": the percent of a film understood, "movie_603" → "93" (its page's Learn button says it).
-    static Map<String, String> learned(String json) {
-        return strings(json, "learned");
-    }
-
-    // Whether /mine says the learn extension is there (it sends "learned", even empty): only then the film page asks it.
-    static boolean learnBound(String json) {
-        try {
-            return new JSONObject(json).optJSONObject("learned") != null;
-        } catch (JSONException e) {
-            return false;
-        }
-    }
-
-    // /mine's "next": a series' episode to go on with, "tv_1399" → "S3 E5 · up next" (its Continue tile's line).
-    static Map<String, String> next(String json) {
-        return strings(json, "next");
-    }
-
     // "S3 E5 · up next" → {3, 5} (≡ on a series opens its episodes there); null: none.
     private static final java.util.regex.Pattern EPISODE = java.util.regex.Pattern.compile("^S(\\d+) E(\\d+)");
 
@@ -132,23 +88,6 @@ final class Cub {
     /** Coming up's line: a series' next episode or a film from My list; date "" = later or no date yet; state: out,
      * waiting (aired, not in RU/UA yet), airs, film; a series' episode (0, 0: a film, or a /mine from before it). */
     record Coming(String date, Home.Card card, String what, String state, int season, int episode) {}
-
-    // /mine's "coming", by date.
-    static List<Coming> coming(String json) {
-        List<Coming> out = new ArrayList<>();
-        try {
-            JSONArray a = new JSONObject(json).optJSONArray("coming");
-            for (int i = 0; a != null && i < a.length(); i++) {
-                JSONArray c = a.getJSONArray(i);
-                JSONArray e = c.optJSONArray(4);
-                out.add(new Coming(c.getString(0), Home.card(c.getJSONArray(1)), c.getString(2), c.getString(3),
-                    e == null ? 0 : e.getInt(0), e == null ? 0 : e.getInt(1)));
-            }
-        } catch (JSONException e) {
-            // none
-        }
-        return out;
-    }
 
     // A day as the worker sends TMDB's ("2026-11-10"); null for "" and for anything else ("2026-11", text): a date TMDB
     // gave in another shape is no date yet, not an exception on the UI thread.
@@ -212,20 +151,6 @@ final class Cub {
      * a person's name) and line ("Out in Russian", "New film: Dune: Part Three · 2026"). */
     record News(long t, Home.Card card, String head, String line) {}
 
-    static List<News> news(String json) {
-        List<News> out = new ArrayList<>();
-        try {
-            JSONArray a = new JSONObject(json).optJSONArray("news");
-            for (int i = 0; a != null && i < a.length(); i++) {
-                JSONArray n = a.getJSONArray(i);
-                out.add(new News(n.getLong(0), Home.card(n.getJSONArray(1)), n.getString(2), n.getString(3)));
-            }
-        } catch (JSONException e) {
-            // none
-        }
-        return out;
-    }
-
     // When a What's new item came: "18:02" today, "Yesterday", "Friday" (the five days before), else "12 Oct".
     static String ago(LocalDateTime at, LocalDate today) {
         LocalDate d = at.toLocalDate();
@@ -240,58 +165,129 @@ final class Cub {
         return "skip".equals(g) ? null : grade(g);
     }
 
-    // /mine's "follows": the people you follow, TMDB's person ids (their pages say Following).
-    static Set<Integer> follows(String json) {
-        Set<Integer> out = new HashSet<>();
-        try {
-            JSONArray a = new JSONObject(json).optJSONArray("follows");
-            for (int i = 0; a != null && i < a.length(); i++) out.add(a.getInt(i));
-        } catch (JSONException e) {
-            // none
-        }
-        return out;
-    }
+    /**
+     * What /mine says about the account, read once (the answer is parsed here and nowhere else): the marks of films
+     * ("tv_93740" → "scheduled", Lampa's), the grades ("movie_603" → "2", a GRADES' first item), the series with a new
+     * episode out in the app's audio languages ("tv_93740" → "S3 E5"), a started film's seconds left ("movie_603" →
+     * "4000", its poster says it) or a series' "26 ep", how far in a started film is ("43", its Continue tile's bar),
+     * the percent of a film understood ("93", its page's Learn button), whether the learn extension is there (/mine
+     * sends "learned", even empty: only then the film page asks it), a series' episode to go on with ("tv_1399" → "S3 E5
+     * · up next"), Coming up by date, what My list holds (Lampa's Bookmarks and Later), the films in the history
+     * played to 90 %, the people you follow (TMDB's person ids) and What's new, newest first. A part that is missing or
+     * damaged is empty; the app changes a grade, a mark, My list or a follow itself once CUB took it (with...()).
+     */
+    record Mine(Map<String, String> marks, Map<String, String> grades, Map<String, String> fresh,
+                Map<String, String> next, Map<String, String> left, Map<String, String> percent,
+                Map<String, String> learned, boolean learnBound, List<Coming> coming, Set<String> list,
+                Set<String> seen, Set<Integer> follows, List<News> news) {
+        static final Mine NONE = parse("");
 
-    // /mine's "mylist": what My list holds (Lampa's Bookmarks and Later), "movie_603" each.
-    static Set<String> listed(String json) {
-        return keys(json, "mylist");
-    }
-
-    // /mine's "seen": the films in the history played to 90 %, graded or not.
-    static Set<String> seen(String json) {
-        return keys(json, "seen");
-    }
-
-    // A genre page hides what you watched: graded (any grade, "not mine" too), marked Watched it or Not interested,
-    // or a film played to 90 %.
-    static boolean watched(String card, Map<String, String> grades, Map<String, String> marks, Set<String> seen) {
-        String m = marks.get(card);
-        return grades.containsKey(card) || "viewed".equals(m) || "thrown".equals(m) || seen.contains(card);
-    }
-
-    private static Set<String> keys(String json, String name) {
-        Set<String> out = new HashSet<>();
-        try {
-            JSONArray a = new JSONObject(json).optJSONArray(name);
-            for (int i = 0; a != null && i < a.length(); i++) out.add(a.getString(i));
-        } catch (JSONException e) {
-            // none
-        }
-        return out;
-    }
-
-    private static Map<String, String> strings(String json, String key) {
-        Map<String, String> m = new HashMap<>();
-        try {
-            JSONObject o = new JSONObject(json).optJSONObject(key);
-            if (o != null) for (Iterator<String> i = o.keys(); i.hasNext(); ) {
-                String k = i.next();
-                m.put(k, String.valueOf(o.get(k)));
+        static Mine parse(String json) {
+            JSONObject o;
+            try {
+                o = new JSONObject(json);
+            } catch (JSONException e) {
+                o = new JSONObject(); // not signed in, or no answer yet: nothing of yours
             }
-        } catch (JSONException e) {
-            // none
+            return new Mine(strings(o, "marks"), strings(o, "grades"), strings(o, "new"), strings(o, "next"),
+                strings(o, "left"), strings(o, "percent"), strings(o, "learned"), o.optJSONObject("learned") != null,
+                coming(o), keys(o, "mylist"), keys(o, "seen"), follows(o), news(o));
         }
-        return m;
+
+        Mine withMarks(Map<String, String> to) {
+            return new Mine(to, grades, fresh, next, left, percent, learned, learnBound, coming, list, seen, follows, news);
+        }
+
+        Mine withGrades(Map<String, String> to) {
+            return new Mine(marks, to, fresh, next, left, percent, learned, learnBound, coming, list, seen, follows, news);
+        }
+
+        Mine withList(Set<String> to) {
+            return new Mine(marks, grades, fresh, next, left, percent, learned, learnBound, coming, to, seen, follows, news);
+        }
+
+        Mine withFollows(Set<Integer> to) {
+            return new Mine(marks, grades, fresh, next, left, percent, learned, learnBound, coming, list, seen, to, news);
+        }
+
+        // Coming up's "Out" count: episodes out with your audio.
+        long comingOut() {
+            return coming.stream().filter(x -> x.state().equals("out")).count();
+        }
+
+        // A genre page hides what you watched: graded (any grade, "not mine" too), marked Watched it or Not interested,
+        // or a film played to 90 %.
+        boolean watched(String card) {
+            String m = marks.get(card);
+            return grades.containsKey(card) || "viewed".equals(m) || "thrown".equals(m) || seen.contains(card);
+        }
+
+        // "coming", by date.
+        private static List<Coming> coming(JSONObject o) {
+            List<Coming> out = new ArrayList<>();
+            try {
+                JSONArray a = o.optJSONArray("coming");
+                for (int i = 0; a != null && i < a.length(); i++) {
+                    JSONArray c = a.getJSONArray(i);
+                    JSONArray e = c.optJSONArray(4);
+                    out.add(new Coming(c.getString(0), Home.card(c.getJSONArray(1)), c.getString(2), c.getString(3),
+                        e == null ? 0 : e.getInt(0), e == null ? 0 : e.getInt(1)));
+                }
+            } catch (JSONException e) {
+                // what came before
+            }
+            return out;
+        }
+
+        private static List<News> news(JSONObject o) {
+            List<News> out = new ArrayList<>();
+            try {
+                JSONArray a = o.optJSONArray("news");
+                for (int i = 0; a != null && i < a.length(); i++) {
+                    JSONArray n = a.getJSONArray(i);
+                    out.add(new News(n.getLong(0), Home.card(n.getJSONArray(1)), n.getString(2), n.getString(3)));
+                }
+            } catch (JSONException e) {
+                // what came before
+            }
+            return out;
+        }
+
+        private static Set<Integer> follows(JSONObject o) {
+            Set<Integer> out = new HashSet<>();
+            try {
+                JSONArray a = o.optJSONArray("follows");
+                for (int i = 0; a != null && i < a.length(); i++) out.add(a.getInt(i));
+            } catch (JSONException e) {
+                // what came before
+            }
+            return out;
+        }
+
+        private static Set<String> keys(JSONObject o, String name) {
+            Set<String> out = new HashSet<>();
+            try {
+                JSONArray a = o.optJSONArray(name);
+                for (int i = 0; a != null && i < a.length(); i++) out.add(a.getString(i));
+            } catch (JSONException e) {
+                // what came before
+            }
+            return out;
+        }
+
+        private static Map<String, String> strings(JSONObject o, String key) {
+            Map<String, String> m = new HashMap<>();
+            try {
+                JSONObject v = o.optJSONObject(key);
+                if (v != null) for (Iterator<String> i = v.keys(); i.hasNext(); ) {
+                    String k = i.next();
+                    m.put(k, String.valueOf(v.get(k)));
+                }
+            } catch (JSONException e) {
+                // what came before
+            }
+            return m;
+        }
     }
 
     // Lampa's grades (the torbox-en plugin's grades-patch.js; the worker's /grades shares them per account and

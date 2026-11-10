@@ -148,19 +148,7 @@ public class Main extends Activity {
     LinearLayout mine;
     final List<ImageView> minePosters = new ArrayList<>();
     String mineShown = "";
-    Map<String, String> cubMarks = Map.of(); // the films' marks, from /mine
-    Map<String, String> cubGrades = Map.of(); // and their grades
-    Map<String, String> cubLeft = Map.of(); // started films' seconds left, started series' "26 ep"
-    Map<String, String> cubLearned = Map.of(); // films' learned percent (the Learn button)
-    boolean learnBound; // /mine says the learn extension is there
-    Map<String, String> cubPercent = Map.of(); // started films' percent watched: a Continue tile's bar
-    Map<String, String> cubNew = Map.of(); // series with a new episode out: "S3 E5"
-    Map<String, String> cubNext = Map.of(); // started series' episode to go on with: "S3 E5 · up next"
-    List<Cub.Coming> cubComing = List.of(); // Coming up's
-    Set<String> cubList = Set.of(); // what My list holds
-    Set<String> cubSeen = Set.of(); // films played to 90 %: a genre page hides them
-    Set<Integer> cubFollows = Set.of(); // the people you follow (TMDB's person ids)
-    List<Cub.News> cubNews = List.of(); // What's new, newest first
+    Cub.Mine cub = Cub.Mine.NONE; // what /mine says: marks, grades, time left, Coming up, My list, follows, What's new
     TextView bellTab; // Home's "New 3"
     View firstCard; // the card Home focuses at start: still focused when /mine comes, it moves into your rows
     static final String HISTORY = "history"; // the History tile's tag (Continue browsing's last)
@@ -461,21 +449,8 @@ public class Main extends Activity {
             return;
         }
         mineShown = body;
-        cubMarks = Cub.marks(body);
-        cubGrades = Cub.grades(body);
-        cubNew = Cub.fresh(body);
-        cubNext = Cub.next(body);
-        cubComing = Cub.coming(body);
-        long out = cubComing.stream().filter(x -> x.state().equals("out")).count();
-        comingTab.setText(comingLabel(out));
-        cubLeft = Cub.left(body);
-        cubPercent = Cub.percent(body);
-        cubLearned = Cub.learned(body);
-        learnBound = Cub.learnBound(body);
-        cubList = Cub.listed(body);
-        cubSeen = Cub.seen(body);
-        cubFollows = Cub.follows(body);
-        cubNews = Cub.news(body);
+        cub = Cub.Mine.parse(body);
+        comingTab.setText(comingLabel(cub.comingOut()));
         bell(bellTab);
         View old = page != null ? from : overlay != null ? overlayFrom : scroll.findFocus();
         Object was = old != null && inside(old, mine) ? old.getTag() : null;
@@ -661,7 +636,7 @@ public class Main extends Activity {
         String key = Timeline.card(c);
         int percent;
         try {
-            percent = Integer.parseInt(cubPercent.getOrDefault(key, "0"));
+            percent = Integer.parseInt(cub.percent().getOrDefault(key, "0"));
         } catch (NumberFormatException e) {
             percent = 0;
         }
@@ -670,9 +645,9 @@ public class Main extends Activity {
         posters.add(picture);
         FrameLayout frame = new FrameLayout(this);
         frame.addView(picture, w, h);
-        String fresh = cubNew.get(key);
+        String fresh = cub.fresh().get(key);
         if (fresh != null) frame.addView(chip(text("New · " + fresh, 15, 0xff111111), 0xff21d07a), badge(Gravity.TOP | Gravity.START));
-        String left = Timeline.posterLeft(cubLeft.get(key)), next = cubNext.get(key); // a series: "S3 E5 · up next"
+        String left = Timeline.posterLeft(cub.left().get(key)), next = cub.next().get(key); // a series: "S3 E5 · up next"
         return homeCard(c, tile(frame, w, h, 12 * dp, c.name(), next != null ? next : left != null ? left : c.year()),
             rowTitle);
     }
@@ -723,15 +698,15 @@ public class Main extends Activity {
     void badges(FrameLayout frame, Home.Card c, String sure) {
         frame.removeViews(1, frame.getChildCount() - 1);
         String key = Timeline.card(c);
-        String fresh = cubNew.get(key);
-        String[] grade = fresh == null && sure == null ? Cub.posterGrade(cubGrades.get(key)) : null;
+        String fresh = cub.fresh().get(key);
+        String[] grade = fresh == null && sure == null ? Cub.posterGrade(cub.grades().get(key)) : null;
         if (fresh != null || sure != null || grade != null) {
             TextView badge = fresh != null ? text("New · " + fresh, 15, 0xff111111)
                 : sure != null ? text(sure, 15, Color.WHITE)
                 : text(grade[1], 15, Color.parseColor(grade[2])); // GRADES' own colors (CubTest checks each)
             frame.addView(chip(badge, fresh != null ? 0xff21d07a : 0xcc000000), badge(Gravity.TOP | Gravity.START));
         }
-        String left = Timeline.posterLeft(cubLeft.get(key));
+        String left = Timeline.posterLeft(cub.left().get(key));
         if (left != null) {
             frame.addView(chip(text(left, 15, Color.WHITE), 0xcc000000), badge(Gravity.TOP | Gravity.END));
         }
@@ -974,7 +949,7 @@ public class Main extends Activity {
                 buttons.getChildCount() > 0 ? spaced() : new LinearLayout.LayoutParams(-2, -2));
         }
         // the page's top (alive() knows it), not column: given column, the status's answer was always dropped
-        if (loaded && learnBound && !series && !f.imdb().isEmpty()) {
+        if (loaded && cub.learnBound() && !series && !f.imdb().isEmpty()) {
             learnButton(f, c, buttons, (View) column.getParent());
         }
         // Story so far: a series with episodes watched before the one Continue goes on with. Its tag shows it
@@ -1050,8 +1025,8 @@ public class Main extends Activity {
                 () -> parts.hasNext() ? filmCard(parts.next(), pics) : null, 7); // 5.5 fit; Bond has 27
         }
         // More like this: TMDB's recommendations of it, without what was graded or watched already
-        Iterator<Home.Card> similar = f.similar().stream().filter(x -> !cubGrades.containsKey(Timeline.card(x))
-            && !cubSeen.contains(Timeline.card(x))).iterator();
+        Iterator<Home.Card> similar = f.similar().stream().filter(x -> !cub.grades().containsKey(Timeline.card(x))
+            && !cub.seen().contains(Timeline.card(x))).iterator();
         if (similar.hasNext()) {
             addRows(strip(column, text("More like this", 22, Color.WHITE), cardW + gap),
                 () -> similar.hasNext() ? filmCard(similar.next(), pics) : null, 7);
@@ -1148,18 +1123,18 @@ public class Main extends Activity {
         TextView b = button("", null);
         b.setMinHeight(dp(44));
         b.setTextSize(18);
-        Runnable label = () -> b.setText(cubFollows.contains(a.id()) ? "✓  Following" : "Follow");
+        Runnable label = () -> b.setText(cub.follows().contains(a.id()) ? "✓  Following" : "Follow");
         label.run();
         b.setOnClickListener(v -> {
-            boolean on = !cubFollows.contains(a.id());
+            boolean on = !cub.follows().contains(a.id());
             Cub.Account acc = account();
             b.setText(on ? "Following…" : "Unfollowing…");
             load(null, "follow", () -> post("/mine/" + (on ? "follow/" : "unfollow/") + a.id(), acc, new byte[0], "text/plain"), done -> {
                 if (done == 204) {
-                    Set<Integer> f = new HashSet<>(cubFollows);
+                    Set<Integer> f = new HashSet<>(cub.follows());
                     if (on) f.add(a.id());
                     else f.remove(a.id());
-                    cubFollows = f;
+                    cub = cub.withFollows(f);
                     loadMine(); // Coming up: their films
                 } else {
                     Toast.makeText(this, "Didn't save. Try again.", Toast.LENGTH_LONG).show();
@@ -1361,7 +1336,7 @@ public class Main extends Activity {
         String key = Timeline.card(c);
         TextView b = button("Learn", null);
         b.setVisibility(View.GONE);
-        Runnable draw = () -> b.setText(Learn.label(state[0], cubLearned.get(key)));
+        Runnable draw = () -> b.setText(Learn.label(state[0], cub.learned().get(key)));
         b.setOnClickListener(v -> {
             boolean start = state[0] == null || state[0].askable();
             if (busy[0]) return;
@@ -1439,7 +1414,7 @@ public class Main extends Activity {
             b.setVisibility(to == null ? View.GONE : View.VISIBLE);
             if (hides && to == null) watch.setVisibility(View.VISIBLE);
             if (to == null) return;
-            String left = series ? null : Timeline.posterLeft(cubLeft.get(Timeline.card(c)));
+            String left = series ? null : Timeline.posterLeft(cub.left().get(Timeline.card(c)));
             b.setText(series ? "▶  Continue S" + to[0] + " E" + to[1] : left == null ? "▶  Continue" : "▶  Continue · " + left);
             if (!was && watch.hasFocus()) b.requestFocus(); // shown now: the one to press
             if (hides) watch.setVisibility(View.GONE);
@@ -1460,10 +1435,10 @@ public class Main extends Activity {
 
     // The ⋯ sheet: My list (withList: from the film page; ≡ on a poster has its own row), then the marks.
     void marksSheet(Home.Card c, boolean withList) {
-        String now = cubMarks.get(Timeline.card(c)), name = Cub.markName(now);
+        String now = cub.marks().get(Timeline.card(c)), name = Cub.markName(now);
         LinearLayout list = sheet(c.name(), name == null ? null : "Marked: " + name, null);
         if (withList) {
-            boolean listed = cubList.contains(Timeline.card(c));
+            boolean listed = cub.list().contains(Timeline.card(c));
             list.addView(sheetRow(listed ? "Remove from My list" : "Add to My list", "Lampa's Bookmarks, its Later too",
                 null, r -> toggleList(c)));
             list.addView(divider());
@@ -1476,12 +1451,12 @@ public class Main extends Activity {
     // Add to (Remove from) My list: Lampa's Bookmarks (its Later too when removing).
     void toggleList(Home.Card c) {
         String key = Timeline.card(c);
-        boolean listed = cubList.contains(key);
+        boolean listed = cub.list().contains(key);
         postMine(c, listed ? "unbook" : "book", () -> {
-            Set<String> l = new HashSet<>(cubList);
+            Set<String> l = new HashSet<>(cub.list());
             if (listed) l.remove(key);
             else l.add(key);
-            cubList = l;
+            cub = cub.withList(l);
         });
     }
 
@@ -1489,7 +1464,7 @@ public class Main extends Activity {
     // grade bar under the buttons. A graded film leaves Home's Rate what you watched.
     TextView gradeButton(Home.Card c, Film f) {
         TextView b = button("★", null);
-        paintGrade(b, cubGrades.get(Timeline.card(c)));
+        paintGrade(b, cub.grades().get(Timeline.card(c)));
         Consumer<String> under = asked -> {
             View buttons = (View) b.getParent();
             int[] p = new int[2];
@@ -1540,7 +1515,7 @@ public class Main extends Activity {
     //: "How was it?" over the pills and Later after them.
     void gradeBar(Home.Card c, String original, int x, int y, Consumer<String> saved, Runnable open,
                           String asked) {
-        String now = cubGrades.get(Timeline.card(c));
+        String now = cub.grades().get(Timeline.card(c));
         LinearLayout pills = trapped();
         TextView hint = text("", 15, 0xffdddddd);
         String after = open != null ? ". Graded, " + c.name() + " leaves this row." : "";
@@ -1624,10 +1599,10 @@ public class Main extends Activity {
                 Toast.makeText(this, "The grade wasn't saved. Try again.", Toast.LENGTH_LONG).show();
                 return;
             }
-            Map<String, String> m = new HashMap<>(cubGrades);
+            Map<String, String> m = new HashMap<>(cub.grades());
             if (g == null) m.remove(Timeline.card(c));
             else m.put(Timeline.card(c), g);
-            cubGrades = m;
+            cub = cub.withGrades(m);
             if (overlay == panel) closeOverlay(); // not Back meanwhile
             saved.accept(g);
             loadMine(); // Home's Rate what you watched
@@ -1636,10 +1611,10 @@ public class Main extends Activity {
 
     void setMark(Home.Card c, String mark) {
         postMine(c, mark, () -> {
-            Map<String, String> m = new HashMap<>(cubMarks);
+            Map<String, String> m = new HashMap<>(cub.marks());
             if (mark.equals("none")) m.remove(Timeline.card(c));
             else m.put(Timeline.card(c), mark);
-            cubMarks = m;
+            cub = cub.withMarks(m);
         });
     }
 
@@ -2105,7 +2080,7 @@ public class Main extends Activity {
         marks.put(p.key(), new Timeline.Point((int) t[0], (int) t[1], (int) t[2]));
         played.add(p.key());
         remark(); // the episode's row under the sources
-        if (p.season() == 0 && t[2] >= 90 && !cubGrades.containsKey(p.card()) && account() != null) {
+        if (p.season() == 0 && t[2] >= 90 && !cub.grades().containsKey(p.card()) && account() != null) {
             askGradeFor = p.card();
             askGrade();
         }
@@ -2219,7 +2194,7 @@ public class Main extends Activity {
         openPage(from);
         LinearLayout list = tabPage("Coming up");
         String audio = audioNames();
-        list.addView(text(cubComing.isEmpty() ? account() == null ? "Sign in to CUB in Settings: what's coming comes "
+        list.addView(text(cub.coming().isEmpty() ? account() == null ? "Sign in to CUB in Settings: what's coming comes "
             + "from your history." : "Nothing new for the series you watch in the next four weeks." : "Next episodes of "
             + "the series you watch, and films from My list, for the next four weeks. The days are when an episode airs"
             + (audio == null ? "; Out once a release of it is." : " in English; " + audio + " audio usually follows a few "
@@ -2228,7 +2203,7 @@ public class Main extends Activity {
         LinearLayout day = null;
         String at = null;
         View first = null;
-        for (Cub.Coming x : cubComing) {
+        for (Cub.Coming x : cub.coming()) {
             if (!x.date().equals(at)) { // a day: its name and date on the left, its rows on the right
                 at = x.date();
                 String[] d = Cub.day(at, today);
@@ -2367,7 +2342,7 @@ public class Main extends Activity {
         } else if (left != null) {
             s.append(" · ").append(left);
         }
-        String[] g = Cub.posterGrade(cubGrades.get(Timeline.card(p.card())));
+        String[] g = Cub.posterGrade(cub.grades().get(Timeline.card(p.card())));
         if (g != null) {
             s.append(" · ");
             int from = s.length();
@@ -2609,7 +2584,7 @@ public class Main extends Activity {
         Sources.Source[] best = new Sources.Source[1];
         TextView playLine = null, sourcesLine = null;
         if (series) {
-            String next = cubNext.get(key);
+            String next = cub.next().get(key);
             list.addView(sheetRow("▶  Episodes", next, null, v -> {
                 if (film[0] == null) return;
                 if (!film[0].watchable(true)) { // no season to open: Episodes shows the first
@@ -2649,16 +2624,16 @@ public class Main extends Activity {
         }));
         if (account() != null) {
             list.addView(divider());
-            list.addView(sheetRow(cubList.contains(key) ? "Remove from My list" : "Add to My list", null, null,
+            list.addView(sheetRow(cub.list().contains(key) ? "Remove from My list" : "Add to My list", null, null,
                 v -> toggleList(c)));
-            String[] g = Cub.grade(cubGrades.get(key));
+            String[] g = Cub.grade(cub.grades().get(key));
             SpannableStringBuilder star = new SpannableStringBuilder("★  Your grade");
             if (g != null) star.setSpan(new Tint(Color.parseColor(g[2]), 0xff111111), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             list.addView(sheetRow(star, null, g == null ? "None" : g[1], v -> {
                 rateBar(c, card, false);
                 overlayBack = () -> quick(c, card);
             }));
-            String m = Cub.markName(cubMarks.get(key));
+            String m = Cub.markName(cub.marks().get(key));
             list.addView(sheetRow("Mark", null, m == null ? "None" : m, v -> {
                 marksSheet(c, false);
                 overlayBack = () -> quick(c, card);
@@ -3311,7 +3286,7 @@ public class Main extends Activity {
         tabs.setBackground(shape(pill, 0x14ffffff, 0x26ffffff));
         for (String name : List.of("Home", "Search", "Coming up", "Settings")) {
             TextView t = tab(name, name.equals(here), v -> goTab(name, v));
-            if (name.equals("Coming up")) t.setText(comingLabel(cubComing.stream().filter(x -> x.state().equals("out")).count()));
+            if (name.equals("Coming up")) t.setText(comingLabel(cub.comingOut()));
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
             if (tabs.getChildCount() > 0) lp.setMarginStart(p4);
             tabs.addView(t, lp);
@@ -3341,14 +3316,14 @@ public class Main extends Activity {
     void bell(TextView b) {
         if (b == null) return;
         long seen = settings().getLong("bell_seen", 0);
-        long fresh = cubNews.stream().filter(n -> n.t() > seen).count();
+        long fresh = cub.news().stream().filter(n -> n.t() > seen).count();
         SpannableStringBuilder s = new SpannableStringBuilder("New");
         if (fresh > 0) {
             s.append("  ").append(String.valueOf(fresh));
             s.setSpan(new Tint(Home.GREEN, 0xff0a7d3e), 5, s.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         }
         b.setText(s);
-        b.setVisibility(cubNews.isEmpty() ? View.GONE : View.VISIBLE);
+        b.setVisibility(cub.news().isEmpty() ? View.GONE : View.VISIBLE);
     }
 
     // What's new: episodes out in your audio languages and films the people you follow announced, newest first; the
@@ -3356,13 +3331,13 @@ public class Main extends Activity {
     // opens the film or series (the list comes with /mine: nothing runs in the background).
     void bellSheet(TextView from) {
         long seen = settings().getLong("bell_seen", 0);
-        long fresh = cubNews.stream().filter(n -> n.t() > seen).count();
+        long fresh = cub.news().stream().filter(n -> n.t() > seen).count();
         LinearLayout list = sheet("What's new", fresh == 0 ? "Nothing since you last looked" : fresh + " since you last "
             + "looked", null);
         LocalDate today = LocalDate.now();
         ZoneId zone = ZoneId.systemDefault();
         boolean ruled = false;
-        for (Cub.News n : cubNews) {
+        for (Cub.News n : cub.news()) {
             boolean old = n.t() <= seen;
             if (old && !ruled && fresh > 0) {
                 list.addView(divider());
