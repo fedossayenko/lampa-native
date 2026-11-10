@@ -140,7 +140,7 @@ final class Episodes extends Main.Part {
     // The design's episode row: its still, "8 · Better Call Saul", "47m · Watching · 19 min left", a line of its
     // overview.
     private LinearLayout episodeRow(Film.Season s, int episode) {
-        LinearLayout r = m.ux.row("", "", "", v -> m.showSources(f, c, s.number(), episode, null, false));
+        LinearLayout r = m.ux.row("", "", "", v -> m.sourcesScreen.showSources(f, c, s.number(), episode, null, false));
         r.removeViewAt(1); // no end label: the still goes first instead
         Posters.Pic still = (Posters.Pic) m.pix.picture(null, stills, 10 * m.dp);
         still.onRow = true; // dark corners on the white focused row else (software drawing)

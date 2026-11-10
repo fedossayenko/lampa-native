@@ -161,7 +161,7 @@ final class FilmPage extends Main.Part {
             TextView watch = m.ux.button(picks ? "▶  Play" : "▶  Watch", v -> {
                 if (series) new Episodes(m, f, c, Timeline.resume(f.episodes(), (s, e) -> m.marks.get(Timeline.key(f, s, e)))).show();
                 else if (best[0] != null) m.playback.play(f, c, 0, 0, best[0].hash(), best[0].fileIdx(), best[0].title(), Ui.levelOf(column));
-                else m.showSources(f, c, 0, 0, null, false); // none cached, or not read yet
+                else m.sourcesScreen.showSources(f, c, 0, 0, null, false); // none cached, or not read yet
             });
             watch.setOnFocusChangeListener((v, focused) -> { // up from the rows: the whole top again
                 if (focused) ((ScrollView) column.getParent()).scrollTo(0, 0);
@@ -171,7 +171,7 @@ final class FilmPage extends Main.Part {
             before.setMarginEnd(m.dp(12)); // its own gap: hidden, Watch starts the row
             buttons.addView(cont, before); // first, as the design: the one to press
             buttons.addView(watch);
-            if (picks) buttons.addView(m.ux.button("Sources", v -> m.showSources(f, c, 0, 0, null, false)), m.ux.spaced());
+            if (picks) buttons.addView(m.ux.button("Sources", v -> m.sourcesScreen.showSources(f, c, 0, 0, null, false)), m.ux.spaced());
             (cont.getVisibility() == View.VISIBLE ? cont : watch).requestFocus(); // marks known: Continue
             if (picks && loaded) pickSource(f, best, plays, Ui.levelOf(column));
         }
@@ -805,7 +805,7 @@ final class FilmPage extends Main.Part {
 
     // A film level or a source list saves its film (and the list's season, episode); other lists save nothing.
     static boolean where(View level, Bundle out) {
-        if (level.getTag() instanceof Main.SourceList s) {
+        if (level.getTag() instanceof SourcesScreen.SourceList s) {
             out.putStringArray("film", s.c().save());
             out.putIntArray("sources", new int[] {s.season(), s.episode()});
             return true;
@@ -832,6 +832,6 @@ final class FilmPage extends Main.Part {
             }
             new Episodes(m, f, c, new int[] {season, episode}).show();
         }
-        m.showSources(f, c, season, episode, prefer, autoplay);
+        m.sourcesScreen.showSources(f, c, season, episode, prefer, autoplay);
     }
 }
