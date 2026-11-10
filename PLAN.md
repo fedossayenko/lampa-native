@@ -108,7 +108,7 @@ keeps only the posters on the screen (to measure). Background (DDD playing) matt
 
 Keep plain Java Views. A web engine alone is 59 MB in the background; Compose, Flutter and Leanback pay the same
 ~43 MB GPU and window-surface floor plus more code and runtime; an NDK UI keeps that floor and needs its own text
-shaping; custom-drawn rows would only save Java heap, which is 3–6 MB (log rows 1, 51). Re-checked at the end of every step.
+shaping; custom-drawn rows would only save Java heap, which is 3–6 MB (log rows 7, 51). Re-checked at the end of every step.
 
 ## Steps
 
