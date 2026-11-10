@@ -77,8 +77,8 @@ keeps only the posters on the screen (to measure). Background (DDD playing) matt
 
 - **TDD.** Logic lives in classes that import nothing from `android.*` (`Home`, `Layout`, …): write the failing
   test in `app/test` first, then the code. Those tests run on the Mac's JVM in milliseconds
-  (`tools/TestRunner.java`; `org.json` pinned by checksum). `Main.java` (3.7k lines) is the view glue and the one
-  file that outgrew that: logic found in it moves out to a tested class when the code around it is changed.
+  (`tools/TestRunner.java`; `org.json` pinned by checksum). `Main.java` (1.3k lines; the screens are `Main.Part` classes beside it, 2000 lines a file at most) is the view glue and the
+  code that outgrows that: logic found in it moves out to a tested class when the code around it is changed.
 - **Java 21**: records, sealed types, pattern `switch`, text blocks. Checked through d8 on the stick
   (2026-10-31). It is compile-time only, so it adds no library and no runtime cost.
 - **Every commit** (`.githooks/pre-commit` → `tools/check.sh`, a few seconds), run on the staged files, not the
@@ -108,7 +108,7 @@ keeps only the posters on the screen (to measure). Background (DDD playing) matt
 
 Keep plain Java Views. A web engine alone is 59 MB in the background; Compose, Flutter and Leanback pay the same
 ~43 MB GPU and window-surface floor plus more code and runtime; an NDK UI keeps that floor and needs its own text
-shaping; custom-drawn rows would only save Java heap, which is 3 MB. Re-checked at the end of every step.
+shaping; custom-drawn rows would only save Java heap, which is 3–6 MB (log rows 1, 51). Re-checked at the end of every step.
 
 ## Steps
 
@@ -177,10 +177,10 @@ shaping; custom-drawn rows would only save Java heap, which is 3 MB. Re-checked 
    its own EGL context) is lighter than with RGB_565, not heavier: 58–63 MB against 84–87 MB (log).
    Done on the stick: play, Back, the same film resumes, Lampa shows it. **Open: the background is 51 MB, over
    the ≤ 40 MB budget** (GPU context kept until Android trims; 33 MB after the trim in step 1). Fix to try before
-   step 5: software rendering A/B (no GPU context at all: 24 MB): the default since 2026-11-01. Done on the stick too: Russian
+   step 5: software rendering A/B (no GPU context at all: 24 MB): the code's default since 2026-11-01 (the user's own stick runs GPU since: log row 52). Done on the stick too: Russian
    audio picked, `am kill` during playback → Back lands on the sources (log).
 4b. **Settings** (user, 2026-10-31: choose the drawing and test it). Home's Settings button (up from the first
-   row) or ≡ anywhere. Drawing: Software (default since 2026-11-01: the user found it smooth enough) or GPU; the manifest draws in software and Main switches the
+   row) or ≡ anywhere. Drawing: Software (the code's default since 2026-11-01; the user's own stick is set to GPU) or GPU; the manifest draws in software and Main switches the
    GPU on (Android can switch a window's GPU on, never off); a switch restarts the process, because the GPU's
    context stays with the process (measured: 62 → 31 MB only after a restart). Stats overlay: PSS (Java, native,
    GPU), CPU, frames/s and the slowest frame, 15 minutes of PSS and a minute of CPU as lines; Fire OS hides an
