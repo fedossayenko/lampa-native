@@ -1,8 +1,9 @@
 #!/bin/bash
-# Once per clone: link .githooks/* into .git/hooks (git's default hook folder; core.hooksPath stays untouched).
+# Once per clone: link .githooks/* into git's hooks folder (core.hooksPath stays untouched). In a worktree .git is a
+# file and the hooks are the main checkout's, so that is where they are linked from.
 set -euo pipefail
-cd "$(git rev-parse --show-toplevel)"
-for hook in .githooks/*; do
-    ln -sf "../../$hook" ".git/hooks/$(basename "$hook")"
-    echo "linked .git/hooks/$(basename "$hook") -> $hook"
+common=$(cd "$(git rev-parse --git-common-dir)" && pwd)
+for hook in "$(dirname "$common")"/.githooks/*; do
+    ln -sf "$hook" "$common/hooks/$(basename "$hook")"
+    echo "linked $common/hooks/$(basename "$hook") -> $hook"
 done
