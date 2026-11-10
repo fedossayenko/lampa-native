@@ -25,12 +25,12 @@ binding = "AI"
 binding = "SELF"
 service = "lampa-native"
 
-# The search index (titles.sql): English at 03:07, Russian at 03:37 UTC (TITLE_CRONS in the worker); hourly: New in 4K
-# at 04 UTC (uhd.sql), For you and the people you follow the other hours (HOURLY_CRON).
 # The Lampa plugin's ?url= pass-through to TorBox and two parsers, open to anyone: only if you use that plugin.
 # [vars]
 # PASS_THROUGH = "1"
 
+# The search index (titles.sql): English at 03:07, Russian at 03:37 UTC (TITLE_CRONS in the worker); hourly: New in 4K
+# at 04 UTC (uhd.sql), For you and the people you follow the other hours (HOURLY_CRON).
 [triggers]
 crons = ["7 3 * * *", "37 3 * * *", "23 * * * *"]
 
