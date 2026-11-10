@@ -301,5 +301,7 @@ class TimelineTest {
         assert !Timeline.endsBehindPlayer(false, true, true) : "software is within the budget";
         assert !Timeline.endsBehindPlayer(true, false, true) : "the Home key is no playback";
         assert !Timeline.endsBehindPlayer(true, true, false) : "from Home a restore loses its place";
+        assert Timeline.waitsForReport(1) : "a report still being sent";
+        assert !Timeline.waitsForReport(0);
     }
 }

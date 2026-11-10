@@ -137,12 +137,6 @@ final class Net {
         return System.nanoTime() < end && speedEnd == end;
     }
 
-    // streams connections read url over and over for ms, this thread one of them: the Mbit/s they got together
-    // over that time, 0 when nothing came, -1 when stopSpeed() ended it.
-    static double mbps(String url, int streams, long ms) {
-        return mbpsUntil(url, streams, armSpeed(ms));
-    }
-
     // The end of a test starting now, set on the caller's thread (the UI's), so a stopSpeed() after it ends that test
     // even before the test's own thread runs
     static long armSpeed(long ms) {
@@ -151,6 +145,8 @@ final class Net {
         return end;
     }
 
+    // streams connections read url over and over until end (armSpeed's), this thread one of them: the Mbit/s they
+    // got together over that time, 0 when nothing came, -1 when stopSpeed() ended it.
     static double mbpsUntil(String url, int streams, long end) {
         AtomicLong bytes = new AtomicLong();
         long start = System.nanoTime();

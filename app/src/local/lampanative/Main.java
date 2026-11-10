@@ -60,6 +60,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -143,7 +144,7 @@ public class Main extends Activity {
     // (Progress's report of a pause or onStop still being sent: 1 s later, so the position isn't lost with it)
     final Runnable endBehindPlayer = () -> {
         if (!this.stopped || this.playing == null) return;
-        if (Progress.SENDING.get() > 0) this.ui.postDelayed(this.endBehindPlayer, 1000);
+        if (Timeline.waitsForReport(Progress.SENDING.get())) this.ui.postDelayed(this.endBehindPlayer, 1000);
         else Process.killProcess(Process.myPid());
     };
     Runnable prefetchBackdrop; // 1.5 s of rest on the same card
@@ -333,8 +334,9 @@ public class Main extends Activity {
         for (Level l : levels) for (ImageView p : l.pictures()) p.setImageDrawable(empty); // a film under a list
         if (page != null) pageBackdrop.setImageDrawable(null);
         pix.collectSoon();
-        ui.removeCallbacks(prefetch); // a card rested on just before Play or Home: no /card or backdrop behind DDD
-        ui.removeCallbacks(prefetchBackdrop);
+        ui.removeCallbacks(prefetch); // a card rested on just before Play or Home: its preloads not started yet stay
+        ui.removeCallbacks(prefetchBackdrop); // unstarted (one already downloading finishes); the card preloads again
+        prefetched = null;                    // when rested on after the way back
         if (Timeline.endsBehindPlayer(!soft, playing != null, pageTop != null)) {
             ui.postDelayed(endBehindPlayer, Timeline.END_BEHIND_PLAYER_MS);
         }
@@ -715,7 +717,7 @@ public class Main extends Activity {
     // Only the worker's point: Home's rows and marks catch up from /mine when the app is back.
     public static class Progress extends BroadcastReceiver {
         // Reports still being sent (endBehindPlayer waits for them; a receiver of this process, so static)
-        static final java.util.concurrent.atomic.AtomicInteger SENDING = new java.util.concurrent.atomic.AtomicInteger();
+        static final AtomicInteger SENDING = new AtomicInteger();
 
         @Override
         public void onReceive(Context context, Intent data) {

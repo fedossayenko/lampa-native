@@ -26,7 +26,7 @@ class NetTest {
         s.start();
         try {
             long start = System.nanoTime();
-            double mbps = Net.mbps("http://127.0.0.1:" + s.getAddress().getPort() + "/", 2, 300);
+            double mbps = Net.mbpsUntil("http://127.0.0.1:" + s.getAddress().getPort() + "/", 2, Net.armSpeed(300));
             long took = (System.nanoTime() - start) / 1_000_000;
             assert mbps > 1 : mbps;
             assert took >= 300 && took < 3000 : took;
@@ -64,7 +64,7 @@ class NetTest {
         HttpServer s = stalling(threads);
         try {
             long start = System.nanoTime();
-            double mbps = Net.mbps("http://127.0.0.1:" + s.getAddress().getPort() + "/", 2, 300);
+            double mbps = Net.mbpsUntil("http://127.0.0.1:" + s.getAddress().getPort() + "/", 2, Net.armSpeed(300));
             long took = (System.nanoTime() - start) / 1_000_000;
             assert took < 3500 : took;
             // 2 × 64 KB over the 300 ms, not over the 2 s read timeout too
@@ -89,7 +89,7 @@ class NetTest {
                 Net.stopSpeed();
             }).start();
             long start = System.nanoTime();
-            double mbps = Net.mbps("http://127.0.0.1:" + s.getAddress().getPort() + "/", 2, 60_000);
+            double mbps = Net.mbpsUntil("http://127.0.0.1:" + s.getAddress().getPort() + "/", 2, Net.armSpeed(60_000));
             long took = (System.nanoTime() - start) / 1_000_000;
             assert took < 3500 : took;
             assert mbps < 0 : mbps;
@@ -99,8 +99,34 @@ class NetTest {
         }
     }
 
+    // Stopped (onStop) after OK armed it but before its thread ran: nothing is asked, -1 at once
+    void testSpeedStoppedBeforeItStarts() throws Exception {
+        int[] asked = {0};
+        HttpServer s = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        s.createContext("/", x -> {
+            synchronized (asked) {
+                asked[0]++;
+            }
+            x.sendResponseHeaders(200, -1);
+            x.close();
+        });
+        s.start();
+        try {
+            long end = Net.armSpeed(60_000);
+            Net.stopSpeed();
+            long start = System.nanoTime();
+            assert Net.mbpsUntil("http://127.0.0.1:" + s.getAddress().getPort() + "/", 2, end) < 0;
+            assert (System.nanoTime() - start) / 1_000_000 < 2000;
+            synchronized (asked) {
+                assert asked[0] == 0 : asked[0];
+            }
+        } finally {
+            s.stop(0);
+        }
+    }
+
     void testSpeedOfNoServerIsZero() throws Exception {
-        assert Net.mbps("http://127.0.0.1:1/", 2, 300) == 0;
+        assert Net.mbpsUntil("http://127.0.0.1:1/", 2, Net.armSpeed(300)) == 0;
     }
 
     void testSpeedLine() {

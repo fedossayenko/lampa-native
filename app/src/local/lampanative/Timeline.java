@@ -87,6 +87,11 @@ final class Timeline {
         return gpu && playing && pageOpen;
     }
 
+    // Not yet while a position report (Progress) is still being sent: it would be lost with the process
+    static boolean waitsForReport(int sending) {
+        return sending > 0;
+    }
+
     // A started film's poster: "1h 7m left", "25m left" (the worker's "left", seconds; rounded, never 0); a series':
     // "26 ep left" (the worker's "26 ep": aired after your furthest watched episode); null: none.
     static String posterLeft(String seconds) {
