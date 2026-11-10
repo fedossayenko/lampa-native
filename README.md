@@ -10,7 +10,7 @@ uses as little memory and CPU as it can: plain Java views, no libraries, no Grad
   <img src="docs/film.jpg" width="49%" alt="A film's page over its backdrop">
 </p>
 
-Measured on the stick (the same 39 remote presses; details in [PLAN.md](PLAN.md)):
+Measured on the stick (the same 39 remote presses; details in [docs/measurements.md](docs/measurements.md)):
 
 | | Lampa (web app) | Lampa Native |
 |---|---|---|
@@ -133,7 +133,7 @@ ANDROID_SERIAL=<tv>:5555 tools/measure.sh local.lampanative   # memory, CPU and 
   (`app/test`, `tools/TestRunner.java`); `Main.java` and its screens (`Discover`, `Episodes`, `SearchScreen`,
   `SignIn`, each a `Main.Part`) are the view glue, `Net.java` the HTTP.
 - Every change keeps to [PLAN.md](PLAN.md)'s budgets and design rules (no libraries, no animations, nothing kept in
-  memory while the player plays) and is measured on a real stick. PLAN.md is also the log of every measurement.
+  memory while the player plays) and is measured on a real stick. [docs/measurements.md](docs/measurements.md) is the log of every measurement.
 - The worker: `worker/cloudflare-worker.js`, tests in `worker/native.test.js` (`node --test`, fetch mocked).
 - `tools/emulator.sh` runs an Android TV emulator shaped like the stick, for looking at screens.
 
