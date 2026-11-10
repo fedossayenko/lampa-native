@@ -1,0 +1,8 @@
+# Actions are pinned by commit; this keeps the pins current, once a week.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    groups: { actions: { patterns: ['*'] } }
+    cooldown: { default-days: 7 } # a hijacked release gets a week to be caught before it's proposed
