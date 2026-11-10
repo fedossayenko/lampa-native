@@ -105,7 +105,9 @@ final class Episodes extends Main.Part {
         m.pushLevel(screen, "", stills, false);
         episodesOf(first, firstRow);
         Supplier<View> built = next;
-        screen.post(() -> focus(to != null ? to[1] - 1 : 0, built));
+        // the episode to go on with, when its season is the one shown (a season that isn't there: the first row)
+        int start = to != null && to[0] == shown.number() ? to[1] - 1 : 0;
+        screen.post(() -> focus(start, built));
     }
 
     private String line(Film.Season s) {

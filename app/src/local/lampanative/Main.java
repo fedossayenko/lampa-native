@@ -1414,12 +1414,7 @@ public class Main extends Activity {
     // "Plays [4K] [DV] [REMUX] · RU · 74.3 GB · ⚡ Cached": the picture's badges as the source rows' chips.
     CharSequence playsLine(Sources.Source s) {
         SpannableStringBuilder line = new SpannableStringBuilder("Plays  ");
-        for (String b : Sources.picture(s)) {
-            int start = line.length();
-            line.append(b);
-            line.setSpan(new Chip(b, Sources.badgeColor(b)), start, line.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            line.append("  ");
-        }
+        for (String b : Sources.picture(s)) chip(line, b);
         line.append(Sources.tracks(s.languages(), langs())).append(" · ").append(s.size()).append(" · ");
         int start = line.length();
         line.append(Sources.BOLT + " Cached");
@@ -1816,7 +1811,8 @@ public class Main extends Activity {
                 Log.w(TAG, "sources " + imdb, e);
                 ui.post(() -> {
                     if (req.status().getParent() == null) req.list().addView(req.status()); // under the first 6
-                    req.status().setText("Can't load the sources. Press Back and try again.");
+                    req.status().setText(from > 0 ? "The rest of the sources didn't load. Press Back and try again."
+                        : "Can't load the sources. Press Back and try again.");
                 });
                 return;
             }
