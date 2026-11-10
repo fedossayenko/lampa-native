@@ -115,8 +115,14 @@ final class Sources {
 
     static final List<String> NAMED_AUDIO = List.of("Atmos", "TrueHD", "DTS", "DD+", "DD");
 
+    // Whether the row's tracks were read from its file: only then its name's audio guesses give way (MaxVol's ffprobe
+    // can't see Atmos, so a "TrueHD.Atmos" name heard only by MaxVol keeps its Atmos chip).
+    static boolean fileRead(Source s) {
+        return s.audio() != null && !s.audio().isEmpty();
+    }
+
     // A row's own chips (4K, DV, REMUX, HEVC…), and what its name says of its audio (Atmos, TrueHD, DTS, DD+, DD: some,
-    // for any language) unless its tracks are heard (heard()'s chips follow then).
+    // for any language) unless its file's tracks are read (fileRead; heard()'s chips follow then).
     static List<String> badges(Source s, boolean heard) {
         if (!heard) return s.badges();
         List<String> out = new ArrayList<>();

@@ -26,6 +26,17 @@ const corsError = (request, message, status) => new Response(message, { status, 
 const PASS_TO = new Map([[TORBOX_HOST, true], ['jr.maxvol.pro', false], ['jacred.xyz', false]]); // host → gets the key
 const PASS_KEEP = ['accept', 'content-type', 'range'];
 
+// The torrent id a passed-through TorBox requestdl asks a link for (the Lampa plugin starting a play), else null.
+function pluginPlay(request) {
+  try {
+    const to = new URL(new URL(request.url).searchParams.get('url'));
+    const id = Number(to.searchParams.get('torrent_id'));
+    return to.hostname === TORBOX_HOST && to.pathname.endsWith('/requestdl') && Number.isInteger(id) ? id : null;
+  } catch {
+    return null;
+  }
+}
+
 async function passThrough(request) {
   let to = null;
   try {
@@ -1053,6 +1064,8 @@ async function play(request, env, ctx, hash) {
 // needs its own): 429 {later: true} past that.
 const PROBES_MINUTE = 4;
 const PROBES_HOUR = 20;
+// and at most what the night's runs take out of the account again (3 runs x DROPS), so adds never pile up there
+const PROBES_DAY = () => 3 * DROPS;
 
 async function audio(request, env, hash) {
   if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
@@ -1066,10 +1079,12 @@ async function audio(request, env, hash) {
     return known.tracks !== 'null' ? json({ tracks: JSON.parse(known.tracks) })
       : corsError(request, 'Its audio couldn\'t be read today.', 502);
   }
-  const spent = await env.DB.prepare('SELECT SUM(t > ?) minute, COUNT(*) hour FROM probes WHERE t > ?')
-    .bind(now - 60_000, now - 3_600_000).first();
-  if ((spent?.minute || 0) >= PROBES_MINUTE || (spent?.hour || 0) >= PROBES_HOUR) return json({ later: true }, 429);
-  await env.DB.prepare('DELETE FROM probes WHERE t <= ?').bind(now - 3_600_000).run();
+  const spent = await env.DB.prepare('SELECT SUM(t > ?) minute, SUM(t > ?) hour, COUNT(*) day FROM probes WHERE t > ?')
+    .bind(now - 60_000, now - 3_600_000, now - 86_400_000).first();
+  if ((spent?.minute || 0) >= PROBES_MINUTE || (spent?.hour || 0) >= PROBES_HOUR || (spent?.day || 0) >= PROBES_DAY()) {
+    return json({ later: true }, 429);
+  }
+  await env.DB.prepare('DELETE FROM probes WHERE t <= ?').bind(now - 86_400_000).run();
   const q = new URL(request.url).searchParams;
   let got;
   let mine;
@@ -1154,7 +1169,9 @@ async function maxvolAudio(env, imdb) {
         if (!hash || !Array.isArray(r.ffprobe)) continue;
         map[hash.toLowerCase()] = r.ffprobe.filter((st) => st?.codec_type === 'audio').map((st) => {
           const name = String(st.tags?.title || '').slice(0, 40);
-          return [langCode(st.tags?.language), ffCodec(st), Number(st.channels) || 0, Number(/atmos/i.test(name)), name];
+          // newer ffprobe says it in the profile ("Dolby TrueHD + Dolby Atmos"), older only a track title might
+          const atmos = /atmos/i.test(`${name} ${st.profile || ''}`);
+          return [langCode(st.tags?.language), ffCodec(st), Number(st.channels) || 0, Number(atmos), name];
         });
       }
     }
@@ -2691,6 +2708,11 @@ export default {
     if (env.PASS_THROUGH !== '1') return corsError(request, 'Not found.', 404);
     const scores = new URL(request.url).pathname.match(/^\/mdblist\/(movie|show)(?:\/(\d+))?$/);
     if (scores && (scores[2] || request.method === 'POST')) return mdblist(request, env, scores[1], scores[2]);
+    // the Lampa plugin playing a torrent a probe added (its requestdl): the user's now, the night leaves it alone
+    const played = pluginPlay(request);
+    if (played !== null && env.DB) {
+      ctx.waitUntil(env.DB.prepare('DELETE FROM added WHERE id = ?').bind(played).run().catch(() => {}));
+    }
     return passThrough(request);
   },
 };

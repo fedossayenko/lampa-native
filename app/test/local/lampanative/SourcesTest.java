@@ -163,6 +163,9 @@ class SourcesTest {
         assert Sources.heard(s, "RU,UA").isEmpty() : "not read, not on MaxVol";
         assert Sources.badges(s, false).equals(s.badges());
         assert Sources.badges(s, true).equals(List.of("4K", "DV", "HEVC")) : "the name's audio guesses go";
+        assert !Sources.fileRead(s) && Sources.fileRead(s.withAudio(tracks(DUNE)));
+        Sources.Source onlyMaxvol = new Sources.Source("h", 0, "", List.of(), "", 0, "", List.of(), 1, null, tracks(DUNE));
+        assert !Sources.fileRead(onlyMaxvol) : "MaxVol alone: the name's Atmos chip stays (its ffprobe can't see Atmos)";
         List<String> dune = List.of("RU DD+ 5.1", "UA DD 5.1", "EN TrueHD Atmos");
         assert Sources.heard(s.withAudio(tracks(DUNE)), "RU,UA").equals(List.of(new Sources.Heard("file", dune)));
         Sources.Source mv = new Sources.Source("h", 0, "", List.of(), "", 0, "", List.of(), 1, null, tracks(DUNE));

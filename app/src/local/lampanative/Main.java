@@ -1890,7 +1890,7 @@ public class Main extends Activity {
     SpannableStringBuilder sourceLine(Sources.Source s, String langs) {
         SpannableStringBuilder line = new SpannableStringBuilder();
         List<Sources.Heard> heard = Sources.heard(s, langs);
-        for (String b : Sources.badges(s, !heard.isEmpty())) chip(line, b);
+        for (String b : Sources.badges(s, Sources.fileRead(s))) chip(line, b);
         for (Sources.Heard h : heard) { // its chips, then where they come from in the line's own color
             for (String c : h.chips()) chip(line, c);
             line.append(h.from()).append("  ");

@@ -2000,6 +2000,22 @@ test('audio: only the stick; a TorBox add budget for unread releases (4 a minute
   for (let i = 0; i < 16; i++) e.DB.raw.prepare('INSERT INTO probes (t) VALUES (?)').run(now - 120_000);
   assert.equal((await audioOf(e, 'cd'.repeat(20))).status, 429); // 21 this hour
   assert.equal((await audioOf(e)).status, 200); // read before: no budget needed
+  e.DB.raw.prepare('UPDATE probes SET t = ?').run(now - 7_200_000); // none this hour, but a day's worth today:
+  for (let i = 0; i < 100; i++) e.DB.raw.prepare('INSERT INTO probes (t) VALUES (?)').run(now - 7_200_000);
+  assert.equal((await audioOf(e, '12'.repeat(20))).status, 429, 'no more adds a day than the night takes out');
+  e.DB.raw.prepare('UPDATE probes SET t = ?').run(now - 90_000_000); // yesterday's
+  assert.notEqual((await audioOf(e, '12'.repeat(20))).status, 429);
+});
+
+test('pass-through: the Lampa plugin starting a play (requestdl) keeps a torrent a probe added', async () => {
+  const e = { ...audioEnv(), PASS_THROUGH: '1' };
+  e.DB.raw.prepare('INSERT INTO added (hash, id, t) VALUES (?, 11, 1), (?, 12, 1)').run('ab'.repeat(20), 'cd'.repeat(20));
+  globalThis.fetch = async () => new Response('{}');
+  const waits = [];
+  const dl = 'https://api.torbox.app/v1/api/torrents/requestdl?token=k&torrent_id=11&file_id=0';
+  await worker.fetch(new Request(`https://w/?url=${encodeURIComponent(dl)}`), e, { waitUntil: (p) => waits.push(p) });
+  await Promise.all(waits);
+  assert.deepEqual(e.DB.raw.prepare('SELECT id FROM added').all().map((r) => r.id), [12]);
 });
 
 test('audio: not MKV or MP4 → [] kept (not read again); TorBox still downloading it → 502, our add noted', async () => {
