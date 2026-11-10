@@ -7,12 +7,10 @@ import android.util.Log;
 import android.view.View;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 import java.io.IOException;
 import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.util.List;
-import java.util.Optional;
 import org.json.JSONException;
 
 // CUB's device sign-in, as Lampa's: a code to confirm on a phone at the site shown, asked about every few seconds
@@ -126,13 +124,13 @@ final class SignIn extends Main.Part {
     void save(String token, Cub.Profile p) {
         Cub.Account a = new Cub.Account(token, p.id(), p.name());
         try {
-            Files.write(m.cubFile().toPath(), a.save().getBytes(StandardCharsets.UTF_8)); // private to the app
+            m.saveAccount(a);
         } catch (IOException e) {
             Log.w(Main.TAG, "CUB account not saved", e);
-            status.setText("Couldn't save the sign-in: " + e.getMessage());
+            // a toast: with profiles to pick from the status line is gone from the list (pick() cleared it)
+            Toast.makeText(m, "Couldn't save the sign-in: " + e.getMessage(), Toast.LENGTH_LONG).show();
             return;
         }
-        m.cubAccount = Optional.of(a);
         if (m.pageTop == level) m.back(); // the level below, or Home when it was opened over Home
         done.run();
     }

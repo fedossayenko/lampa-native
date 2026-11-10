@@ -403,7 +403,9 @@ public class Main extends Activity {
                 if (r.code() != 200) throw new Status(r.code());
                 ui.post(() -> {
                     if (account() != a) return; // signed out (or in again) meanwhile
+                    boolean changed = !r.body().equals(mineShown);
                     showMine(r.body());
+                    if (!changed || !r.body().equals(mineShown)) return; // the same, or not drawn (not valid): not kept
                     try {
                         Files.write(mineFile().toPath(), r.body().getBytes(StandardCharsets.UTF_8)); // ~2 KB
                     } catch (IOException e) {
@@ -2232,8 +2234,8 @@ public class Main extends Activity {
     }
 
     Answer ask(String path, byte[] body, String type) throws IOException {
+        token(); // read again after a refusal, or a missing one is told here (open() sends it)
         HttpURLConnection c = open(Home.worker + path, 30000); // TorBox can take a while
-        c.setRequestProperty("X-Play-Token", token());
         Answer a = send(c, body, type);
         if (a.code() == 401 || a.code() == 403) Net.token = null; // set up again: read the file next time
         return a;
@@ -2893,14 +2895,12 @@ public class Main extends Activity {
                     list.removeView(wait);
                     for (Cub.Profile p : all) {
                         list.addView(sheetRow(p.name(), p.main() ? "Main profile" : null, check(p.id() == a.profile()), v -> {
-                            Cub.Account now = new Cub.Account(a.token(), p.id(), p.name());
                             try {
-                                Files.write(cubFile().toPath(), now.save().getBytes(StandardCharsets.UTF_8));
+                                saveAccount(new Cub.Account(a.token(), p.id(), p.name()));
                             } catch (IOException e) {
                                 Toast.makeText(this, "Couldn't save it: " + e.getMessage(), Toast.LENGTH_LONG).show();
                                 return;
                             }
-                            cubAccount = Optional.of(now);
                             closeOverlay();
                             loadMine(); // that profile's rows
                         }));
@@ -2924,6 +2924,12 @@ public class Main extends Activity {
             }
         }
         return cubAccount.orElse(null);
+    }
+
+    // The account signed in or switched to a profile: in files/cub (private to the app) and in memory.
+    void saveAccount(Cub.Account a) throws IOException {
+        Files.write(cubFile().toPath(), a.save().getBytes(StandardCharsets.UTF_8));
+        cubAccount = Optional.of(a);
     }
 
     File cubFile() {
