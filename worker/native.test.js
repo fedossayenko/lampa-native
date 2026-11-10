@@ -1808,6 +1808,8 @@ test('torbox/drop: the torrent with that hash leaves the account, for the stick 
   assert.deepEqual(JSON.parse(asked.at(-1)), { torrent_id: 7, operation: 'delete' });
   assert.deepEqual(await (await drop({ 'X-Play-Token': 'stick-token' }, 'ef'.repeat(20))).json(), { deleted: false });
   assert.equal((await drop({})).status, 403);
+  torbox({ mylist: { success: false, error: 'AUTH_ERROR' } });
+  assert.equal((await drop({ 'X-Play-Token': 'stick-token' })).status, 502, 'a refused list is not an empty account');
   torbox({ mylist: { success: true, data: [{ id: 7, hash: 'ab'.repeat(20) }] }, controltorrent: { success: false } });
   assert.equal((await drop({ 'X-Play-Token': 'stick-token' })).status, 502, 'TorBox refused: not reported as done');
 });
@@ -2020,6 +2022,11 @@ test('audio: a probe add with nothing to read (a disc: no video) still leaves at
   asked = [];
   await audioOf(e);
   assert.deepEqual(asked, [], 'settled for a day: TorBox not asked');
+  torbox({ ...fresh, mylist: { success: false, error: 'AUTH_ERROR' } }); // the account unknown: no add, nothing spent
+  const spent = e.DB.raw.prepare('SELECT COUNT(*) n FROM probes').get().n;
+  assert.equal((await audioOf(e, '56'.repeat(20))).status, 502);
+  assert.equal(asked.filter((u) => u.includes('createtorrent')).length, 0);
+  assert.equal(e.DB.raw.prepare('SELECT COUNT(*) n FROM probes').get().n, spent);
 });
 
 test('pass-through: the Lampa plugin starting a play (requestdl) keeps a torrent a probe added', async () => {
@@ -2162,6 +2169,9 @@ test('audio: our adds leave the account at night (01-03 UTC, an hour old); playe
   assert.deepEqual(e.DB.raw.prepare('SELECT hash FROM added').all(), []); // the played one is the user's now
   // one that already left the account (deleted by hand, /torbox/drop): done, no delete asked, never blocks the queue
   e.DB.raw.prepare('INSERT INTO added (hash, id, t) VALUES (?, 99, ?)').run('34'.repeat(20), at(2) - 7_200_000);
+  torbox({ mylist: { success: false, error: 'AUTH_ERROR' } }); // a refused list: nothing counts as gone
+  await run(2);
+  assert.equal(e.DB.raw.prepare('SELECT COUNT(*) n FROM added').get().n, 1);
   torbox({ mylist: { success: true, data: [] } });
   await run(2);
   assert.deepEqual([e.DB.raw.prepare('SELECT COUNT(*) n FROM added').get().n, deletes()], [0, []]);

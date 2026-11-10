@@ -622,8 +622,7 @@ async function torboxAccount(request, env) {
 async function torboxDrop(request, env, hash) {
   if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
   try {
-    const list = await torboxApi(env, 'mylist?bypass_cache=true');
-    const t = (list.data || []).find((x) => String(x.hash).toLowerCase() === hash);
+    const t = (await accountTorrents(env)).find((x) => String(x.hash).toLowerCase() === hash);
     if (t) {
       const r = await torboxApi(env, 'controltorrent', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ torrent_id: t.id, operation: 'delete' }) });
@@ -982,6 +981,13 @@ function sameSecret(a, b) {
   return diff === 0;
 }
 
+// The account's torrents; throws unless TorBox answered with the list (a 401 or 429 is not an empty account).
+async function accountTorrents(env) {
+  const list = await torboxApi(env, 'mylist?bypass_cache=true');
+  if (!Array.isArray(list?.data)) throw new Error('TorBox list');
+  return list.data;
+}
+
 async function torboxApi(env, path, init = {}) {
   const res = await fetch(TORBOX_API + path, { ...init, headers: { ...init.headers, Authorization: `Bearer ${env.TORBOX_API_KEY}` } });
   if (!res.ok && res.status >= 500) throw new Error(`TorBox ${res.status}`);
@@ -1092,7 +1098,7 @@ async function audio(request, env, hash) {
   let mine;
   try {
     // in the account already (played before): read as it is, no add (none spent), and left there
-    mine = ((await torboxApi(env, 'mylist?bypass_cache=true'))?.data || [])
+    mine = (await accountTorrents(env))
       .find((t) => String(t.hash).toLowerCase() === hash)?.id;
     if (mine === undefined) await env.DB.prepare('INSERT INTO probes (t) VALUES (?)').bind(now).run();
     got = await torboxLink(env, hash, Number(q.get('file') ?? -1), q.get('name') || '', mine);
@@ -1131,7 +1137,7 @@ async function dropProbeAdds(env, now) {
   if (!results.length) return;
   // one subrequest for the account's list: a row whose torrent already left it (deleted by hand, /torbox/drop, expired)
   // is done, so it never blocks the queue (DROPS - 1 deletes beside it)
-  const have = new Set(((await torboxApi(env, 'mylist?bypass_cache=true'))?.data || []).map((t) => t.id));
+  const have = new Set((await accountTorrents(env)).map((t) => t.id));
   const done = await Promise.all(results.map(({ id }) => !have.has(id) || torboxApi(env, 'controltorrent', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ torrent_id: id, operation: 'delete' }),
