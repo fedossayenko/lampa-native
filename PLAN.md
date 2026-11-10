@@ -77,7 +77,8 @@ keeps only the posters on the screen (to measure). Background (DDD playing) matt
 
 - **TDD.** Logic lives in classes that import nothing from `android.*` (`Home`, `Layout`, …): write the failing
   test in `app/test` first, then the code. Those tests run on the Mac's JVM in milliseconds
-  (`tools/TestRunner.java`; `org.json` pinned by checksum). The view glue in `Main.java` stays thin.
+  (`tools/TestRunner.java`; `org.json` pinned by checksum). `Main.java` (3.7k lines) is the view glue and the one
+  file that outgrew that: logic found in it moves out to a tested class when the code around it is changed.
 - **Java 21**: records, sealed types, pattern `switch`, text blocks. Checked through d8 on the stick
   (2026-10-31). It is compile-time only, so it adds no library and no runtime cost.
 - **Every commit** (`.githooks/pre-commit` → `tools/check.sh`, a few seconds), run on the staged files, not the
@@ -154,7 +155,7 @@ shaping; custom-drawn rows would only save Java heap, which is 3 MB. Re-checked 
    actor → their films. Measured (log): the page with its photos 78–79 MB. **Open: back on Home after a
    collection film 85 MB, over the 80 MB budget** (the GL driver keeps its peak until Android trims); software
    rendering (A/B in the log: 25–31 MB) closes it: the default since 2026-11-01 (the user: software is good).
-4. **Play in DDD with resume** (built 2026-10-31, to test on the stick). OK on a source → worker `/play`: TorBox
+4. **Play in DDD with resume** ✅ 2026-10-31 (tested on the stick, see the log). OK on a source → worker `/play`: TorBox
    adds the torrent (or finds it), picks the file Torrentio meant, answers its link with the resume point
    (1.37 s new, 0.92 s already in TorBox) → DDD (`ACTION_VIEW`, `position` ms, `return_result`) → its
    position/duration/end_by → worker `POST /timeline`. Resume points are **shared with Lampa through the worker**
@@ -494,7 +495,7 @@ shaping; custom-drawn rows would only save Java heap, which is 3 MB. Re-checked 
     and gets HMAC(play token, "home") instead of the token. Progress acts only on the address playing. Icon, banner,
     Settings → Worker and About (TMDB's logo and notice). Audio languages default to all.
 
-11. **Extensions: a Learn button** (2026-11-10, branch `learn`, not deployed). Worker: `/ext/<name>/<path>` over a service
+11. **Extensions: a Learn button** ✅ 2026-11-10 (on main; checked on the stick: The Dark Knight shows "Learned 94%"). Worker: `/ext/<name>/<path>` over a service
     binding `EXT_<NAME>` (stick only; the secret `EXT_<NAME>_TOKEN` goes along as `X-Ext-Token`; 16 KB body, an
     extension's 401/403 becomes 502 so the stick keeps its token), and `/mine` asks `EXT_LEARN` for `learned`
     (`{"movie_603": 93}`, 1.5 s at most; no `learned` key when it is missing or down, and the app asks the extension only when the key is there). App: a film's page asks
