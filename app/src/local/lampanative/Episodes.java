@@ -125,7 +125,7 @@ final class Episodes extends Main.Part {
         about = List.of();
         episodes.removeAllViews();
         right.scrollTo(0, 0);
-        m.pool.execute(() -> { // names, runtimes, stills: "Episode 5" rows until then (or for good, offline)
+        m.async(() -> { // names, runtimes, stills: "Episode 5" rows until then (or for good, offline)
             try {
                 List<Film.Episode> got = Film.season(new String(read(Film.seasonUrl(c, s.number())),
                     StandardCharsets.UTF_8));

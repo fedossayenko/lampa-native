@@ -48,7 +48,7 @@ final class SignIn extends Main.Part {
     }
 
     void newCode() {
-        m.pool.execute(() -> {
+        m.async(() -> {
             try {
                 Answer a = cub("device/code", "client=lampa", null);
                 if (a.code() != 200) throw new IOException("HTTP " + a.code());
@@ -84,7 +84,7 @@ final class SignIn extends Main.Part {
             return;
         }
         Cub.Code asked = c;
-        m.pool.execute(() -> {
+        m.async(() -> {
             try {
                 Answer a = cub("device/token", "device_code=" + URLEncoder.encode(asked.device(), "UTF-8"), null);
                 String token = a.code() == 200 ? Cub.token(a.body()) : null;

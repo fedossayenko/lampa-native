@@ -124,7 +124,7 @@ final class SearchScreen extends Main.Part {
             return;
         }
         inFlight = asked;
-        m.pool.execute(() -> {
+        m.async(() -> {
             List<Home.Card> found;
             try {
                 found = Search.parse(new String(read(Search.url(asked)), StandardCharsets.UTF_8));

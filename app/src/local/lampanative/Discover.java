@@ -141,7 +141,7 @@ final class Discover extends Main.Part {
         loading = true;
         int ask = asked, n = page + 1;
         String url = f.url(genre, n);
-        m.pool.execute(() -> {
+        m.async(() -> {
             try {
                 Person.Found found = Person.Found.parse(new String(read(url), StandardCharsets.UTF_8));
                 m.ui.post(() -> {

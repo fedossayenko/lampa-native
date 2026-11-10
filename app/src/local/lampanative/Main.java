@@ -236,6 +236,21 @@ public class Main extends Activity {
         }
     }
 
+    // Every task of the pool goes through here. A task that throws more than the IOException it catches (a decoder's
+    // RuntimeException, an out-of-memory) would end its pool thread with an uncaught exception, which ends the app: it
+    // is logged and the screen keeps what it has. After onDestroy (the pool is shut down) a running task's late post
+    // can still reach a loader (loadMine after a grade saved): nothing is asked then.
+    void async(Runnable task) {
+        if (pool.isShutdown()) return;
+        pool.execute(() -> {
+            try {
+                task.run();
+            } catch (Throwable t) { // NOPMD: the point
+                Log.w(TAG, "task failed", t);
+            }
+        });
+    }
+
     // dp to whole pixels: (int) (v * dp)
     int dp(float v) {
         return (int) (v * dp);
@@ -351,7 +366,7 @@ public class Main extends Activity {
 
     void loadHome() {
         boolean signedIn = account() != null;
-        pool.execute(() -> {
+        async(() -> {
             try {
                 // From the disk even past its hour (≤ a day; measured: first poster 370-410 ms after start instead
                 // of 580-700), then a fresh one into the disk for the next start. Your rows as last seen, with it.
@@ -380,7 +395,7 @@ public class Main extends Activity {
     void loadMine() {
         Cub.Account a = account();
         if (a == null) return;
-        pool.execute(() -> {
+        async(() -> {
             try {
                 // lang: Coming up's "out" is out in these audio languages (the app English, the audio
                 // Russian)
@@ -499,7 +514,7 @@ public class Main extends Activity {
     void addHistory(Home.Card c) {
         Cub.Account a = account();
         if (a == null) return;
-        pool.execute(() -> {
+        async(() -> {
             int code = post("/mine/history/" + c.type() + "/" + c.id(), a, new byte[0], "text/plain");
             if (code != 204) Log.w(TAG, "history: HTTP " + code); // ponytail: lost; Lampa's history misses this one
         });
@@ -820,7 +835,7 @@ public class Main extends Activity {
         pushLevel(sv, c.backdrop(), pics, sources == null);
         restoring = sources != null;
 
-        pool.execute(() -> {
+        async(() -> {
             try {
                 Film f = Film.parse(new String(read(Film.url(c)), StandardCharsets.UTF_8));
                 ui.post(() -> {
@@ -861,7 +876,7 @@ public class Main extends Activity {
         String path = pageBackdropPath;
         if (path.isEmpty()) return;
         int sw = getResources().getDisplayMetrics().widthPixels, sh = getResources().getDisplayMetrics().heightPixels;
-        pool.execute(() -> {
+        async(() -> {
             try {
                 // Dimmed, and faded to the ground on the left and at the bottom, in one pass when it loads (a few
                 // ms on the pool; per frame: nothing). Software: at the screen's size; GPU: at its own (the GPU
@@ -1104,7 +1119,7 @@ public class Main extends Activity {
         content.addView(info, getResources().getDisplayMetrics().widthPixels * 2 / 3, -2);
         column.addView(content);
         pushLevel(sv, "", pics, false);
-        pool.execute(() -> {
+        async(() -> {
             try {
                 Person p = Person.parse(new String(read(url), StandardCharsets.UTF_8));
                 ui.post(() -> {
@@ -1132,7 +1147,7 @@ public class Main extends Activity {
             boolean on = !cubFollows.contains(a.id());
             Cub.Account acc = account();
             b.setText(on ? "Following…" : "Unfollowing…");
-            pool.execute(() -> {
+            async(() -> {
                 int done = post("/mine/" + (on ? "follow/" : "unfollow/") + a.id(), acc, new byte[0], "text/plain");
                 ui.post(() -> {
                     if (done == 204) {
@@ -1314,7 +1329,7 @@ public class Main extends Activity {
     void pickSource(Film f, Sources.Source[] best, TextView plays, View level) {
         String url = Sources.url(f.imdb(), 0, 0, langs(), 0);
         Future<?> before = preload;
-        pool.execute(() -> {
+        async(() -> {
             Sources.Source s = null;
             boolean read = false;
             try {
@@ -1610,7 +1625,7 @@ public class Main extends Activity {
         View panel = overlay;
         Toast.makeText(this, "Saving…", Toast.LENGTH_SHORT).show();
         byte[] body = Cub.gradeBody(c, original, g, System.currentTimeMillis()).getBytes(StandardCharsets.UTF_8);
-        pool.execute(() -> {
+        async(() -> {
             int done = post("/grades", a, body, "application/json");
             ui.post(() -> {
                 if (done != 200) {
@@ -1642,7 +1657,7 @@ public class Main extends Activity {
         Cub.Account a = account();
         View panel = overlay;
         Toast.makeText(this, "Saving…", Toast.LENGTH_SHORT).show();
-        pool.execute(() -> {
+        async(() -> {
             int done = post("/mine/" + list + "/" + c.type() + "/" + c.id(), a, new byte[0], "text/plain");
             ui.post(() -> {
                 if (done != 204) {
@@ -1665,7 +1680,7 @@ public class Main extends Activity {
     // ponytail: each remark() hashes every episode's key again (~3000 on a 1000-episode series, a few ms, only when
     // marks come); keep the keys per film if that shows up
     void loadMarks(Film f) {
-        pool.execute(() -> {
+        async(() -> {
             try {
                 Answer a = ask("/timeline?hash=" + Timeline.keys(f), null); // up to 1000 keys: off the UI thread
                 if (a.code() != 200) throw new IOException("HTTP " + a.code());
@@ -1761,7 +1776,7 @@ public class Main extends Activity {
     // Torrentio refusing the worker (its 502: 429 from Cloudflare's shared IPs) sends this and the next 10 minutes'
     // pages through the stick.
     void loadSources(SourceList req, int from, Future<?> before) {
-        pool.execute(() -> {
+        async(() -> {
             try {
                 if (before != null) before.get();
             } catch (Exception e) {
@@ -1977,7 +1992,7 @@ public class Main extends Activity {
         // their own threads: the link's task below waits for them, and the pool's three may all be busy
         if (skipsAsked != null) new Thread(skipsAsked, "segments").start();
         if (stillsAsked != null) new Thread(stillsAsked, "stills").start();
-        pool.execute(() -> {
+        async(() -> {
             String message;
             try {
                 Answer a = ask(path, null);
@@ -2121,7 +2136,7 @@ public class Main extends Activity {
             askGrade();
         }
         String json = p.body(t);
-        pool.execute(() -> {
+        async(() -> {
             try {
                 int code = ask("/timeline", json.getBytes(StandardCharsets.UTF_8)).code();
                 if (code != 204) Log.w(TAG, "timeline: HTTP " + code);
@@ -2322,7 +2337,7 @@ public class Main extends Activity {
         if (a == null) return;
         View level = (View) list.getParent();
         int tz = TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 60000;
-        pool.execute(() -> {
+        async(() -> {
             try {
                 Answer r = send(withCub(open(Home.worker + "/mine/history?tz=" + tz, 20000), a), null, null);
                 if (r.code() != 200) throw new Status(r.code());
@@ -2429,7 +2444,7 @@ public class Main extends Activity {
         Cub.Account a = account();
         LinearLayout list = historyList;
         Toast.makeText(this, "Saving…", Toast.LENGTH_SHORT).show();
-        pool.execute(() -> {
+        async(() -> {
             int done = post(path, a, body, "application/json");
             ui.post(() -> {
                 if (done != 204) {
@@ -2447,7 +2462,7 @@ public class Main extends Activity {
     // the same first sources page as ▶ Play's pick.
     void cachedLabel(Cub.Coming x, TextView label) {
         String langs = langs();
-        pool.execute(() -> {
+        async(() -> {
             try {
                 Film film = Film.parse(new String(read(Film.url(x.card())), StandardCharsets.UTF_8));
                 if (film.imdb().isEmpty()) return;
@@ -2547,7 +2562,7 @@ public class Main extends Activity {
             return;
         }
         s.thinking("Hearing…");
-        pool.execute(() -> {
+        async(() -> {
             String text = null;
             Voice.Answer found = null;
             try {
@@ -2690,7 +2705,7 @@ public class Main extends Activity {
         View panel = overlay;
         TextView playing = playLine, listing = sourcesLine;
         boolean picks = picks();
-        pool.execute(() -> {
+        async(() -> {
             try {
                 Film f = Film.parse(new String(read(Film.url(c)), StandardCharsets.UTF_8));
                 String ends = Film.endsAt(f.runtime(), LocalTime.now());
@@ -2824,7 +2839,7 @@ public class Main extends Activity {
         long now = SystemClock.elapsedRealtime();
         if (now - torboxAt < 60_000) return; // the tab's rows drawn again after a sub-sheet: no new request, no "…"
         torboxAt = now;
-        pool.execute(() -> { // TorBox's plan and torrents (~0.5 s)
+        async(() -> { // TorBox's plan and torrents (~0.5 s)
             String line;
             try {
                 Answer t = ask("/torbox", null);
@@ -2872,7 +2887,7 @@ public class Main extends Activity {
         wait.setPadding(dp(12), 0, 0, 0);
         list.addView(wait);
         View panel = overlay;
-        pool.execute(() -> {
+        async(() -> {
             try {
                 List<Cub.Profile> all = Cub.profiles(cub("profiles/all", null, a.token()).body());
                 ui.post(() -> {
@@ -3152,7 +3167,7 @@ public class Main extends Activity {
         if (!homeServer.isEmpty()) list.addView(claude); // Claude's recap: only with a home server
         list.addView(section("Last time"));
         String lang = storyLang();
-        pool.execute(() -> {
+        async(() -> {
             // the seasons of the last three, and the one before the last's (Claude's overviews)
             Set<Integer> numbers = new java.util.TreeSet<>();
             for (int[] e : last) numbers.add(e[0]);
@@ -3645,7 +3660,7 @@ public class Main extends Activity {
         int level = shown, w = soft ? p.getWidth() : 0, h = soft ? p.getHeight() : 0;
         boolean shaded = page != null && !pageBackdropPath.isEmpty() // a film's pictures, over its backdrop
             || p instanceof Pic pic && pic.onRow;
-        pool.execute(() -> {
+        async(() -> {
             Bitmap b = null;
             try {
                 if (level == shown) { // else its level went away
