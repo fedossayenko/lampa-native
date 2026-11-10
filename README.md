@@ -97,7 +97,9 @@ app opens YouTube links for trailers.
    - Extensions: another worker of yours, bound as `EXT_<NAME>` in `wrangler.toml` (`[[services]]`, see
      `wrangler.example.toml`), is reached at `/ext/<name>/…` for the TV only, so the TV holds no token for it. With
      `EXT_LEARN` the film page gets a Learn button (the extension's `/learn/status` and `/learn/queue`) and `/mine`
-     carries `learned` from its `/learn/progress`. No extension, no button.
+     carries `learned` from its `/learn/progress`. The button also shows the extension's estimate of how comfortably you'd watch the film
+     (`estimate: {band, to_next}` in `/learn/status`: Hard, Weak, Good or Comfortable and the words to the next band; the
+     page asks for one with `POST /learn/estimate`, which answers like the status). No extension, no button.
    - Skip times: `worker/set-theintrodb-key.sh` (TheIntroDB, more requests a day).
    - A home server: `worker/home-server/` has Claude Code for voice search and Story so far (`voice-claude.py`) and
      an intro finder by sound (`intro-detect.py`), for a Mac at home; the plists say where the files go (the play
@@ -105,7 +107,8 @@ app opens YouTube links for trailers.
      runs Claude Code under your own sign-in, so check your plan allows it. Build the app with
      `HOME_SERVER=<ip>:8790` (in `app/local.env`): it then talks plain http to that address only, signing each request
      (time and body) with a key made from the play token, so a copy sniffed on the network can't be sent again. The
-     server listens on the Mac's home-network address only.
+     server listens on the Mac's home-network address only (with a VPN owning the Mac's default route, set
+     `LAMPA_BIND` to the `HOME_SERVER` address in `voice-claude.plist`).
 
 The app shows the worker it uses and TMDB's notice under Settings → Worker and About. If you also use the
 [Lampa TorBox plugin](https://github.com/fedossayenko/lampa-torbox-en), the worker can be its CORS proxy too:

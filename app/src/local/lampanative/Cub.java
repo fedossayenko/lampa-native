@@ -170,15 +170,15 @@ final class Cub {
      * ("tv_93740" → "scheduled", Lampa's), the grades ("movie_603" → "2", a GRADES' first item), the series with a new
      * episode out in the app's audio languages ("tv_93740" → "S3 E5"), a started film's seconds left ("movie_603" →
      * "4000", its poster says it) or a series' "26 ep", how far in a started film is ("43", its Continue tile's bar),
-     * the percent of a film understood ("93", its page's Learn button), whether the learn extension is there (/mine
-     * sends "learned", even empty: only then the film page asks it), a series' episode to go on with ("tv_1399" → "S3 E5
+     * whether the learn extension is there (/mine sends "learned", even empty, and only that matters: only then the
+     * film page asks it, and the Learn button's band comes from its own estimate), a series' episode to go on with ("tv_1399" → "S3 E5
      * · up next"), Coming up by date, what My list holds (Lampa's Bookmarks and Later), the films in the history
      * played to 90 %, the people you follow (TMDB's person ids) and What's new, newest first. A part that is missing or
      * damaged is empty; the app changes a grade, a mark, My list or a follow itself once CUB took it (with...()).
      */
     record Mine(Map<String, String> marks, Map<String, String> grades, Map<String, String> fresh,
                 Map<String, String> next, Map<String, String> left, Map<String, String> percent,
-                Map<String, String> learned, boolean learnBound, List<Coming> coming, Set<String> list,
+                boolean learnBound, List<Coming> coming, Set<String> list,
                 Set<String> seen, Set<Integer> follows, List<News> news) {
         static final Mine NONE = parse("");
 
@@ -190,24 +190,24 @@ final class Cub {
                 o = new JSONObject(); // not signed in, or no answer yet: nothing of yours
             }
             return new Mine(strings(o, "marks"), strings(o, "grades"), strings(o, "new"), strings(o, "next"),
-                strings(o, "left"), strings(o, "percent"), strings(o, "learned"), o.optJSONObject("learned") != null,
+                strings(o, "left"), strings(o, "percent"), o.optJSONObject("learned") != null,
                 coming(o), keys(o, "mylist"), keys(o, "seen"), follows(o), news(o));
         }
 
         Mine withMarks(Map<String, String> to) {
-            return new Mine(to, grades, fresh, next, left, percent, learned, learnBound, coming, list, seen, follows, news);
+            return new Mine(to, grades, fresh, next, left, percent, learnBound, coming, list, seen, follows, news);
         }
 
         Mine withGrades(Map<String, String> to) {
-            return new Mine(marks, to, fresh, next, left, percent, learned, learnBound, coming, list, seen, follows, news);
+            return new Mine(marks, to, fresh, next, left, percent, learnBound, coming, list, seen, follows, news);
         }
 
         Mine withList(Set<String> to) {
-            return new Mine(marks, grades, fresh, next, left, percent, learned, learnBound, coming, to, seen, follows, news);
+            return new Mine(marks, grades, fresh, next, left, percent, learnBound, coming, to, seen, follows, news);
         }
 
         Mine withFollows(Set<Integer> to) {
-            return new Mine(marks, grades, fresh, next, left, percent, learned, learnBound, coming, list, seen, to, news);
+            return new Mine(marks, grades, fresh, next, left, percent, learnBound, coming, list, seen, to, news);
         }
 
         // Coming up's "Out" count: episodes out with your audio.

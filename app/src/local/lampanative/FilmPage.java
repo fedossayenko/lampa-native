@@ -113,12 +113,13 @@ final class FilmPage extends Main.Part {
             if (!m.soft) {
                 Bitmap g = b.copy(Bitmap.Config.HARDWARE, false);
                 b.recycle();
+                if (g == null) throw new IOException("no GPU copy"); // out of graphics memory: logged by load()
                 b = g;
             }
             return b;
         }, done -> {
             if (m.stopped || m.pageTop != top) { // left meanwhile
-                if (done != null) done.recycle(); // 4 MB of pixels (native) that no one will see; null: the GPU copy failed
+                done.recycle(); // 4 MB of pixels (native) that no one will see
                 return;
             }
             m.pageBackdrop.setImageBitmap(done);
@@ -472,15 +473,16 @@ final class FilmPage extends Main.Part {
         });
     }
 
+    volatile boolean noEstimateRoute; // the extension answered 404/405 to /learn/estimate: ask the status only
+
     // Learn: asks the worker's /ext/learn extension (a service the user runs beside it) for the film's status once when
     // the page opens, and shows the button only when it answers. OK asks for it, or looks again while it is waiting.
     void learnButton(Film f, Home.Card c, LinearLayout buttons, View level) {
         Learn.State[] state = {null};
         boolean[] busy = {false}; // a request is out (disabling the button would drop its focus)
-        String key = Timeline.card(c);
         TextView b = m.ux.button("Learn", null);
         b.setVisibility(View.GONE);
-        Runnable draw = () -> b.setText(Learn.label(state[0], m.cub.learned().get(key)));
+        Runnable draw = () -> b.setText(Learn.label(state[0]));
         b.setOnClickListener(v -> {
             boolean start = state[0] == null || state[0].askable();
             if (busy[0]) return;
@@ -499,7 +501,7 @@ final class FilmPage extends Main.Part {
                 m.ui.post(() -> {
                     busy[0] = false;
                     if (!m.alive(level)) return;
-                    if (now != null) state[0] = now;
+                    if (now != null) state[0] = now.keeping(state[0]);
                     draw.run();
                 });
             });
@@ -508,7 +510,21 @@ final class FilmPage extends Main.Part {
         m.pool.execute(() -> {
             Learn.State got = null;
             try {
-                Answer a = m.ask("/ext/learn/status?imdb=" + f.imdb(), null);
+                // the page asks for the film's estimate (once for this page, no polling; OK looks again); it answers
+                // like the status. Any other answer (an extension without the route, an error, a timeout): the plain
+                // status, so the button never depends on the estimate. The extension never 404s a film, so a 404 or
+                // 405 means the route is missing: later pages go straight to the status.
+                Answer a = null;
+                if (!noEstimateRoute) {
+                    try {
+                        a = m.ask("/ext/learn/estimate", Learn.queueBody(f.imdb(), c.id(), f.name())
+                            .getBytes(StandardCharsets.UTF_8));
+                    } catch (IOException e) {
+                        Log.w(Main.TAG, "learn estimate", e);
+                    }
+                }
+                if (a != null && (a.code() == 404 || a.code() == 405)) noEstimateRoute = true;
+                if (a == null || a.code() != 200) a = m.ask("/ext/learn/status?imdb=" + f.imdb(), null);
                 if (a.code() == 200) got = Learn.parse(a.body());
             } catch (IOException e) {
                 Log.w(Main.TAG, "learn status", e);
@@ -517,7 +533,7 @@ final class FilmPage extends Main.Part {
             if (now == null) return; // no extension, or it is down: no button
             m.ui.post(() -> {
                 if (!m.alive(level)) return;
-                state[0] = now;
+                state[0] = now.keeping(state[0]);
                 draw.run();
                 b.setVisibility(View.VISIBLE);
             });

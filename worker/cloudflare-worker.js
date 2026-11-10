@@ -197,8 +197,13 @@ async function moveKv(env, who) {
 }
 
 // An account's grades: {"movie_603": {g, t, card}, ...}
-async function gradesOf(env, who, moved = false) { // moved: the caller ran moveKv already
-  if (!moved) await moveKv(env, who);
+async function gradesOf(env, who) {
+  await moveKv(env, who);
+  return rowsOf(env, who);
+}
+
+// The same, for a caller that ran moveKv itself
+async function rowsOf(env, who) {
   const rows = (await env.DB.prepare('SELECT card, v FROM grades WHERE who = ?').bind(who).all()).results;
   return Object.fromEntries(rows.map((r) => [r.card, JSON.parse(r.v)]));
 }
@@ -225,7 +230,7 @@ async function grades(request, env) {
   if (entries.length > GRADES_MAX) return corsError(request, 'Too many grades.', 413);
   await moveKv(env, who); // an account still in KV moves first: the new rows must not hide the old ones
   await putGrades(env, who, entries);
-  return new Response(JSON.stringify(await gradesOf(env, who, true)), { headers: { 'Content-Type': 'application/json', ...corsHeaders(request) } });
+  return new Response(JSON.stringify(await rowsOf(env, who)), { headers: { 'Content-Type': 'application/json', ...corsHeaders(request) } });
 }
 
 // lampa-native: the TV's home screen in one small response; the TMDB key
@@ -2187,7 +2192,7 @@ function bookmarkCard(b) {
 // reached at /ext/<name>/<path> as /<name>/<path>, for the stick only (X-Play-Token). The worker adds the secret
 // EXT_<NAME>_TOKEN as X-Ext-Token when set; nothing else of the request goes along but the method, the path and a body
 // of at most 16 KB. The answers: the extension's status (a 401 or 403 of its own becomes 502, so the stick keeps its
-// token) and JSON, never cached. GET /mine also asks EXT_LEARN's /learn/progress for "learned" (a film's percent;
+// token) and JSON, never cached. GET /mine also asks EXT_LEARN's /learn/progress for "learned" (a film's comfort band;
 // present, even {}, only while the extension answers: the stick shows Learn only then).
 const EXT_BODY_MAX = 16384;
 const EXT_MS = 15000; // a pass-through call waits this long at most
@@ -2219,7 +2224,7 @@ async function extension(request, env, name, rest) {
   }
 }
 
-// null: no extension, or it didn't answer well (the stick then shows no Learn button); else {"movie_603": 93, …}
+// null: no extension, or it didn't answer well (the stick then shows no Learn button); else {"movie_603": "Good", …}
 async function extLearned(env) {
   try {
     const res = await extFetch(env, 'learn', '/progress', {}, EXT_MINE_MS);

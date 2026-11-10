@@ -2472,6 +2472,11 @@ test('the daily run purges what nothing reads any more, and keeps the rest', asy
     e.DB.raw.prepare('INSERT INTO intro_jobs (key, file, name, series, t) VALUES (?, ?, ?, ?, ?)').run(`h${t}`, 1, 'n', 's', t);
   }
   tmdbAnswers(known);
+  await worker.scheduled({ cron: '37 3 * * *' }, e); // the Russian index run purges nothing: once a day is enough
+  for (const table of ['segments', 'fresh', 'news', 'recs', 'maxvol', 'intro_jobs']) {
+    assert.equal(e.DB.raw.prepare(`SELECT count(*) n FROM ${table}`).get().n, 2, `${table}: kept by the Russian run`);
+  }
+  tmdbAnswers(known);
   await worker.scheduled({ cron: '7 3 * * *' }, e);
   for (const table of ['segments', 'fresh', 'news', 'recs', 'maxvol', 'intro_jobs']) {
     assert.equal(e.DB.raw.prepare(`SELECT count(*) n FROM ${table}`).get().n, 1, table);
