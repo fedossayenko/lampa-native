@@ -197,16 +197,22 @@ function cardOf(m, type) {
 // stick asks for a film's /card ahead, while focus rests on its card: a film costs one MDBList lookup a day.
 async function edgeCached(request, ctx, make) {
   if (typeof caches === 'undefined') return make(); // node tests without it
-  const hit = await caches.default.match(request);
+  // The key is the address with only the parameters an answer depends on, in order: an extra ?x=<random> would
+  // otherwise miss the cache every time and spend a TMDB call (or more) each.
+  const url = new URL(request.url);
+  const kept = [...url.searchParams].filter(([k]) => CACHE_PARAMS.includes(k)).sort(([a], [b]) => (a < b ? -1 : 1));
+  const key = new Request(`${url.origin}${url.pathname}?${new URLSearchParams(kept)}`);
+  const hit = await caches.default.match(key);
   if (hit) return hit;
   const res = await make();
   if (res.ok) {
-    const put = caches.default.put(request, res.clone());
+    const put = caches.default.put(key, res.clone());
     if (ctx) ctx.waitUntil(put);
     else await put;
   }
   return res;
 }
+const CACHE_PARAMS = ['v', 'lang', 'type', 'years', 'country', 'score', 'sort', 'page'];
 
 // lampa-native's search predictions (titles.sql): ~1000 well-known films and series, refreshed daily by two crons
 // because the free plan allows 50 calls a run: English names with the original titles, then the Russian names.
@@ -548,18 +554,11 @@ async function refreshFollows(env, now) {
   }
 }
 
-// GET /genre/<slug> -> lampa-native's genre page (Search before typing: OK on a genre), as /person's:
-// {line, about, rows}. Rows: New, Popular and Best rated films, then the same for series; TMDB keeps films' and
+// The genres /discover/<slug> takes: [TMDB's film genre id, its series genre id or a keyword]. TMDB keeps films' and
 // series' genres apart (a series has Sci-Fi & Fantasy, no Horror): series of a genre they lack come by TMDB's keyword
-// (horror: Supernatural, Stranger Things; thriller: You, Mindhunter), without anime (keywords bring
-// Death Note to horror, Ranma to romance; Animation has its page). Nothing not out yet.
-// Best rated: TMDB's average with a floor of votes (2,000 a film, 1,500 a series: at 500 2026's hyped shows topped
-// Drama over Breaking Bad), so 12 fans' 9.5 doesn't top a classic. New films: out to stream or buy in the last year
-// (TMDB's digital and physical releases; first out in the last two years: a 4K re-release brought Interstellar),
-// the ones with sources. Popular films: out over a year ago, else they were New's again.
-// Talk, news and reality shows are left out, as on an actor's page. 100 a row (TMDB's first 5 pages): the app hides
-// what you watched and shows 20, so a row stays full. 30 TMDB calls (of the 50 a request may make),
-// a day in the edge cache.
+// (horror: Supernatural, Stranger Things; thriller: You, Mindhunter), without anime (keywords bring Death Note to
+// horror, Ranma to romance; Animation has its page). (The app's genre page once had a /genre/<slug> of its own, 30
+// TMDB calls: /discover with its filters replaced it, and nothing called it.)
 const GENRE_PAGES = {
   action: [28, 10759], adventure: [12, 10759], animation: [16, 16], comedy: [35, 35], crime: [80, 80],
   documentary: [99, 99], drama: [18, 18], family: [10751, 10751], fantasy: [14, 10765],
@@ -570,9 +569,8 @@ const GENRE_PAGES = {
 
 // GET /discover/<genre slug>?type=movie|tv&years=<decade: 2010, or "older": before 1980>&country=<ISO code>&score=<60-90>
 // &sort=best|popular|new&page=<n> -> {cards: [Home card], pages}: a genre with filters, TMDB's
-// discover, 20 a page. Best rated: a floor of 300 votes (a decade or a country holds fewer well-known titles than the
-// genre page's 2,000), popular: 50, new: the newest out first (10). Nothing not out yet, no talk shows; series of a genre
-// TMDB lacks by keyword, as the genre page. A day in the edge cache.
+// discover, 20 a page. Best rated: a floor of 300 votes (a decade or a country holds fewer well-known titles), popular: 50, new: the newest out first (10). Nothing not out yet, no talk shows; series of a genre
+// TMDB lacks by keyword (GENRE_PAGES). A day in the edge cache.
 const SORTS = { best: ['vote_average.desc', 300], popular: ['popularity.desc', 50], new: ['DATE.desc', 10] };
 async function discover(request, env, slug) {
   const q = new URL(request.url).searchParams;
@@ -604,7 +602,7 @@ async function discover(request, env, slug) {
 // for the app's Settings. TorBox down → 502.
 const PLANS = ['Free', 'Essential', 'Pro', 'Standard'];
 async function torboxAccount(request, env) {
-  if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
+  if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
   try {
     const [me, list] = await Promise.all([torboxApi(env, '../user/me'), torboxApi(env, 'mylist?bypass_cache=true')]);
     if (!me.data) throw new Error('no account');
@@ -620,7 +618,7 @@ async function torboxAccount(request, env) {
 // that added one it no longer needs (a release it picked and then passed over). -> {deleted: true|false} (false: not
 // in the account); TorBox refusing or down -> 502.
 async function torboxDrop(request, env, hash) {
-  if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
+  if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
   try {
     const t = (await accountTorrents(env)).find((x) => String(x.hash).toLowerCase() === hash);
     if (t) {
@@ -645,38 +643,6 @@ async function findImdb(request, env, imdb) {
   const m = (o.movie_results || [])[0] || (o.tv_results || [])[0];
   const card = m ? cardOf(m, (o.movie_results || [])[0] ? 'movie' : 'tv') : null;
   return new Response(JSON.stringify({ card }), {
-    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'max-age=86400', ...corsHeaders(request) },
-  });
-}
-
-async function genrePage(request, env, slug) {
-  const ids = GENRE_PAGES[slug];
-  if (!ids) return corsError(request, 'No such genre.', 404);
-  const today = new Date().toISOString().slice(0, 10);
-  const yearAgo = new Date(Date.now() - 365 * 86400e3).toISOString().slice(0, 10);
-  const twoYearsAgo = new Date(Date.now() - 730 * 86400e3).toISOString().slice(0, 10);
-  const rows = [];
-  for (const [type, id, votes, date] of [['movie', ids[0], 2000, 'primary_release_date'], ['tv', ids[1], 1500, 'first_air_date']]) {
-    if (!id) continue;
-    const kind = type === 'movie' ? 'films' : 'series';
-    const base = `&include_adult=false&${typeof id === 'number' ? `with_genres=${id}` : id}&without_genres=${(typeof id === 'number' ? TALK : [...TALK, 16]).join('|')}&${date}.lte=${today}`;
-    const fresh = type === 'movie' ? `&with_release_type=4|5&release_date.gte=${yearAgo}&release_date.lte=${today}`
-      + `&${date}.gte=${twoYearsAgo}` : `&${date}.gte=${yearAgo}`;
-    const popular = base.replace(`.lte=${today}`, `.lte=${type === 'movie' ? yearAgo : today}`);
-    rows.push([`New ${kind}`, type, `${base}&sort_by=popularity.desc${fresh}`],
-      [`Popular ${kind}`, type, `${popular}&sort_by=popularity.desc&vote_count.gte=50`],
-      [`Best rated ${kind}`, type, `${base}&sort_by=vote_average.desc&vote_count.gte=${votes}`]);
-  }
-  const page = (type, query, n) => tmdb(env, `discover/${type}`, `${query}&page=${n}`)
-    .then((res) => (res.ok ? res.json() : {})).then((o) => o.results || []).catch(() => []);
-  const found = await Promise.all(rows.map(async ([title, type, query]) => {
-    const all = (await Promise.all([1, 2, 3, 4, 5].map((n) => page(type, query, n)))).flat();
-    const once = new Map(all.filter((m) => m.poster_path).map((m) => [m.id, m])); // pages shift: a title twice
-    return [title, [...once.values()].map((m) => cardOf(m, type))];
-  }));
-  const full = found.filter(([, cards]) => cards.length);
-  if (!full.length) return corsError(request, 'TMDB unavailable.', 502); // not cached: the next OK asks again
-  return new Response(JSON.stringify({ line: '', about: '', rows: full }), {
     headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'max-age=86400', ...corsHeaders(request) },
   });
 }
@@ -724,7 +690,7 @@ async function fetchSegments(env, tmdb, imdb, season, episode) {
 }
 
 async function segments(request, env, type, tmdb, imdb) {
-  if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
+  if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
   const eps = type === 'movie' ? [[0, 0]] : (new URL(request.url).searchParams.get('e') || '').split(',')
     .map((x) => x.match(/^(\d{1,2}):(\d{1,3})$/)).filter(Boolean).map((m) => [Number(m[1]), Number(m[2])])
     .slice(0, SEGMENTS_MAX);
@@ -798,7 +764,7 @@ function withOwnIntro(value, intro) {
 // episode isn't queued again; recap: a recap's end, from 0, at most the intro's start), done: [<job key>]} -> 204.
 // The detector's (X-Play-Token).
 async function introJobs(request, env) {
-  if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
+  if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
   const json = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...corsHeaders(request) };
   if (request.method === 'GET') {
     const jobs = (await env.DB.prepare('SELECT key, file, name, series FROM intro_jobs ORDER BY t LIMIT 5').all()).results;
@@ -885,7 +851,7 @@ async function cachedOnTorBox(env, hashes) {
 
 async function sources(request, env, ctx, kind, imdb, season, episode) {
   // the TV's only: each answer spends TorBox's cache checks and the addon's patience
-  if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
+  if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
   let list;
   if (request.method === 'POST') {
     const text = await request.text();
@@ -981,6 +947,9 @@ function sameSecret(a, b) {
   return diff === 0;
 }
 
+// The request carries the stick's play token (the app's Net.open adds it to every worker address).
+const isStick = (request, env) => sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN);
+
 // The account's torrents; throws unless TorBox answered with the list (a 401 or 429 is not an empty account).
 async function accountTorrents(env) {
   const list = await torboxApi(env, 'mylist?bypass_cache=true');
@@ -1046,7 +1015,7 @@ async function linkIn(env, id, fileIdx, name) {
 }
 
 async function play(request, env, ctx, hash) {
-  if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
+  if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
   const q = new URL(request.url).searchParams;
   const resume = resumePoint(env, q.get('tl')); // alongside TorBox's three calls
   // played: a torrent a probe added stays in the account (dropProbeAdds)
@@ -1091,7 +1060,7 @@ const PROBES_HOUR = 20;
 const PROBES_DAY = () => 3 * (DROPS - 1);
 
 async function audio(request, env, hash) {
-  if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
+  if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
   if (!env.DB) return corsError(request, 'No database.', 503);
   const json = (body, status = 200) => new Response(JSON.stringify(body), {
     status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...corsHeaders(request) },
@@ -1816,7 +1785,7 @@ async function stream(request, env, ctx, torrent, fileId) {
 // seconds. Per point the newer one wins (updated, ms; stamped here when missing, as from the stick). For the
 // stick (X-Play-Token) and the CUB accounts in CUB_ACCOUNTS (checked with CUB, as /grades): one household's.
 async function timelineAllowed(request, env) {
-  return sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN) || Boolean(await cubUser(request, env));
+  return isStick(request, env) || Boolean(await cubUser(request, env));
 }
 
 async function timeline(request, env) {
@@ -2141,7 +2110,7 @@ async function extFetch(env, name, path, init = {}, ms = EXT_MS) {
 }
 
 async function extension(request, env, name, rest) {
-  if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
+  if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
   if (!env[`EXT_${name.toUpperCase()}`]) return corsError(request, 'Not found.', 404);
   if (Number(request.headers.get('Content-Length')) > EXT_BODY_MAX) return corsError(request, 'Too large.', 413);
   const body = request.method === 'POST' ? await request.text() : undefined;
@@ -2543,7 +2512,7 @@ const voiceAnswer = (request, o) => new Response(JSON.stringify(o), {
 });
 
 async function voiceHear(request, env) {
-  if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
+  if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
   const wav = await request.arrayBuffer();
   if (wav.byteLength <= 44 || wav.byteLength > VOICE_WAV_MAX) return corsError(request, 'A WAV of 30 s at most.', 413);
   try {
@@ -2590,7 +2559,7 @@ async function voiceDiscover(env, d) {
 }
 
 async function voiceFind(request, env) {
-  if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
+  if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
   const ask = await request.json().catch(() => null);
   const text = String(ask?.text || '').trim().slice(0, 300);
   let understood = ask?.understood && typeof ask.understood === 'object' ? ask.understood : null;
@@ -2680,12 +2649,17 @@ export default {
       return corsError(request, `${request.method}: this worker answers ${METHODS.join(', ')} and OPTIONS.`, 405);
     }
 
+    // The app's screens spend the TMDB key (and the Workers quota): the stick's token first, as /card. No other client
+    // asks them: the Lampa plugin uses /grades, /timeline, /mdblist and ?url= only; imdb-import.py sends the token.
+    if (/^\/(home|search|season\/|person\/|find\/|discover\/)/.test(new URL(request.url).pathname) && !isStick(request, env)) {
+      return corsError(request, 'Forbidden.', 403);
+    }
     if (new URL(request.url).pathname === '/grades' && request.method === 'POST') return grades(request, env);
     if (new URL(request.url).pathname === '/home' && request.method === 'GET') return home(request, env);
     if (new URL(request.url).pathname === '/search' && request.method === 'GET') return search(request, env);
     const film = new URL(request.url).pathname.match(/^\/card\/(movie|tv)\/(\d+)$/);
     if (film && request.method === 'GET') { // the token first: each new address spends MDBList's daily 1,000
-      if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
+      if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
       return edgeCached(request, ctx, () => filmCard(request, env, film[1], film[2]));
     }
     const season = new URL(request.url).pathname.match(/^\/season\/(\d+)\/(\d+)$/);
@@ -2696,8 +2670,6 @@ export default {
     if (actor && request.method === 'GET') return edgeCached(request, ctx, () => personPage(request, env, actor[1]));
     const imdb = new URL(request.url).pathname.match(/^\/find\/(tt\d{1,10})$/);
     if (imdb && request.method === 'GET') return edgeCached(request, ctx, () => findImdb(request, env, imdb[1]));
-    const genre = new URL(request.url).pathname.match(/^\/genre\/([a-z-]+)$/);
-    if (genre && request.method === 'GET') return edgeCached(request, ctx, () => genrePage(request, env, genre[1]));
     const picked = new URL(request.url).pathname.match(/^\/discover\/([a-z-]+)$/);
     if (picked && request.method === 'GET') return edgeCached(request, ctx, () => discover(request, env, picked[1]));
     const ext = new URL(request.url).pathname.match(/^\/ext\/([a-z][a-z0-9]{0,15})(\/[\w/-]*)$/);
@@ -2709,14 +2681,14 @@ export default {
     if (drop && request.method === 'POST') return torboxDrop(request, env, drop[1]);
     const mv = new URL(request.url).pathname.match(/^\/maxvol\/(tt\d+)$/);
     if (mv && request.method === 'GET') {
-      if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
+      if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
       return env.DB ? new Response(JSON.stringify(await maxvolAudio(env, mv[1])), {
         headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' },
       }) : corsError(request, 'No database.', 503);
     }
     // The streams addon's address, for the app to ask it itself when it refuses the worker (Cloudflare's shared IPs)
     if (new URL(request.url).pathname === '/addon' && request.method === 'GET') {
-      if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
+      if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
       return env.STREAM_ADDON ? new Response(env.STREAM_ADDON) : corsError(request, 'No streams addon set.', 404);
     }
     const src = new URL(request.url).pathname.match(/^\/streams\/(movie|series)\/(tt\d+)(?:\/(\d+)\/(\d+))?$/);

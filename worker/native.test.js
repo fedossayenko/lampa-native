@@ -31,7 +31,7 @@ test('sends only what a card draws: [id, type, name, year, poster, score, backdr
       ],
     },
   });
-  const res = await worker.fetch(new Request('https://w/home'), env);
+  const res = await worker.fetch(new Request('https://w/home', { headers: tv }), env);
   assert.equal(res.status, 200);
   assert.equal(res.headers.get('Cache-Control'), 'max-age=3600');
   // the other seven rows failed (500) and are left out instead of blanking the screen
@@ -42,7 +42,7 @@ test('sends only what a card draws: [id, type, name, year, poster, score, backdr
 
 test('asks TMDB for English names and descriptions', async () => {
   tmdbAnswers({});
-  await worker.fetch(new Request('https://w/home'), env);
+  await worker.fetch(new Request('https://w/home', { headers: tv }), env);
   await worker.fetch(new Request('https://w/card/movie/7', { headers: tv }), env);
   const tmdbUrls = asked.filter((u) => u.includes('api.themoviedb.org'));
   assert.equal(tmdbUrls.length, 9);
@@ -52,13 +52,13 @@ test('asks TMDB for English names and descriptions', async () => {
 // The stick's org.json (Android's) turns JSON null into the text "null", the tests' one throws: never send null.
 test('always sends strings, even when TMDB leaves out the name or the date', async () => {
   tmdbAnswers({ 'movie/popular': { results: [{ id: 5, poster_path: '/p.jpg' }] } });
-  const { rows } = await (await worker.fetch(new Request('https://w/home'), env)).json();
+  const { rows } = await (await worker.fetch(new Request('https://w/home', { headers: tv }), env)).json();
   assert.deepEqual(rows, [['Popular films', [[5, 'movie', '', '', '/p.jpg', 0, '']]]]);
 });
 
 test('answers 502 when every row fails', async () => {
   tmdbAnswers({});
-  assert.equal((await worker.fetch(new Request('https://w/home'), env)).status, 502);
+  assert.equal((await worker.fetch(new Request('https://w/home', { headers: tv }), env)).status, 502);
 });
 
 const card = async (path) => worker.fetch(new Request('https://w/card/' + path, { headers: tv }), env);
@@ -213,11 +213,11 @@ test('season: its episodes\' numbers, names, runtimes, overviews, stills and air
       air_date: '2009-04-26' },
     { episode_number: 9, name: 'Episode 9', runtime: null, overview: '', still_path: null, air_date: '2026-11-10' },
     { episode_number: 10, name: 'Episode 10', runtime: null, overview: '', still_path: null, air_date: null }] } });
-  const res = await worker.fetch(new Request('https://w/season/1396/2'), env);
+  const res = await worker.fetch(new Request('https://w/season/1396/2', { headers: tv }), env);
   assert.deepEqual((await res.json()).episodes, [[8, 'Better Call Saul', 47, 'Badger is arrested.', '/s8.jpg', '2009-04-26'],
     [9, 'Episode 9', 0, '', '', '2026-11-10'], [10, 'Episode 10', 0, '', '', '']]);
   assert.equal(res.headers.get('Cache-Control'), 'max-age=86400');
-  assert.equal((await worker.fetch(new Request('https://w/season/1/1'), env)).status, 502, 'TMDB down');
+  assert.equal((await worker.fetch(new Request('https://w/season/1/1', { headers: tv }), env)).status, 502, 'TMDB down');
 });
 
 test('season in the audio language: its names and overviews where TMDB has the overview translated', async () => {
@@ -232,29 +232,29 @@ test('season in the audio language: its names and overviews where TMDB has the o
   };
   asked = [];
   globalThis.fetch = fake;
-  const res = await worker.fetch(new Request('https://w/season/1396/1?lang=RU'), env);
+  const res = await worker.fetch(new Request('https://w/season/1396/1?lang=RU', { headers: tv }), env);
   assert.deepEqual((await res.json()).episodes.map((e) => [e[1], e[3]]),
     [['Пилот', 'Уолт болен.'], ['Cat', 'A body.']]);
   assert.equal(asked.length, 2);
   assert.equal(res.headers.get('Cache-Control'), 'max-age=86400');
   globalThis.fetch = async (url) => (new URL(url).searchParams.get('language') === 'en-US' ? fake(url)
     : Promise.reject(new Error('reset')));
-  const down = await worker.fetch(new Request('https://w/season/1396/1?lang=RU'), env);
+  const down = await worker.fetch(new Request('https://w/season/1396/1?lang=RU', { headers: tv }), env);
   assert.deepEqual((await down.json()).episodes.map((e) => e[1]), ['Pilot', 'Cat'], 'Russian call failed: English');
   assert.equal(down.headers.get('Cache-Control'), 'max-age=300', 'and kept 5 minutes only');
   globalThis.fetch = async (url) => (new URL(url).searchParams.get('language') === 'en-US' ? fake(url)
     : new Response('{"episodes": [', { status: 200 })); // cut off mid-body
-  const broken = await worker.fetch(new Request('https://w/season/1396/1?lang=RU'), env);
+  const broken = await worker.fetch(new Request('https://w/season/1396/1?lang=RU', { headers: tv }), env);
   assert.deepEqual((await broken.json()).episodes.map((e) => e[1]), ['Pilot', 'Cat'], 'a broken Russian body: English');
   globalThis.fetch = fake;
   for (const lang of ['EN', '', 'ru', 'R1']) {
     asked = [];
-    await worker.fetch(new Request(`https://w/season/1396/1?lang=${lang}`), env);
+    await worker.fetch(new Request(`https://w/season/1396/1?lang=${lang}`, { headers: tv }), env);
     assert.equal(asked.length, 1, `?lang=${lang}: en-US only`);
   }
 });
 
-const person = async (id) => worker.fetch(new Request('https://w/person/' + id), env);
+const person = async (id) => worker.fetch(new Request('https://w/person/' + id, { headers: tv }), env);
 const credit = (id, type, name, date, votes, average, more = {}) => ({
   id, media_type: type, [type === 'tv' ? 'name' : 'title']: name, [type === 'tv' ? 'first_air_date' : 'release_date']: date,
   poster_path: `/p${id}.jpg`, vote_count: votes, vote_average: average, character: 'Someone', genre_ids: [18], ...more,
@@ -671,7 +671,7 @@ test('search: films and series with a poster, as Home cards; the query reaches T
       ],
     },
   });
-  const res = await worker.fetch(new Request('https://w/search?q=' + encodeURIComponent('тёмный рыцарь & co')), env);
+  const res = await worker.fetch(new Request('https://w/search?q=' + encodeURIComponent('тёмный рыцарь & co'), { headers: tv }), env);
   assert.equal(res.status, 200);
   assert.equal(res.headers.get('Cache-Control'), 'max-age=3600');
   assert.deepEqual((await res.json()).results, [[155, 'movie', 'The Dark Knight', '2008', '/k.jpg', 85, '/kb.jpg']]);
@@ -682,7 +682,7 @@ test('search: films and series with a poster, as Home cards; the query reaches T
 
 test('search: an empty query asks nothing', async () => {
   tmdbAnswers({});
-  const res = await worker.fetch(new Request('https://w/search?q=%20'), env);
+  const res = await worker.fetch(new Request('https://w/search?q=%20', { headers: tv }), env);
   assert.deepEqual((await res.json()).results, []);
   assert.equal(asked.length, 0);
   assert.equal(res.headers.get('Cache-Control'), 'no-store'); // nothing found isn't kept: the index may fill later
@@ -725,7 +725,7 @@ const find = async (e, q) => {
     { id: 155, media_type: 'movie', title: 'The Dark Knight', poster_path: '/k.jpg', release_date: '2008-07-16', vote_average: 8.5 },
     { id: 5, media_type: 'movie', title: 'Inter Nos', poster_path: '/n.jpg', release_date: '1982-01-01', vote_average: 6 },
   ] } });
-  const res = await worker.fetch(new Request('https://w/search?q=' + encodeURIComponent(q)), e);
+  const res = await worker.fetch(new Request('https://w/search?q=' + encodeURIComponent(q), { headers: tv }), e);
   return (await res.json()).results.map((c) => c[2]);
 };
 
@@ -1715,34 +1715,18 @@ test('voice/find: no Claude answer → the free model reads the text (the shared
   assert.equal((await voice('find', JSON.stringify({ text: 'x' }), e, 'wrong')).status, 403);
 });
 
-test('a genre page: popular, best rated and new films, then series; series by keyword where TMDB has no such genre', async () => {
-  const queries = [];
-  globalThis.fetch = async (url) => {
-    const u = new URL(url);
-    queries.push(u.pathname.replace('/3/', '') + ' ' + u.searchParams.get('sort_by') + ' ' + (u.searchParams.get('with_genres') || 'k' + u.searchParams.get('with_keywords')));
-    const type = u.pathname.endsWith('movie') ? 'movie' : 'tv';
-    return new Response(JSON.stringify({ results: [
-      { id: 1, title: 'A', name: 'A', release_date: '2024-01-01', first_air_date: '2024-01-01', poster_path: '/a.jpg' },
-      { id: 2, title: 'No poster', poster_path: null },
-    ].map((m) => ({ ...m, id: m.id + (type === 'tv' ? 100 : 0) })) }));
-  };
-  const page = async (slug) => worker.fetch(new Request('https://w/genre/' + slug), env);
-  const o = await (await page('science-fiction')).json();
-  assert.deepEqual(o.rows.map(([t]) => t),
-    ['New films', 'Popular films', 'Best rated films', 'New series', 'Popular series', 'Best rated series']);
-  assert.deepEqual(o.rows[0][1].map((c) => c[0]), [1]);
-  assert.deepEqual(o.rows[3][1].map((c) => c[0]), [101]);
-  assert.ok(queries.includes('discover/tv vote_average.desc 10765')); // Sci-Fi & Fantasy for series
-  assert.equal(queries.length, 30); // 5 pages a row: 100 to hide the watched ones from
-  queries.length = 0;
-  const horror = await (await page('horror')).json();
-  assert.equal(horror.rows.length, 6);
-  assert.ok(queries.includes('discover/movie vote_average.desc 27'));
-  assert.ok(queries.includes('discover/tv vote_average.desc k315058')); // TMDB's "horror" keyword
-  queries.length = 0;
-  assert.equal((await (await page('kids')).json()).rows.length, 3); // no Kids genre for films
-  assert.ok(queries.every((q) => q.startsWith('discover/tv')));
-  assert.equal((await page('nope')).status, 404);
+test('the app\'s screens need the stick\'s token (they spend the TMDB key); the plugin\'s routes and CORS preflights don\'t', async () => {
+  tmdbAnswers({ 'trending/all/day': { results: [] } });
+  for (const path of ['home', 'search?q=dune', 'season/1396/1', 'person/1', 'find/tt0133093', 'discover/thriller']) {
+    const none = await worker.fetch(new Request('https://w/' + path), env);
+    assert.equal(none.status, 403, path);
+    assert.equal(none.headers.get('Access-Control-Allow-Origin'), '*');
+    const wrong = await worker.fetch(new Request('https://w/' + path, { headers: { 'X-Play-Token': 'nope' } }), env);
+    assert.equal(wrong.status, 403, path);
+  }
+  assert.deepEqual(asked, [], 'TMDB was never asked');
+  assert.equal((await worker.fetch(new Request('https://w/home', { method: 'OPTIONS' }), env)).status, 204);
+  assert.equal((await worker.fetch(new Request('https://w/genre/horror', { headers: tv }), env)).status, 404, 'no /genre any more');
 });
 
 test('find: a title by its IMDb id (films first), null when TMDB has none', async () => {
@@ -1750,7 +1734,7 @@ test('find: a title by its IMDb id (films first), null when TMDB has none', asyn
     poster_path: '/m.jpg', vote_average: 8.2 }], tv_results: [] },
   'find/tt0903747': { movie_results: [], tv_results: [{ id: 1396, name: 'Breaking Bad', first_air_date: '2008-01-20',
     poster_path: '/b.jpg' }] }, 'find/tt0000001': { movie_results: [], tv_results: [] } });
-  const find = async (id) => (await worker.fetch(new Request('https://w/find/' + id), env)).json();
+  const find = async (id) => (await worker.fetch(new Request('https://w/find/' + id, { headers: tv }), env)).json();
   assert.deepEqual((await find('tt0133093')).card.slice(0, 4), [603, 'movie', 'The Matrix', '1999']);
   assert.deepEqual((await find('tt0903747')).card.slice(0, 2), [1396, 'tv']);
   assert.equal((await find('tt0000001')).card, null);
@@ -1765,7 +1749,7 @@ test('discover: a genre with filters, one TMDB page; decade, country, score and 
       { id: 1, title: 'Prisoners', release_date: '2013-09-20', poster_path: '/p.jpg', vote_average: 8.1 },
       { id: 2, title: 'No poster', poster_path: null }] }));
   };
-  const ask = async (q) => worker.fetch(new Request('https://w/discover/thriller' + q), env);
+  const ask = async (q) => worker.fetch(new Request('https://w/discover/thriller' + q, { headers: tv }), env);
   const o = await (await ask('?years=2010&country=US&score=70&sort=best&page=2')).json();
   assert.deepEqual(o.cards.map((c) => c[2]), ['Prisoners']);
   assert.equal(o.pages, 500, 'TMDB gives 500 pages at most');
@@ -1780,7 +1764,7 @@ test('discover: a genre with filters, one TMDB page; decade, country, score and 
   assert.deepEqual([t.get('with_keywords'), t.get('first_air_date.lte'), t.get('with_origin_country'), t.get('vote_average.gte'),
     t.get('sort_by')], ['316362', '1979-12-31', null, null, 'first_air_date.desc']);
   assert.equal((await ask('x'.replace('x', '') + '?type=movie').then((r) => r.status)), 200);
-  assert.equal((await worker.fetch(new Request('https://w/discover/kids'), env)).status, 404, 'no Kids genre for films');
+  assert.equal((await worker.fetch(new Request('https://w/discover/kids', { headers: tv }), env)).status, 404, 'no Kids genre for films');
   for (const sort of ['constructor', '__proto__', 'toString']) assert.equal((await ask('?sort=' + sort)).status, 200, sort);
 });
 
@@ -2350,4 +2334,24 @@ test('mine: "learned" comes from the extension, {} when there is none, it is dow
   cub(dump);
   const down = { fetch: async () => { throw new Error('timeout'); } };
   assert.equal('learned' in (await (await getMine({ ...mineEnv(), EXT_LEARN: down })).json()), false);
+});
+
+// The Cache API's key is the address with only the parameters an answer depends on: ?x=<random> can't miss it.
+test('edge cache: unknown query parameters share one entry, a language or version doesn\'t', async () => {
+  const kept = new Map();
+  globalThis.caches = { default: {
+    match: async (req) => kept.get(req.url)?.clone(),
+    put: async (req, res) => { kept.set(req.url, res); },
+  } };
+  try {
+    tmdbAnswers({ 'tv/1/season/1': { episodes: [{ episode_number: 1, name: 'Pilot' }] } });
+    const get = (q) => worker.fetch(new Request('https://w/season/1/1' + q, { headers: tv }), env);
+    assert.equal((await get('?v=2&x=1')).status, 200);
+    assert.equal((await get('?x=2&v=2&y=3')).status, 200);
+    assert.equal(asked.length, 1, 'the second came from the cache');
+    await get('?v=3');
+    assert.equal(asked.length, 2, 'another version is another entry');
+  } finally {
+    delete globalThis.caches;
+  }
 });

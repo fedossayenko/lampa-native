@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 
 WORKER = os.environ['WORKER']  # https://<name>.<account>.workers.dev
 NPX = os.environ.get('NPX', 'npx')
+# the stick's play token (tools/connect.sh keeps it here): /find spends the worker's TMDB key, so it asks for it
+TOKEN = open(os.path.expanduser('~/.config/lampa-native/play_token'), encoding='utf-8').read().strip()
 
 
 # IMDb's 1-10 → lampa-native's grades (Cub.GRADES): 2 Loved, 1 Good, 0 OK, -1 Bad, the mapping that agreed best
@@ -31,7 +33,7 @@ def grade(score):
 
 def find(imdb):
     # Cloudflare turns away Python's own User-Agent (403)
-    ask = urllib.request.Request(f'{WORKER}/find/{imdb}', headers={'User-Agent': 'imdb-import'})
+    ask = urllib.request.Request(f'{WORKER}/find/{imdb}', headers={'User-Agent': 'imdb-import', 'X-Play-Token': TOKEN})
     with urllib.request.urlopen(ask, timeout=30) as r:
         return json.load(r)['card']
 
