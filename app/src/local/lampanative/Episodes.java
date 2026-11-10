@@ -89,7 +89,7 @@ final class Episodes extends Main.Part {
             TextView d = (TextView) r.getChildAt(1);
             d.setSingleLine(false); // "13 episodes · 7 watched · watching E8" in 216 dp
             d.setMaxLines(2);
-            Main.marked(r, 1, () -> line(s));
+            FilmPage.marked(r, 1, () -> line(s));
             r.setOnFocusChangeListener((v, focused) -> {
                 if (focused) episodesOf(s, r);
             });
@@ -118,7 +118,7 @@ final class Episodes extends Main.Part {
         chosen = row;
         row.setSelected(true); // lit while focus is in its episodes
         shown = s;
-        Main.remarkView(sub);
+        FilmPage.remarkView(sub);
         m.pix.trim(stills, true);
         stills.clear();
         about = List.of();
@@ -129,7 +129,7 @@ final class Episodes extends Main.Part {
             () -> Film.season(new String(read(Film.seasonUrl(c, s.number())), StandardCharsets.UTF_8)), got -> {
                 if (shown != s) return;
                 about = got;
-                Main.remarkView(episodes);
+                FilmPage.remarkView(episodes);
                 m.pix.updateWindow();
             }, () -> { });
         PrimitiveIterator.OfInt e = IntStream.rangeClosed(1, s.episodes()).iterator();

@@ -197,10 +197,10 @@ final class Playback extends Main.Part {
         if (t == null) return;
         m.marks.put(p.key(), new Timeline.Point((int) t[0], (int) t[1], (int) t[2]));
         m.played.add(p.key());
-        m.remark(); // the episode's row under the sources
+        m.filmPage.remark(); // the episode's row under the sources
         if (p.season() == 0 && t[2] >= 90 && !m.cub.grades().containsKey(p.card()) && m.account() != null) {
-            m.askGradeFor = p.card();
-            m.askGrade();
+            m.filmPage.askGradeFor = p.card();
+            m.filmPage.askGrade();
         }
         String json = p.body(t);
         m.load(null, "timeline", () -> m.ask("/timeline", json.getBytes(StandardCharsets.UTF_8)).code(), code -> {

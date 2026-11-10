@@ -170,7 +170,7 @@ final class SearchScreen extends Main.Part {
             for (int i = 0; i < Search.GENRES.size(); i++) { // 3 a row: 3 keys 3 wide fill the 508 dp
                 if (i % 3 == 0) results.addView(line = new LinearLayout(m));
                 String g = Search.GENRES.get(i);
-                line.addView(m.ux.key(g, 3, v -> m.showGenre(g)));
+                line.addView(m.ux.key(g, 3, v -> m.filmPage.showGenre(g)));
             }
         } else if (found.isEmpty()) {
             results.addView(m.ux.text("Nothing found", 18, 0xff9a9a9a));
@@ -190,7 +190,7 @@ final class SearchScreen extends Main.Part {
                 m.ui.removeCallbacks(soon); // a search still pending would rebuild these under the film
                 m.settings().edit().putString("searches",
                     Search.remember(m.settings().getString("searches", ""), asked)).apply(); // what was found
-                m.showFilm(c, null);
+                m.filmPage.showFilm(c, null);
             });
             row.addView(card);
         }
@@ -269,6 +269,6 @@ final class SearchScreen extends Main.Part {
         }
         show(text, cards);
         results.requestFocus(); // the first film (none: stays where it was)
-        if (a.open() && !cards.isEmpty()) m.showFilm(cards.get(0), null);
+        if (a.open() && !cards.isEmpty()) m.filmPage.showFilm(cards.get(0), null);
     }
 }

@@ -71,7 +71,7 @@ final class Discover extends Main.Part {
             set(f);
         });
         pill("Surprise me", v -> {
-            if (!shown.isEmpty()) m.showFilm(shown.get((int) (Math.random() * shown.size())), null);
+            if (!shown.isEmpty()) m.filmPage.showFilm(shown.get((int) (Math.random() * shown.size())), null);
         });
         HorizontalScrollView bar = new HorizontalScrollView(m); // seven pills are wider than the screen
         bar.setHorizontalScrollBarEnabled(false);
@@ -175,7 +175,7 @@ final class Discover extends Main.Part {
                 lp.topMargin = m.dp(8);
                 grid.addView(last, lp);
             }
-            View card = m.filmCard(c, pics);
+            View card = m.filmPage.filmCard(c, pics);
             LinearLayout in = last;
             card.setOnFocusChangeListener((v, focused) -> { // near the end: the next page
                 if (focused && grid.indexOfChild(in) >= grid.getChildCount() - 2) more();
