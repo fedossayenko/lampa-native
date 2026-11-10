@@ -1870,12 +1870,14 @@ function lampaHash(s) {
 // Home cards in English for CUB's cards (CUB keeps Lampa's card as it was shown: Russian names and posters from CUB's
 // own lists): the search index's (titles), else TMDB's en-US, which then go into the index. [type, id] pairs in;
 // a card for each, in order (TMDB failed or more than `fetchMax` missing: the card CUB kept).
+// fetchMax: a number, or {left}: a budget shared with other calls, spent as TMDB is asked (the cron's 50 subrequests).
 async function englishCards(env, wanted, fallback, fetchMax = 20) {
   const pairs = JSON.stringify(wanted.map(([type, id]) => ({ type, id })));
   const known = new Map(env.DB ? (await env.DB.prepare(`SELECT t.type, t.id, t.card FROM titles t
       JOIN json_each(?) j ON t.type = j.value->>'type' AND t.id = j.value->>'id'`).bind(pairs).all()
     .then((r) => r.results).catch(() => [])).map((r) => [`${r.type}:${r.id}`, JSON.parse(r.card)]) : []);
-  const missing = wanted.filter(([type, id]) => !known.has(`${type}:${id}`)).slice(0, fetchMax);
+  const missing = wanted.filter(([type, id]) => !known.has(`${type}:${id}`)).slice(0, fetchMax.left ?? fetchMax);
+  if (fetchMax.left !== undefined) fetchMax.left -= missing.length;
   const fetched = (await Promise.all(missing.map(([type, id]) => tmdb(env, `${type}/${id}`)
     .then((res) => (res.ok ? res.json() : null)).then((m) => (m && m.poster_path ? { type, m } : null))
     .catch(() => null)))).filter(Boolean);
@@ -2082,6 +2084,9 @@ async function refreshForYou(env) {
       WHERE true ON CONFLICT (key) DO UPDATE SET list = excluded.list, t = excluded.t`).bind(JSON.stringify(got)).run();
   }
   for (const r of got) have.set(r.key, r);
+  // The run's 50 subrequests (free plan): the recommendations asked above, then the cards the rankings still lack, all
+  // within RECS_FETCH, so follows (10) and the night's drops (13) fit beside it however many accounts there are.
+  const cards = { left: RECS_FETCH - due.length };
   for (const [i, who] of whos.entries()) {
     const g = graded[i] || {};
     const score = new Map();
@@ -2098,9 +2103,9 @@ async function refreshForYou(env) {
     }
     const top = [...score].filter(([, x]) => x > 0).sort((a, b) => b[1] - a[1] || tie.get(b[0]) - tie.get(a[0]))
       .slice(0, 60).map(([k]) => k.split('_'));
-    const cards = (await englishCards(env, top.map(([type, id]) => [type, Number(id)]), top.map(() => null), 15)).filter(Boolean);
+    const picked = (await englishCards(env, top.map(([type, id]) => [type, Number(id)]), top.map(() => null), cards)).filter(Boolean);
     await env.DB.prepare(`INSERT INTO foryou (who, cards, t) VALUES (?, ?, ?)
-      ON CONFLICT (who) DO UPDATE SET cards = excluded.cards, t = excluded.t`).bind(who, JSON.stringify(cards), now).run();
+      ON CONFLICT (who) DO UPDATE SET cards = excluded.cards, t = excluded.t`).bind(who, JSON.stringify(picked), now).run();
   }
 }
 // The hourly cron: New in 4K at 04 UTC (and while it has nothing), For you the other hours (each its own 50

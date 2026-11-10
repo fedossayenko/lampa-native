@@ -2433,3 +2433,26 @@ test('bodies: a stick\'s streams post with a null in it is skipped, not a 500; t
   assert.equal((await post('/streams/movie/tt1', '{}', { 'Content-Length': '5000000' })).status, 413);
   assert.equal((await post('/voice/hear', 'x', { 'Content-Length': '2000000' })).status, 413);
 });
+
+// The hourly run has 50 subrequests on the free plan; follows (10) and the night's drops (13) share them with For you.
+test('cron For you: the recommendations and the cards missing from the index together stay within RECS_FETCH, however many accounts', async () => {
+  const seeds = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`movie_${i + 1}`, { g: 2, t: i + 1 }]));
+  const grades = { '42:7': seeds, '43:1': seeds };
+  const e = { ...mineEnv(), GRADES: { list: async () => ({ keys: [{ name: '42:7' }, { name: '43:1' }] }), get: async (k) => grades[k] ?? null } };
+  e.DB.raw.prepare("INSERT INTO uhd (type, id, t, pos, card) VALUES ('movie', 99, 1, 0, null)").run();
+  let calls = 0;
+  globalThis.fetch = async (url) => {
+    const u = new URL(url);
+    calls++;
+    if (u.pathname.endsWith('/recommendations')) { // 30 recommendations each, none in the title index
+      const n = Number(u.pathname.split('/')[3]);
+      return new Response(JSON.stringify({ results: Array.from({ length: 30 }, (_, i) => ({ id: 1000 + n * 30 + i,
+        title: 'R', poster_path: '/p.jpg', vote_count: 500, vote_average: 7, genre_ids: [] })) }));
+    }
+    const m = u.pathname.match(/\/3\/(movie|tv)\/(\d+)$/);
+    return new Response(JSON.stringify({ id: Number(m[2]), title: 'R', poster_path: '/p.jpg' }));
+  };
+  await worker.scheduled({ cron: '23 * * * *', scheduledTime: Date.UTC(2026, 9, 31, 5, 23) }, e);
+  assert.ok(calls <= 25, `${calls} TMDB calls`);
+  assert.ok(calls > 20, 'the budget was used, not skipped');
+});
