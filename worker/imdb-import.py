@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""IMDb's ratings export (imdb.com → Your Ratings → ⋯ → Export) into the grades lampa-native and Lampa share (KV GRADES).
+"""IMDb's ratings export (imdb.com → Your Ratings → ⋯ → Export) into the grades lampa-native and Lampa share (D1 grades).
 
     WORKER=https://… python3 -I worker/imdb-import.py ratings.csv            # dry run: what would change, and IMDb score vs grade
     WORKER=https://… python3 -I worker/imdb-import.py ratings.csv --write    # merge it in
@@ -7,6 +7,8 @@
 Each title is found by its IMDb id (the worker's /find). A grade counts as watched: the film leaves My list, Finish later
 and Continue browsing. Per title the newer one wins, as /grades does: IMDb's "Date Rated" against the grade's time,
 so a grade given in Lampa after the IMDb rating (or removed since) stays. Runs again safely with a newer export.
+The new grades go in as one SQL file whose rows each replace only an older one (a grade given on the TV while this runs
+stays); the account is the one that has rows (open Home once after a deploy, which moves grades kept in KV).
 """
 import csv
 import json
@@ -18,9 +20,12 @@ import urllib.request
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from pathlib import Path
 
 WORKER = os.environ['WORKER']  # https://<name>.<account>.workers.dev
 NPX = os.environ.get('NPX', 'npx')
+# the stick's play token (tools/connect.sh keeps it here): /find spends the worker's TMDB key, so it asks for it
+TOKEN = Path('~/.config/lampa-native/play_token').expanduser().read_text(encoding='utf-8').strip()
 
 
 # IMDb's 1-10 → lampa-native's grades (Cub.GRADES): 2 Loved, 1 Good, 0 OK, -1 Bad, the mapping that agreed best
@@ -31,25 +36,33 @@ def grade(score):
 
 def find(imdb):
     # Cloudflare turns away Python's own User-Agent (403)
-    ask = urllib.request.Request(f'{WORKER}/find/{imdb}', headers={'User-Agent': 'imdb-import'})
+    ask = urllib.request.Request(f'{WORKER}/find/{imdb}', headers={'User-Agent': 'imdb-import', 'X-Play-Token': TOKEN})
     with urllib.request.urlopen(ask, timeout=30) as r:
         return json.load(r)['card']
 
 
-def wrangler(*args, **kw):
-    return subprocess.run([NPX, 'wrangler', 'kv', 'key', *args, '--binding', 'GRADES', '--remote'],
-                          check=True, capture_output=True, text=True, cwd=os.path.dirname(os.path.abspath(__file__)),
-                          **kw).stdout  # beside wrangler.toml
+def q(text):
+    return "'" + text.replace("'", "''") + "'"  # an SQL string literal
+
+
+def sql(*args):
+    """wrangler's D1 on the worker's database (the name wrangler.toml holds); the rows of a SELECT."""
+    here = os.path.dirname(os.path.abspath(__file__))  # beside wrangler.toml
+    name = next(line.split('"')[1] for line in open(os.path.join(here, 'wrangler.toml'), encoding='utf-8')
+                if line.startswith('database_name'))
+    out = subprocess.run([NPX, 'wrangler', 'd1', 'execute', name, '--remote', '--json', *args],
+                         check=True, capture_output=True, text=True, cwd=here).stdout
+    return json.loads(out)[0]['results']
 
 
 def main():
     rows = list(csv.DictReader(open(sys.argv[1], encoding='utf-8-sig')))
     write = '--write' in sys.argv
-    keys = [k['name'] for k in json.loads(wrangler('list'))]
+    keys = [r['who'] for r in sql('--command', 'SELECT DISTINCT who FROM grades')]
     if len(keys) != 1:
-        sys.exit(f'expected one account in GRADES, found {keys}')
+        sys.exit(f'expected one account with grades, found {keys}')
     who = keys[0]
-    have = json.loads(wrangler('get', who) or '{}')
+    have = {r['card']: json.loads(r['v']) for r in sql('--command', f"SELECT card, v FROM grades WHERE who = '{who}'")}
     with ThreadPoolExecutor(8) as pool:
         cards = list(pool.map(lambda r: find(r['Const']), rows))
     found, missing, kept, compare = {}, [], 0, Counter()
@@ -81,12 +94,13 @@ def main():
     for m in missing:
         print('  not found:', m)
     if write and found:
-        have.update(found)
-        with tempfile.NamedTemporaryFile('w', suffix='.json') as f:
-            json.dump(have, f)
+        with tempfile.NamedTemporaryFile('w', suffix='.sql') as f:
+            for key, v in found.items():
+                f.write(f"INSERT INTO grades (who, card, t, v) VALUES ({q(who)}, {q(key)}, {v['t']}, {q(json.dumps(v))}) "
+                        'ON CONFLICT (who, card) DO UPDATE SET t = excluded.t, v = excluded.v WHERE excluded.t > grades.t;\n')
             f.flush()
-            wrangler('put', who, '--path', f.name)
-        print(f'written: {len(have)} grades for {who}')
+            sql('--file', f.name)
+        print(f'written: {len(found)} grades for {who}')
 
 
 if __name__ == '__main__':

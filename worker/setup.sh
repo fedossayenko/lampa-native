@@ -13,7 +13,7 @@ if [ ! -f wrangler.toml ]; then
         echo "Couldn't make the KV namespace or the D1 database (signed in? npx wrangler@4 login)." >&2
         exit 1
     fi
-    sed -e "s/^name = .*/name = \"$NAME\"/" -e "s/<KV_ID>/$kv/" -e "s/<D1_NAME>/$NAME/" -e "s/<D1_ID>/$db/" \
+    sed -e "s/^name = .*/name = \"$NAME\"/" -e "s/<KV_ID>/$kv/" -e "s/<D1_NAME>/$NAME/" -e "s/<D1_ID>/$db/" -e "s/<WORKER>/$NAME/" \
         wrangler.example.toml > wrangler.toml
 fi
 db=$(sed -n 's/^database_name = "\(.*\)"$/\1/p' wrangler.toml)

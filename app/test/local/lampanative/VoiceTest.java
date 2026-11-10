@@ -2,6 +2,7 @@ package local.lampanative;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 class VoiceTest {
@@ -58,10 +59,16 @@ class VoiceTest {
         assert "97%".equals(Voice.badge(97)) && Voice.badge(-1) == null;
     }
 
-    // The same HMAC as the home server's (python: hmac.new(b"abc", b"home", hashlib.sha256).hexdigest()).
-    void testHomeToken() {
-        String t = Voice.homeToken("abc");
-        assert t.equals("a8689663e13cc261576ae1f0508c46a7f6ee6832b4f86d606be214ec050a5a64") : t;
+    // The same HMAC as the home server's (python: hmac.new(b"abc", b"home\n1760000000000\n" + body, hashlib.sha256).hexdigest()),
+    // the time and the body in it: another body or another time is another signature.
+    void testHomeAuth() {
+        byte[] body = "{\"text\":\"dune\"}".getBytes(StandardCharsets.UTF_8);
+        String[] a = Voice.homeAuth("abc", body, 1760000000000L);
+        assert a[0].equals("1760000000000") : a[0];
+        assert a[1].equals("c194caad455ed94f5e479e53c6f8ea1f3202d408e9fc553d3b5c00133bd2645e") : a[1];
+        assert !a[1].equals(Voice.homeAuth("abc", body, 1760000000001L)[1]);
+        assert !a[1].equals(Voice.homeAuth("abc", "{\"text\":\"x\"}".getBytes(StandardCharsets.UTF_8), 1760000000000L)[1]);
+        assert !a[1].equals(Voice.homeAuth("abd", body, 1760000000000L)[1]);
     }
 
     // Only a JSON object from the home server goes on to /voice/find; anything else is "didn't answer".

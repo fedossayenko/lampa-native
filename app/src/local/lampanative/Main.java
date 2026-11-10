@@ -2605,8 +2605,11 @@ public class Main extends Activity {
             // the home network: no answer in 3 s = not there (a computer just woken or busy took over 1.5 s); the
             // worker's own understanding meanwhile
             c.setConnectTimeout(3000);
-            c.setRequestProperty("X-Play-Token", Voice.homeToken(token()));
-            Answer a = send(c, Voice.understandBody(text).getBytes(StandardCharsets.UTF_8), "application/json");
+            byte[] body = Voice.understandBody(text).getBytes(StandardCharsets.UTF_8);
+            String[] auth = Voice.homeAuth(token(), body, System.currentTimeMillis());
+            c.setRequestProperty("X-Home-Time", auth[0]);
+            c.setRequestProperty("X-Home-Sig", auth[1]);
+            Answer a = send(c, body, "application/json");
             if (a.code() == 200) return Voice.understood(a.body());
             Log.w(TAG, "voice: Claude Code answered " + a.code());
         } catch (IOException | JSONException e) {
@@ -3217,10 +3220,12 @@ public class Main extends Activity {
                 // the home network: no answer in 5 s = not there (a computer just woken or busy took over 1.5 s); the
                 // episodes are on the sheet meanwhile
                 h.setConnectTimeout(5000);
-                h.setRequestProperty("X-Play-Token", Voice.homeToken(token()));
-                Answer a = send(h, Film.recapBody(c, upto[0], upto[1], told, lang == null ? "English" : language(lang))
-                    .getBytes(StandardCharsets.UTF_8),
-                    "application/json");
+                byte[] body = Film.recapBody(c, upto[0], upto[1], told, lang == null ? "English" : language(lang))
+                    .getBytes(StandardCharsets.UTF_8);
+                String[] auth = Voice.homeAuth(token(), body, System.currentTimeMillis());
+                h.setRequestProperty("X-Home-Time", auth[0]);
+                h.setRequestProperty("X-Home-Sig", auth[1]);
+                Answer a = send(h, body, "application/json");
                 if (a.code() == 200) text = new JSONObject(a.body()).getString("text");
                 else Log.w(TAG, "story so far: Claude answered " + a.code());
             } catch (IOException | JSONException e) {

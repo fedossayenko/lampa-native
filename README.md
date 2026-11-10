@@ -103,8 +103,9 @@ app opens YouTube links for trailers.
      an intro finder by sound (`intro-detect.py`), for a Mac at home; the plists say where the files go (the play
      token in `~/.lampa-intros/play_token`, the worker's address in `~/.lampa-intros/worker`). Voice search there
      runs Claude Code under your own sign-in, so check your plan allows it. Build the app with
-     `HOME_SERVER=<ip>:8790` (in `app/local.env`): it then talks plain http to that address only, with a token made
-     from the play token.
+     `HOME_SERVER=<ip>:8790` (in `app/local.env`): it then talks plain http to that address only, signing each request
+     (time and body) with a key made from the play token, so a copy sniffed on the network can't be sent again. The
+     server listens on the Mac's home-network address only.
 
 The app shows the worker it uses and TMDB's notice under Settings → Worker and About. If you also use the
 [Lampa TorBox plugin](https://github.com/fedossayenko/lampa-torbox-en), the worker can be its CORS proxy too:

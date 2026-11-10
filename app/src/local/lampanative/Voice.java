@@ -26,12 +26,16 @@ final class Voice {
     static final int KEYCODE_ALEXA = 322; // Fire OS's own code for the voice button (its key policy's log)
 
     // What the home server (Claude for voice search and Story so far, plain http on the home network) gets instead of
-    // the play token: made from it, so it opens nothing at the worker if read on the way. HMAC-SHA256(token, "home").
-    static String homeToken(String playToken) {
+    // the play token: {X-Home-Time, X-Home-Sig}, the time in ms and HMAC-SHA256(token, "home\n" + time + "\n" + body)
+    // in hex. It opens nothing at the worker if read on the way, and the server takes a request within 60 s of its time
+    // and once, so a copy of it can't be sent again or with another body.
+    static String[] homeAuth(String playToken, byte[] body, long nowMs) {
         try {
             javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
             mac.init(new javax.crypto.spec.SecretKeySpec(playToken.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-            return String.format("%064x", new java.math.BigInteger(1, mac.doFinal("home".getBytes(StandardCharsets.UTF_8))));
+            String time = String.valueOf(nowMs);
+            mac.update(("home\n" + time + "\n").getBytes(StandardCharsets.UTF_8));
+            return new String[] {time, String.format("%064x", new java.math.BigInteger(1, mac.doFinal(body)))};
         } catch (java.security.GeneralSecurityException e) {
             throw new IllegalStateException(e); // HmacSHA256 is always there
         }

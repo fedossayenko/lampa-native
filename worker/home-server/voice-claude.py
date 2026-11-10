@@ -13,7 +13,12 @@ Claude's "previously on" up to that episode, written once by Opus (a one-off `cl
 ~/.lampa-intros/recaps.json under its key ("tv_1396 S2E8").
 
 launchd runs it in the user's session (voice-claude.plist): Claude Code's sign-in is in the login keychain, which
-SSH sessions can't open. Python 3.9, standard library only. Port 8790, the home network.
+SSH sessions can't open. Python 3.9, standard library only. Port 8790, on the Mac's home-network address only.
+
+Plain http on that network, so no request carries a password: the app sends X-Home-Time (milliseconds) and X-Home-Sig =
+HMAC-SHA256(play token, "home\n" + time + "\n" + body) (Voice.homeAuth). A request is taken within 60 s of its time
+and once (a signature seen is refused): what a neighbour sniffs can't be sent again, nor changed (the body is in it).
+One recap per episode key runs at a time, and two understandings; more get 429.
 Files in ~/lampa-intros: this, voice-prompt.json; ~/.lampa-intros: play_token (the TV's, never printed), voice.log.
 """
 import hashlib
@@ -24,6 +29,8 @@ import re
 import subprocess
 import threading
 import time
+import socket
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -32,6 +39,10 @@ CLAUDE = os.path.expanduser('~/.local/bin/claude')
 MODEL = 'sonnet'  # 12/12 in the test of 2026-10-31 as Opus, ~2 s warm against Opus's 4.5 s
 FRESH_S = 1800
 WAIT_S = 25  # then the stick's fallback
+PORT = 8790
+WINDOW_S = 60  # a request's time may be this far from ours
+SOCKET_S = 10  # a client has this long for each read: a slow one can't hold a thread
+UNDERSTANDING = 2  # at once
 RECAPS = os.path.expanduser('~/.lampa-intros/recaps.json')
 RECAP_MODEL = 'opus'  # written once per episode, so the better one
 RECAP_S = 140
@@ -44,6 +55,19 @@ RECAP_PROMPT = (
     'if you know the series well: when unsure whether something has happened by then, leave it out. Use the episode '
     'summaries given (some may be in another language) and your own knowledge of the series up to that episode. '
     'If you know too little about the series to write it, answer exactly NONE.')
+
+
+def lan_address():
+    """The Mac's address on the home network (the one its route to the internet uses; no packet is sent), waiting for
+    the network a minute after a boot; exits when there is none, launchd starts it again."""
+    for _ in range(30):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(('192.0.2.1', 9))  # TEST-NET: only picks the route
+                return s.getsockname()[0]
+        except OSError:
+            time.sleep(2)
+    sys.exit('no network address')
 
 
 def log(*a):
@@ -166,30 +190,74 @@ def recap(o):
     return text
 
 
+seen = {}  # signature -> when it stops counting
+busy = set()  # recap keys being written
+busy_lock = threading.Lock()
+understanding = threading.Semaphore(UNDERSTANDING)
+
+
+def signed(token, when, body):
+    return hmac.new(token.encode(), b'home\n' + when.encode() + b'\n' + body, hashlib.sha256).hexdigest()
+
+
+def allowed(token, headers, body, now=None):
+    """The request is the app's, recent, and not sent before (the signature is single use for the window)."""
+    now = time.time() if now is None else now
+    when = headers.get('X-Home-Time', '')
+    sig = headers.get('X-Home-Sig', '')
+    if not when.isdigit() or abs(now * 1000 - int(when)) > WINDOW_S * 1000:
+        return False
+    if not hmac.compare_digest(sig.encode(), signed(token, when, body).encode()):
+        return False
+    with busy_lock:
+        for k in [k for k, until in seen.items() if until < now]:
+            del seen[k]
+        if sig in seen:
+            return False
+        seen[sig] = now + 2 * WINDOW_S
+    return True
+
+
 class Handler(BaseHTTPRequestHandler):
+    timeout = SOCKET_S
+
     def do_POST(self):
         try:
+            limit = {'/understand': 4096, '/recap': 65536}.get(self.path)
+            n = int(self.headers.get('Content-Length') or 0)
+            if limit is None or n > limit:
+                return self.answer(403 if limit is None else 413, {'error': 'Forbidden.' if limit is None else 'Too large.'})
+            body = self.rfile.read(n)
             with open(TOKEN, encoding='utf-8') as f:
                 token = f.read().strip()
-            # the app sends HMAC-SHA256(play token, "home") (Voice.homeToken): plain http on the home network, so
-            # the play token itself never goes through it
-            home = hmac.new(token.encode(), b'home', hashlib.sha256).hexdigest()
-            if self.path not in ('/understand', '/recap') or not hmac.compare_digest(
-                    self.headers.get('X-Play-Token', '').encode(), home.encode()):
+            if not allowed(token, self.headers, body):
                 return self.answer(403, {'error': 'Forbidden.'})
             if self.path == '/recap':
-                n = min(int(self.headers.get('Content-Length') or 0), 65536)
                 t = time.time()
-                o = json.loads(self.rfile.read(n) or b'{}')
-                text = recap(o)
+                o = json.loads(body or b'{}')
+                key = str(o.get('key', '')) + ' ' + str(o.get('language', ''))
+                with busy_lock:
+                    taken = key in busy
+                    busy.add(key)
+                if taken:
+                    return self.answer(429, {'error': 'Already writing it.'})
+                try:
+                    text = recap(o)
+                finally:
+                    with busy_lock:
+                        busy.discard(key)
                 log(f'{time.time() - t:.1f} s recap', repr(o.get('key')), '->', (text or '')[:80])
                 return self.answer(200 if text else 502, {'text': text} if text else {'error': 'No recap.'})
-            n = min(int(self.headers.get('Content-Length') or 0), 4096)
-            text = str(json.loads(self.rfile.read(n) or b'{}').get('text', '')).strip()[:300]
+            text = str(json.loads(body or b'{}').get('text', '')).strip()[:300]
             if not text:
                 return self.answer(400, {'error': 'No text.'})
-            t = time.time()
-            got = understand(text)
+            if not understanding.acquire(blocking=False):
+                return self.answer(429, {'error': 'Busy.'})
+            try:
+                t = time.time()
+                got = understand(text)
+            finally:
+                understanding.release()
             log(f'{time.time() - t:.1f} s', repr(text), '->', json.dumps(got, ensure_ascii=False)[:300])
             self.answer(200 if got else 502, got or {'error': 'Not understood.'})
         except Exception as e:  # the stick falls back to the worker's model
@@ -211,5 +279,6 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == '__main__':
     spare = start()
     threading.Thread(target=refresh, daemon=True).start()
-    log('listening on 8790,', MODEL)
-    ThreadingHTTPServer(('0.0.0.0', 8790), Handler).serve_forever()
+    where = lan_address()
+    log(f'listening on {where}:{PORT},', MODEL)
+    ThreadingHTTPServer((where, PORT), Handler).serve_forever()

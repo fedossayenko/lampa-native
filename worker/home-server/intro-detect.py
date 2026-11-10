@@ -39,6 +39,9 @@ FULL = SECONDS / STEP * 0.9  # fingerprints of a whole download
 # ponytail: a recap runs from 0 to the intro, found by a "Previously on…" subtitle in the file's first 60 MB (6+ s even of
 # an 80 Mbit/s remux). An intro later than 2 min may follow a cold open after the recap: no recap then, not guessed.
 HEAD_BYTES = 60_000_000
+# a torrent's files are not ours: ffmpeg reads the link over http(s) and the saved head from disk, nothing else a file's
+# playlist or a redirect could name (file:, concat:, tcp: to the home network)
+WEB = 'http,https,tcp,tls,crypto'
 RECAP = re.compile(r'previously on|ранее в|в предыдущих сери|раніше в|у попередніх сері', re.I)
 RECAP_MS = (5_000, 120_000)  # the intro's start
 
@@ -73,7 +76,8 @@ def episode_prints(url, name):
     path = os.path.join(HOME, 'cache', name + '.npy')
     if os.path.exists(path):
         return np.load(path)
-    pcm = subprocess.run(['ffmpeg', '-v', 'error', '-t', str(SECONDS), '-i', url, '-map', '0:a:0', '-ac', '1',
+    pcm = subprocess.run(['ffmpeg', '-v', 'error', '-protocol_whitelist', WEB, '-t', str(SECONDS), '-i', url,
+                          '-map', '0:a:0', '-ac', '1',
                           '-ar', str(SR), '-f', 'f32le', 'pipe:1'], capture_output=True, timeout=1800).stdout
     fp = fingerprints(np.frombuffer(pcm, dtype='<f4'))
     if len(fp) > FULL:  # a cut-off download is asked again next time
@@ -90,13 +94,15 @@ def has_recap(url):
         head = os.path.join(d, 'head.mkv')
         with urllib.request.urlopen(req, timeout=600) as r, open(head, 'wb') as f:
             f.write(r.read(HEAD_BYTES))  # at most that, should a server ignore the range
-        subs = json.loads(subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 's', '-show_entries',
+        subs = json.loads(subprocess.run(['ffprobe', '-v', 'error', '-protocol_whitelist', 'file', '-select_streams', 's',
+                                          '-show_entries',
                                           'stream=index,codec_name', '-of', 'json', head],
                                          capture_output=True, timeout=120).stdout or b'{}').get('streams', [])
         out = [a for s in subs if s.get('codec_name') in ('subrip', 'ass', 'ssa', 'webvtt')
                for a in ('-map', f'0:{s["index"]}', '-f', 'srt', os.path.join(d, f'{s["index"]}.srt'))]
         if out:
-            subprocess.run(['ffmpeg', '-v', 'error', '-i', head, *out], capture_output=True, timeout=300)
+            subprocess.run(['ffmpeg', '-v', 'error', '-protocol_whitelist', 'file', '-i', head, *out],
+                           capture_output=True, timeout=300)
         return any(RECAP.search(open(os.path.join(d, n), encoding='utf-8', errors='replace').read())
                    for n in os.listdir(d) if n.endswith('.srt'))
 
@@ -157,6 +163,27 @@ def run_job(job):
     api('/segments/own', {'intros': found, 'done': [job['key']]})
 
 
+TRIES = 3
+
+
+def gave_up(key):
+    """Counts a failed run of a job (~/.lampa-intros/tries.json); True at the third: a torrent TorBox lost or a file
+    ffmpeg can't read would otherwise come back every 10 minutes for ever."""
+    path = os.path.join(HOME, 'tries.json')
+    try:
+        with open(path, encoding='utf-8') as f:
+            tries = json.load(f)
+    except (OSError, ValueError):
+        tries = {}
+    tries[key] = tries.get(key, 0) + 1
+    over = tries[key] >= TRIES
+    if over:
+        del tries[key]
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(dict(list(tries.items())[-200:]), f)
+    return over
+
+
 def main():
     os.makedirs(HOME, exist_ok=True)
     with open(os.path.join(HOME, 'lock'), 'w') as lock:
@@ -167,8 +194,14 @@ def main():
         for job in api('/segments/jobs').get('jobs', []):
             try:
                 run_job(job)
-            except Exception as e:  # the next run tries again
+            except Exception as e:  # the next run tries again, three times
                 log('job', job['key'][:8], job['key'][40:], 'failed:', e)
+                if gave_up(job['key']):
+                    log('job', job['key'][:8], job['key'][40:], 'given up')
+                    try:
+                        api('/segments/own', {'intros': [], 'done': [job['key']]})
+                    except Exception as e2:
+                        log('job not dropped:', e2)
 
 
 if __name__ == '__main__':

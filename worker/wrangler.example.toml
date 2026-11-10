@@ -4,7 +4,8 @@ main = "cloudflare-worker.js"
 compatibility_date = "2026-07-01"
 workers_dev = true
 
-# Grades (Loved / Good / OK / Bad) per CUB account and profile, shared with the Lampa plugin (/grades).
+# Grades (Loved / Good / OK / Bad) live in D1 now (grades.sql, /grades). This namespace is only the old home: an account's
+# grades kept here are copied into D1 the first time it is used. A new install has none; delete the binding then.
 [[kv_namespaces]]
 binding = "GRADES"
 id = "<KV_ID>"
@@ -23,7 +24,7 @@ binding = "AI"
 # gets its own 10 ms of CPU, not the source list's (maxvolOf). The worker's own name.
 [[services]]
 binding = "SELF"
-service = "lampa-native"
+service = "<WORKER>"
 
 # The Lampa plugin's ?url= pass-through to TorBox and two parsers, open to anyone: only if you use that plugin.
 # [vars]

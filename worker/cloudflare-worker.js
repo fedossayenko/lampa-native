@@ -8,6 +8,10 @@ import VOICE from './voice-prompt.json' with { type: 'json' };
 const TORBOX_HOST = 'api.torbox.app';
 const METHODS = ['GET', 'POST', 'HEAD'];
 
+// Every call out gives up after a time (Cloudflare's own wall limit is far longer): a hanging TMDB, CUB mirror or
+// TorBox then fails like a refused one, which each caller already handles, instead of holding the screen.
+const within = (ms = 8000) => ({ signal: AbortSignal.timeout(ms) });
+
 // CORS goes on every answer, a 4xx or 5xx as much as a 200, so the Lampa plugin can read what went wrong; a
 // preflight is answered with the headers it asked to send.
 function corsHeaders(request) {
@@ -75,40 +79,67 @@ function ratingsOf(media) {
   return ratings;
 }
 
-async function mdblist(request, env, type, id) {
-  let res;
-  if (id) {
-    res = await fetch(`https://api.mdblist.com/tmdb/${type}/${id}?apikey=${env.MDBLIST_API_KEY}`);
-  } else {
-    let ids;
-    try {
-      ids = (await request.json()).ids;
-    } catch {}
-    if (!Array.isArray(ids) || !ids.length || ids.length > 200 || !ids.every((x) => /^\d+$/.test(String(x)))) {
-      return corsError(request, 'Bad request: "ids" must be 1-200 TMDB ids.', 400);
-    }
-    res = await fetch(`https://api.mdblist.com/tmdb/${type}?apikey=${env.MDBLIST_API_KEY}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids: ids.map(String) }),
-    });
-  }
-  if (!res.ok) return corsError(request, `MDBList ${res.status}`, res.status);
-  const json = await res.json();
-  let body = {};
-  if (id) body = ratingsOf(json);
-  else for (const m of Array.isArray(json) ? json : []) if (m.ids && m.ids.tmdb) body[m.ids.tmdb] = ratingsOf(m);
-  return new Response(JSON.stringify(body), {
+// The plugin can't hold our token, so these two are open and spend the key that /card's scores use (MDBList's 1,000
+// a day). A title's scores are kept a day at this Cloudflare location (the Cache API), a batch by its ids, and no more
+// than MDBLIST_BATCHES new batches a day go to MDBList from one location: a loop of ever new ids can't empty the quota
+// the TV's film pages share (the rest get 429, scores missing, never a failed page).
+const MDBLIST_BATCHES = 100;
+// Counts today's uses of `name` at this location (the Cache API has no atomic add: close enough for a cap); true while under max.
+async function underCap(name, max) {
+  const key = new Request(`https://cap.invalid/${name}/${new Date().toISOString().slice(0, 10)}`);
+  const used = Number(await caches.default.match(key).then((r) => (r ? r.text() : 0))) || 0;
+  if (used >= max) return false;
+  await caches.default.put(key, new Response(String(used + 1), { headers: { 'Cache-Control': 'max-age=86400' } }));
+  return true;
+}
+
+async function mdblist(request, env, type, id, ctx) {
+  const scores = (res, body) => new Response(JSON.stringify(body), {
     headers: {
       'Content-Type': 'application/json',
+      'Cache-Control': 'max-age=86400',
       'X-RateLimit-Remaining': res.headers.get('X-RateLimit-Remaining') || '',
       'Access-Control-Expose-Headers': 'X-RateLimit-Remaining',
       ...corsHeaders(request),
     },
   });
+  if (id) {
+    return edgeCached(request, ctx, async () => {
+      const res = await fetch(`https://api.mdblist.com/tmdb/${type}/${id}?apikey=${env.MDBLIST_API_KEY}`, within());
+      return res.ok ? scores(res, ratingsOf(await res.json())) : corsError(request, `MDBList ${res.status}`, res.status);
+    });
+  }
+  let ids;
+  try {
+    ids = (await request.json()).ids;
+  } catch {}
+  if (!Array.isArray(ids) || !ids.length || ids.length > 200 || !ids.every((x) => /^\d+$/.test(String(x)))) {
+    return corsError(request, 'Bad request: "ids" must be 1-200 TMDB ids.', 400);
+  }
+  const ask = async () => {
+    const res = await fetch(`https://api.mdblist.com/tmdb/${type}?apikey=${env.MDBLIST_API_KEY}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: ids.map(String) }),
+      ...within(),
+    });
+    if (!res.ok) return corsError(request, `MDBList ${res.status}`, res.status);
+    const json = await res.json();
+    const body = {};
+    for (const m of Array.isArray(json) ? json : []) if (m.ids && m.ids.tmdb) body[m.ids.tmdb] = ratingsOf(m);
+    return scores(res, body);
+  };
+  if (typeof caches === 'undefined') return ask();
+  const key = new Request(`https://cap.invalid/mdblist/${type}/${[...new Set(ids.map(Number))].sort((a, b) => a - b).join(',')}`);
+  const hit = await caches.default.match(key);
+  if (hit) return hit;
+  if (!(await underCap('mdblist', MDBLIST_BATCHES))) return corsError(request, 'MDBList: no more batches today.', 429);
+  const res = await ask();
+  if (res.ok) ctx ? ctx.waitUntil(caches.default.put(key, res.clone())) : await caches.default.put(key, res.clone());
+  return res;
 }
 
-// The Lampa plugin's film grades, shared by every Lampa signed in to the same CUB account + profile (KV GRADES).
+// The Lampa plugin's film grades, shared by every Lampa signed in to the same CUB account + profile (D1 grades).
 // The client sends its CUB sign-in (X-Cub-Token, X-Cub-Profile); we only ask CUB who it is, never store it.
 // Only accounts listed in the CUB_ACCOUNTS secret may use it, so this worker isn't free storage for others.
 const CUB_DOMAINS = ['cub.best', 'cub.black', 'cubnotrip.top'];
@@ -121,8 +152,8 @@ async function cubApi(request, path, form) {
   for (const domain of CUB_DOMAINS) {
     try {
       return await (await fetch(`https://${domain}/api/${path}`, form
-        ? { method: 'POST', headers: { token, profile }, body: new URLSearchParams(form) }
-        : { headers: { token, profile } })).json();
+        ? { method: 'POST', headers: { token, profile }, body: new URLSearchParams(form), ...within(4000) }
+        : { headers: { token, profile }, ...within(4000) })).json();
     } catch {
       // mirror down, try the next
     }
@@ -134,7 +165,7 @@ async function cubUser(request, env) {
   const json = await cubApi(request, 'users/get');
   const id = json && json.user && json.user.id;
   if (!id) return null;
-  if (!String(env.CUB_ACCOUNTS || '').split(',').includes(String(id))) {
+  if (!String(env.CUB_ACCOUNTS || '').split(',').map((x) => x.trim()).includes(String(id))) { // "1, 2" works as "1,2"
     console.log(`CUB account ${id} isn't in CUB_ACCOUNTS`); // setup: npx wrangler@4 tail shows whose to add
     return null;
   }
@@ -143,23 +174,49 @@ async function cubUser(request, env) {
 
 // POST /grades {"grades": {"movie_603": {g, t, card}, ...}} -> all grades of this account, merged:
 // per film the newer `t` wins; g null = grade removed (kept so the removal reaches other devices).
+// A grade the plugin may send: a film or series key, a time, nothing else checked (its card is Lampa's).
+const gradeOk = ([k, v]) => /^(movie|tv)_\d+$/.test(k) && v && typeof v === 'object' && Number.isFinite(v.t);
+
+// Writes grades (the older `t` of a film never replaces the newer one: one statement, whatever the order devices post in).
+async function putGrades(env, who, entries) {
+  if (!entries.length) return;
+  await env.DB.prepare(`INSERT INTO grades (who, card, t, v) SELECT ?1, value->>'k', value->>'t', value->>'v' FROM json_each(?2)
+      WHERE true ON CONFLICT (who, card) DO UPDATE SET t = excluded.t, v = excluded.v WHERE excluded.t > grades.t`)
+    .bind(who, JSON.stringify(entries.map(([k, v]) => ({ k, t: v.t, v: JSON.stringify(v) })))).run();
+}
+
+// An account's grades: {"movie_603": {g, t, card}, ...}. An account with no rows yet and a KV value (the grades' old
+// home, binding GRADES) gets it copied in first: the move to D1 needs no step of its own.
+async function gradesOf(env, who) {
+  let rows = (await env.DB.prepare('SELECT card, v FROM grades WHERE who = ?').bind(who).all()).results;
+  if (!rows.length && env.GRADES) {
+    const old = await env.GRADES.get(who, 'json').catch(() => null);
+    const entries = old && typeof old === 'object' ? Object.entries(old).filter(gradeOk) : [];
+    if (entries.length) {
+      await putGrades(env, who, entries);
+      rows = entries.map(([card, v]) => ({ card, v: JSON.stringify(v) }));
+    }
+  }
+  return Object.fromEntries(rows.map((r) => [r.card, JSON.parse(r.v)]));
+}
+
+const GRADES_BODY_MAX = 2e6; // a few thousand graded films with their cards
+const GRADES_MAX = 5000;
 async function grades(request, env) {
   const who = await cubUser(request, env);
   if (!who) return corsError(request, 'CUB sign-in required.', 401);
+  if (!env.DB) return corsError(request, 'No database.', 502);
+  if (Number(request.headers.get('Content-Length')) > GRADES_BODY_MAX) return corsError(request, 'Too large.', 413);
   let mine;
   try {
     mine = (await request.json()).grades;
   } catch {}
   if (!mine || typeof mine !== 'object' || Array.isArray(mine)) return corsError(request, 'Bad request: "grades" object expected.', 400);
-  const all = (await env.GRADES.get(who, 'json')) || {};
-  let changed = false;
-  for (const [k, v] of Object.entries(mine)) {
-    if (!/^(movie|tv)_\d+$/.test(k) || !v || typeof v.t !== 'number' || (all[k] && all[k].t >= v.t)) continue;
-    all[k] = v;
-    changed = true;
-  }
-  if (changed) await env.GRADES.put(who, JSON.stringify(all)); // KV free tier: 1,000 writes a day
-  return new Response(JSON.stringify(all), { headers: { 'Content-Type': 'application/json', ...corsHeaders(request) } });
+  const entries = Object.entries(mine).filter(gradeOk);
+  if (entries.length > GRADES_MAX) return corsError(request, 'Too many grades.', 413);
+  await gradesOf(env, who); // an account still in KV moves first: the new rows must not hide the old ones
+  await putGrades(env, who, entries);
+  return new Response(JSON.stringify(await gradesOf(env, who)), { headers: { 'Content-Type': 'application/json', ...corsHeaders(request) } });
 }
 
 // lampa-native: the TV's home screen in one small response; the TMDB key
@@ -183,7 +240,7 @@ function tmdb(env, path, query = '', language = 'en-US') {
   const key = env.TMDB_API_KEY;
   const v3 = /^[0-9a-f]{32}$/.test(key);
   const url = `https://api.themoviedb.org/3/${path}?language=${language}${query}${v3 ? `&api_key=${key}` : ''}`;
-  return fetch(url, v3 ? {} : { headers: { Authorization: `Bearer ${key}` } });
+  return fetch(url, v3 ? within() : { headers: { Authorization: `Bearer ${key}` }, ...within() });
 }
 
 // A Home card: [id, type, name, year, poster_path, score, backdrop_path]. Never null: the stick's org.json turns it
@@ -197,16 +254,22 @@ function cardOf(m, type) {
 // stick asks for a film's /card ahead, while focus rests on its card: a film costs one MDBList lookup a day.
 async function edgeCached(request, ctx, make) {
   if (typeof caches === 'undefined') return make(); // node tests without it
-  const hit = await caches.default.match(request);
+  // The key is the address with only the parameters an answer depends on, in order: an extra ?x=<random> would
+  // otherwise miss the cache every time and spend a TMDB call (or more) each.
+  const url = new URL(request.url);
+  const kept = [...url.searchParams].filter(([k]) => CACHE_PARAMS.includes(k)).sort(([a], [b]) => (a < b ? -1 : 1));
+  const key = new Request(`${url.origin}${url.pathname}?${new URLSearchParams(kept)}`);
+  const hit = await caches.default.match(key);
   if (hit) return hit;
   const res = await make();
   if (res.ok) {
-    const put = caches.default.put(request, res.clone());
+    const put = caches.default.put(key, res.clone());
     if (ctx) ctx.waitUntil(put);
     else await put;
   }
   return res;
 }
+const CACHE_PARAMS = ['v', 'lang', 'type', 'years', 'country', 'score', 'sort', 'page'];
 
 // lampa-native's search predictions (titles.sql): ~1000 well-known films and series, refreshed daily by two crons
 // because the free plan allows 50 calls a run: English names with the original titles, then the Russian names.
@@ -251,6 +314,18 @@ async function refreshTitles(env, language) {
       votes: m.vote_count || 0, en: words(`${m.title || m.name} ${m.original_title || m.original_name || ''}`) }))), now)
     .run();
   await env.DB.prepare('DELETE FROM titles WHERE seen < ?').bind(now - 30 * 86400e3).run(); // off every list a month
+  await purgeOld(env, now);
+}
+
+// What nothing reads any more, once a day (with the English index): each of these tables only grew. Days kept: skip
+// times a series' episode got (asked again after a week anyway), "out in your language" answers (a new episode's, asked
+// for a month), a followed film's news (the app shows 30 days), recommendations of a film no longer graded, MaxVol's
+// lists (a day's), jobs of the intro detector that nothing has taken for a month (it asks the queue every 10 minutes).
+const PURGE = [['segments', 60], ['fresh', 30], ['news', 90], ['recs', 60], ['maxvol', 30], ['intro_jobs', 30]];
+async function purgeOld(env, now) {
+  for (const [table, days] of PURGE) {
+    await env.DB.prepare(`DELETE FROM ${table} WHERE t < ?`).bind(now - days * 86400e3).run().catch((e) => console.log('purge', table, String(e)));
+  }
 }
 
 // GET /search?q=<text> -> lampa-native's search, as Home cards: well-known titles with a word starting so (the
@@ -326,7 +401,7 @@ async function filmCard(request, env, type, id) {
   const mdbType = type === 'tv' ? 'show' : 'movie';
   const [res, r] = await Promise.all([
     tmdb(env, `${type}/${id}`, '&append_to_response=credits,external_ids,videos,recommendations'),
-    fetch(`https://api.mdblist.com/tmdb/${mdbType}/${id}?apikey=${env.MDBLIST_API_KEY}`)
+    fetch(`https://api.mdblist.com/tmdb/${mdbType}/${id}?apikey=${env.MDBLIST_API_KEY}`, within())
       .then((x) => (x.ok ? x.json() : {})).then(ratingsOf).catch(() => ({})), // no scores beats no page
   ]);
   if (!res.ok) return corsError(request, `TMDB ${res.status}`, res.status === 404 ? 404 : 502);
@@ -548,18 +623,11 @@ async function refreshFollows(env, now) {
   }
 }
 
-// GET /genre/<slug> -> lampa-native's genre page (Search before typing: OK on a genre), as /person's:
-// {line, about, rows}. Rows: New, Popular and Best rated films, then the same for series; TMDB keeps films' and
+// The genres /discover/<slug> takes: [TMDB's film genre id, its series genre id or a keyword]. TMDB keeps films' and
 // series' genres apart (a series has Sci-Fi & Fantasy, no Horror): series of a genre they lack come by TMDB's keyword
-// (horror: Supernatural, Stranger Things; thriller: You, Mindhunter), without anime (keywords bring
-// Death Note to horror, Ranma to romance; Animation has its page). Nothing not out yet.
-// Best rated: TMDB's average with a floor of votes (2,000 a film, 1,500 a series: at 500 2026's hyped shows topped
-// Drama over Breaking Bad), so 12 fans' 9.5 doesn't top a classic. New films: out to stream or buy in the last year
-// (TMDB's digital and physical releases; first out in the last two years: a 4K re-release brought Interstellar),
-// the ones with sources. Popular films: out over a year ago, else they were New's again.
-// Talk, news and reality shows are left out, as on an actor's page. 100 a row (TMDB's first 5 pages): the app hides
-// what you watched and shows 20, so a row stays full. 30 TMDB calls (of the 50 a request may make),
-// a day in the edge cache.
+// (horror: Supernatural, Stranger Things; thriller: You, Mindhunter), without anime (keywords bring Death Note to
+// horror, Ranma to romance; Animation has its page). (The app's genre page once had a /genre/<slug> of its own, 30
+// TMDB calls: /discover with its filters replaced it, and nothing called it.)
 const GENRE_PAGES = {
   action: [28, 10759], adventure: [12, 10759], animation: [16, 16], comedy: [35, 35], crime: [80, 80],
   documentary: [99, 99], drama: [18, 18], family: [10751, 10751], fantasy: [14, 10765],
@@ -570,9 +638,8 @@ const GENRE_PAGES = {
 
 // GET /discover/<genre slug>?type=movie|tv&years=<decade: 2010, or "older": before 1980>&country=<ISO code>&score=<60-90>
 // &sort=best|popular|new&page=<n> -> {cards: [Home card], pages}: a genre with filters, TMDB's
-// discover, 20 a page. Best rated: a floor of 300 votes (a decade or a country holds fewer well-known titles than the
-// genre page's 2,000), popular: 50, new: the newest out first (10). Nothing not out yet, no talk shows; series of a genre
-// TMDB lacks by keyword, as the genre page. A day in the edge cache.
+// discover, 20 a page. Best rated: a floor of 300 votes (a decade or a country holds fewer well-known titles), popular: 50, new: the newest out first (10). Nothing not out yet, no talk shows; series of a genre
+// TMDB lacks by keyword (GENRE_PAGES). A day in the edge cache.
 const SORTS = { best: ['vote_average.desc', 300], popular: ['popularity.desc', 50], new: ['DATE.desc', 10] };
 async function discover(request, env, slug) {
   const q = new URL(request.url).searchParams;
@@ -604,7 +671,7 @@ async function discover(request, env, slug) {
 // for the app's Settings. TorBox down → 502.
 const PLANS = ['Free', 'Essential', 'Pro', 'Standard'];
 async function torboxAccount(request, env) {
-  if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
+  if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
   try {
     const [me, list] = await Promise.all([torboxApi(env, '../user/me'), torboxApi(env, 'mylist?bypass_cache=true')]);
     if (!me.data) throw new Error('no account');
@@ -620,7 +687,7 @@ async function torboxAccount(request, env) {
 // that added one it no longer needs (a release it picked and then passed over). -> {deleted: true|false} (false: not
 // in the account); TorBox refusing or down -> 502.
 async function torboxDrop(request, env, hash) {
-  if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
+  if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
   try {
     const t = (await accountTorrents(env)).find((x) => String(x.hash).toLowerCase() === hash);
     if (t) {
@@ -645,38 +712,6 @@ async function findImdb(request, env, imdb) {
   const m = (o.movie_results || [])[0] || (o.tv_results || [])[0];
   const card = m ? cardOf(m, (o.movie_results || [])[0] ? 'movie' : 'tv') : null;
   return new Response(JSON.stringify({ card }), {
-    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'max-age=86400', ...corsHeaders(request) },
-  });
-}
-
-async function genrePage(request, env, slug) {
-  const ids = GENRE_PAGES[slug];
-  if (!ids) return corsError(request, 'No such genre.', 404);
-  const today = new Date().toISOString().slice(0, 10);
-  const yearAgo = new Date(Date.now() - 365 * 86400e3).toISOString().slice(0, 10);
-  const twoYearsAgo = new Date(Date.now() - 730 * 86400e3).toISOString().slice(0, 10);
-  const rows = [];
-  for (const [type, id, votes, date] of [['movie', ids[0], 2000, 'primary_release_date'], ['tv', ids[1], 1500, 'first_air_date']]) {
-    if (!id) continue;
-    const kind = type === 'movie' ? 'films' : 'series';
-    const base = `&include_adult=false&${typeof id === 'number' ? `with_genres=${id}` : id}&without_genres=${(typeof id === 'number' ? TALK : [...TALK, 16]).join('|')}&${date}.lte=${today}`;
-    const fresh = type === 'movie' ? `&with_release_type=4|5&release_date.gte=${yearAgo}&release_date.lte=${today}`
-      + `&${date}.gte=${twoYearsAgo}` : `&${date}.gte=${yearAgo}`;
-    const popular = base.replace(`.lte=${today}`, `.lte=${type === 'movie' ? yearAgo : today}`);
-    rows.push([`New ${kind}`, type, `${base}&sort_by=popularity.desc${fresh}`],
-      [`Popular ${kind}`, type, `${popular}&sort_by=popularity.desc&vote_count.gte=50`],
-      [`Best rated ${kind}`, type, `${base}&sort_by=vote_average.desc&vote_count.gte=${votes}`]);
-  }
-  const page = (type, query, n) => tmdb(env, `discover/${type}`, `${query}&page=${n}`)
-    .then((res) => (res.ok ? res.json() : {})).then((o) => o.results || []).catch(() => []);
-  const found = await Promise.all(rows.map(async ([title, type, query]) => {
-    const all = (await Promise.all([1, 2, 3, 4, 5].map((n) => page(type, query, n)))).flat();
-    const once = new Map(all.filter((m) => m.poster_path).map((m) => [m.id, m])); // pages shift: a title twice
-    return [title, [...once.values()].map((m) => cardOf(m, type))];
-  }));
-  const full = found.filter(([, cards]) => cards.length);
-  if (!full.length) return corsError(request, 'TMDB unavailable.', 502); // not cached: the next OK asks again
-  return new Response(JSON.stringify({ line: '', about: '', rows: full }), {
     headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'max-age=86400', ...corsHeaders(request) },
   });
 }
@@ -724,7 +759,7 @@ async function fetchSegments(env, tmdb, imdb, season, episode) {
 }
 
 async function segments(request, env, type, tmdb, imdb) {
-  if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
+  if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
   const eps = type === 'movie' ? [[0, 0]] : (new URL(request.url).searchParams.get('e') || '').split(',')
     .map((x) => x.match(/^(\d{1,2}):(\d{1,3})$/)).filter(Boolean).map((m) => [Number(m[1]), Number(m[2])])
     .slice(0, SEGMENTS_MAX);
@@ -798,10 +833,16 @@ function withOwnIntro(value, intro) {
 // episode isn't queued again; recap: a recap's end, from 0, at most the intro's start), done: [<job key>]} -> 204.
 // The detector's (X-Play-Token).
 async function introJobs(request, env) {
-  if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
+  if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
   const json = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...corsHeaders(request) };
   if (request.method === 'GET') {
     const jobs = (await env.DB.prepare('SELECT key, file, name, series FROM intro_jobs ORDER BY t LIMIT 5').all()).results;
+    // each taken goes to the back of the queue: one the detector can't finish (its torrent gone, a timeout) is asked
+    // again after the others, never first for ever (five such would starve every new one)
+    if (jobs.length) {
+      await env.DB.prepare('UPDATE intro_jobs SET t = ?1 WHERE key IN (SELECT value FROM json_each(?2))')
+        .bind(Date.now(), JSON.stringify(jobs.map((j) => j.key))).run();
+    }
     for (const j of jobs) {
       j.have = (await env.DB.prepare("SELECT key FROM intros WHERE key LIKE ?").bind(`${j.key.split('/')[0]}/%`).all())
         .results.map((r) => r.key.split('/').slice(1).join(':'));
@@ -809,7 +850,7 @@ async function introJobs(request, env) {
     return new Response(JSON.stringify({ jobs }), { headers: json });
   }
   const body = await request.json().catch(() => ({}));
-  const intros = (Array.isArray(body.intros) ? body.intros : []).filter((x) => /^[0-9a-f]{40}$/.test(x.hash)
+  const intros = (Array.isArray(body.intros) ? body.intros : []).filter((x) => x && /^[0-9a-f]{40}$/.test(x.hash)
     && [x.season, x.episode, x.start, x.end].every(Number.isInteger) && x.start >= 0 && (x.end > x.start || x.end === 0));
   if (intros.length) {
     await env.DB.prepare(`INSERT INTO intros (key, start_ms, end_ms, recap_ms, t) SELECT j.value->>'k', j.value->>'s',
@@ -875,7 +916,7 @@ async function cachedOnTorBox(env, hashes) {
   if (!env.TORBOX_API_KEY || !hashes.length) return null;
   try {
     const res = await fetch(`https://${TORBOX_HOST}/v1/api/torrents/checkcached?hash=${hashes.join(',')}` +
-      '&format=list&list_files=false', { headers: { Authorization: `Bearer ${env.TORBOX_API_KEY}` } }); // not in the URL
+      '&format=list&list_files=false', { headers: { Authorization: `Bearer ${env.TORBOX_API_KEY}` }, ...within() }); // not in the URL
     if (!res.ok) return null;
     return new Set(((await res.json()).data || []).map((t) => String(t.hash).toLowerCase()));
   } catch {
@@ -885,9 +926,10 @@ async function cachedOnTorBox(env, hashes) {
 
 async function sources(request, env, ctx, kind, imdb, season, episode) {
   // the TV's only: each answer spends TorBox's cache checks and the addon's patience
-  if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
+  if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
   let list;
   if (request.method === 'POST') {
+    if (Number(request.headers.get('Content-Length')) > 4e6) return corsError(request, 'Too big.', 413);
     const text = await request.text();
     if (text.length > 4e6) return corsError(request, 'Too big.', 413);
     try {
@@ -900,7 +942,7 @@ async function sources(request, env, ctx, kind, imdb, season, episode) {
     if (!env.STREAM_ADDON) return corsError(request, 'No streams addon set: npx wrangler@4 secret put STREAM_ADDON.', 503);
     try {
       const id = kind === 'series' ? `${imdb}:${season}:${episode}` : imdb;
-      const res = await fetch(addonStreams(env, kind, id));
+      const res = await fetch(addonStreams(env, kind, id), within(10000));
       if (!res.ok) throw new Error(String(res.status));
       list = (await res.json()).streams || [];
     } catch (e) {
@@ -911,6 +953,7 @@ async function sources(request, env, ctx, kind, imdb, season, episode) {
   const seen = new Set();
   const all = [];
   for (const st of list) {
+    if (!st || typeof st !== 'object') continue; // the addon's answer, or the stick's post of it: not trusted
     const hash = String(st.infoHash || '').toLowerCase();
     if (!/^[0-9a-f]{40}$/.test(hash) || seen.has(hash)) continue;
     seen.add(hash);
@@ -981,6 +1024,9 @@ function sameSecret(a, b) {
   return diff === 0;
 }
 
+// The request carries the stick's play token (the app's Net.open adds it to every worker address).
+const isStick = (request, env) => sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN);
+
 // The account's torrents; throws unless TorBox answered with the list (a 401 or 429 is not an empty account).
 async function accountTorrents(env) {
   const list = await torboxApi(env, 'mylist?bypass_cache=true');
@@ -989,7 +1035,7 @@ async function accountTorrents(env) {
 }
 
 async function torboxApi(env, path, init = {}) {
-  const res = await fetch(TORBOX_API + path, { ...init, headers: { ...init.headers, Authorization: `Bearer ${env.TORBOX_API_KEY}` } });
+  const res = await fetch(TORBOX_API + path, { ...within(10000), ...init, headers: { ...init.headers, Authorization: `Bearer ${env.TORBOX_API_KEY}` } });
   if (!res.ok && res.status >= 500) throw new Error(`TorBox ${res.status}`);
   return res.json();
 }
@@ -1046,7 +1092,7 @@ async function linkIn(env, id, fileIdx, name) {
 }
 
 async function play(request, env, ctx, hash) {
-  if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
+  if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
   const q = new URL(request.url).searchParams;
   const resume = resumePoint(env, q.get('tl')); // alongside TorBox's three calls
   // played: a torrent a probe added stays in the account (dropProbeAdds)
@@ -1091,7 +1137,7 @@ const PROBES_HOUR = 20;
 const PROBES_DAY = () => 3 * (DROPS - 1);
 
 async function audio(request, env, hash) {
-  if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
+  if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
   if (!env.DB) return corsError(request, 'No database.', 503);
   const json = (body, status = 200) => new Response(JSON.stringify(body), {
     status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...corsHeaders(request) },
@@ -1201,7 +1247,7 @@ async function maxvolAudio(env, imdb) {
     if (title) {
       const year = (m.release_date || m.first_air_date || '').slice(0, 4);
       const res = await fetch(`${MAXVOL}?${new URLSearchParams({ Query: `${title} ${year}`.trim(), title_original: title,
-        year, Category: '2000,5000' })}`);
+        year, Category: '2000,5000' })}`, within(10000));
       for (const r of res.ok ? (await res.json()).Results || [] : []) {
         const hash = (String(r.MagnetUri).match(/btih:([0-9a-f]{40})/i) || [])[1];
         if (!hash || !Array.isArray(r.ffprobe)) continue;
@@ -1288,7 +1334,7 @@ async function audioTracks(link) {
   let reads = 0;
   const read = async (from, n) => {
     if (++reads > 24) throw new Error('too many reads');
-    const res = await fetch(link, { headers: { Range: `bytes=${from}-${from + n - 1}` } });
+    const res = await fetch(link, { headers: { Range: `bytes=${from}-${from + n - 1}` }, ...within() });
     if (res.status !== 206) { // 200 would be the whole film
       await res.body?.cancel();
       throw new Error(`range: HTTP ${res.status}`);
@@ -1816,7 +1862,7 @@ async function stream(request, env, ctx, torrent, fileId) {
 // seconds. Per point the newer one wins (updated, ms; stamped here when missing, as from the stick). For the
 // stick (X-Play-Token) and the CUB accounts in CUB_ACCOUNTS (checked with CUB, as /grades): one household's.
 async function timelineAllowed(request, env) {
-  return sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN) || Boolean(await cubUser(request, env));
+  return isStick(request, env) || Boolean(await cubUser(request, env));
 }
 
 async function timeline(request, env) {
@@ -1866,12 +1912,14 @@ function lampaHash(s) {
 // Home cards in English for CUB's cards (CUB keeps Lampa's card as it was shown: Russian names and posters from CUB's
 // own lists): the search index's (titles), else TMDB's en-US, which then go into the index. [type, id] pairs in;
 // a card for each, in order (TMDB failed or more than `fetchMax` missing: the card CUB kept).
+// fetchMax: a number, or {left}: a budget shared with other calls, spent as TMDB is asked (the cron's 50 subrequests).
 async function englishCards(env, wanted, fallback, fetchMax = 20) {
   const pairs = JSON.stringify(wanted.map(([type, id]) => ({ type, id })));
   const known = new Map(env.DB ? (await env.DB.prepare(`SELECT t.type, t.id, t.card FROM titles t
       JOIN json_each(?) j ON t.type = j.value->>'type' AND t.id = j.value->>'id'`).bind(pairs).all()
     .then((r) => r.results).catch(() => [])).map((r) => [`${r.type}:${r.id}`, JSON.parse(r.card)]) : []);
-  const missing = wanted.filter(([type, id]) => !known.has(`${type}:${id}`)).slice(0, fetchMax);
+  const missing = wanted.filter(([type, id]) => !known.has(`${type}:${id}`)).slice(0, fetchMax.left ?? fetchMax);
+  if (fetchMax.left !== undefined) fetchMax.left -= missing.length;
   const fetched = (await Promise.all(missing.map(([type, id]) => tmdb(env, `${type}/${id}`)
     .then((res) => (res.ok ? res.json() : null)).then((m) => (m && m.poster_path ? { type, m } : null))
     .catch(() => null)))).filter(Boolean);
@@ -2030,7 +2078,7 @@ async function refreshUhd(env, now) {
   const got = [];
   for (const [cat, pages] of UHD_LISTS) {
     for (let p = 1; p <= pages; p++) {
-      const json = await fetch(`https://tmdb.cub.best/?cat=${cat}&sort=latest&uhd=true&page=${p}`)
+      const json = await fetch(`https://tmdb.cub.best/?cat=${cat}&sort=latest&uhd=true&page=${p}`, within())
         .then((res) => (res.ok ? res.json() : null)).catch(() => null);
       (json?.results || []).forEach((c, i) => {
         if (c?.id && (Number(c.vote_count) >= 100 || Number(c.imdb_rating) >= 7)) got.push({ type: cat, id: Number(c.id), pos: (p - 1) * 20 + i });
@@ -2059,8 +2107,10 @@ const RECS_FETCH = 25;
 const WEIGHT = { 2: 2, 1: 1, '-1': -1 };
 async function refreshForYou(env) {
   const now = Date.now();
-  const whos = (await env.GRADES.list()).keys.map((k) => k.name);
-  const graded = await Promise.all(whos.map((w) => env.GRADES.get(w, 'json')));
+  // every account with grades; the ones still only in KV (the old home, binding GRADES) move to D1 as gradesOf reads them
+  const whos = [...new Set([...(await env.DB.prepare('SELECT DISTINCT who FROM grades').all()).results.map((r) => r.who),
+    ...(env.GRADES ? (await env.GRADES.list()).keys.map((k) => k.name) : [])])];
+  const graded = await Promise.all(whos.map((w) => gradesOf(env, w)));
   const seedsOf = (g) => Object.keys(g || {}).filter((k) => /^(movie|tv)_\d+$/.test(k) && WEIGHT[g[k]?.g]);
   const seeds = [...new Set(graded.flatMap(seedsOf))];
   const have = new Map((await env.DB.prepare('SELECT key, list, t FROM recs WHERE key IN (SELECT value FROM json_each(?))')
@@ -2078,6 +2128,9 @@ async function refreshForYou(env) {
       WHERE true ON CONFLICT (key) DO UPDATE SET list = excluded.list, t = excluded.t`).bind(JSON.stringify(got)).run();
   }
   for (const r of got) have.set(r.key, r);
+  // The run's 50 subrequests (free plan): the recommendations asked above, then the cards the rankings still lack, all
+  // within RECS_FETCH, so follows (10) and the night's drops (13) fit beside it however many accounts there are.
+  const cards = { left: RECS_FETCH - due.length };
   for (const [i, who] of whos.entries()) {
     const g = graded[i] || {};
     const score = new Map();
@@ -2094,9 +2147,9 @@ async function refreshForYou(env) {
     }
     const top = [...score].filter(([, x]) => x > 0).sort((a, b) => b[1] - a[1] || tie.get(b[0]) - tie.get(a[0]))
       .slice(0, 60).map(([k]) => k.split('_'));
-    const cards = (await englishCards(env, top.map(([type, id]) => [type, Number(id)]), top.map(() => null), 15)).filter(Boolean);
+    const picked = (await englishCards(env, top.map(([type, id]) => [type, Number(id)]), top.map(() => null), cards)).filter(Boolean);
     await env.DB.prepare(`INSERT INTO foryou (who, cards, t) VALUES (?, ?, ?)
-      ON CONFLICT (who) DO UPDATE SET cards = excluded.cards, t = excluded.t`).bind(who, JSON.stringify(cards), now).run();
+      ON CONFLICT (who) DO UPDATE SET cards = excluded.cards, t = excluded.t`).bind(who, JSON.stringify(picked), now).run();
   }
 }
 // The hourly cron: New in 4K at 04 UTC (and while it has nothing), For you the other hours (each its own 50
@@ -2141,11 +2194,11 @@ async function extFetch(env, name, path, init = {}, ms = EXT_MS) {
 }
 
 async function extension(request, env, name, rest) {
-  if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
+  if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
   if (!env[`EXT_${name.toUpperCase()}`]) return corsError(request, 'Not found.', 404);
   if (Number(request.headers.get('Content-Length')) > EXT_BODY_MAX) return corsError(request, 'Too large.', 413);
   const body = request.method === 'POST' ? await request.text() : undefined;
-  if (body !== undefined && body.length > EXT_BODY_MAX) return corsError(request, 'Too large.', 413);
+  if (body !== undefined && new TextEncoder().encode(body).length > EXT_BODY_MAX) return corsError(request, 'Too large.', 413);
   try {
     const res = await extFetch(env, name, rest, { method: request.method, body });
     const out = await res.text();
@@ -2171,7 +2224,7 @@ async function extLearned(env) {
 // GET /mine with the app's CUB sign-in (X-Cub-Token, X-Cub-Profile; accounts in CUB_ACCOUNTS only, as /grades) ->
 // {"rows": [...] as /home, "marks": {"tv_93740": "scheduled", ...}, "grades": {"movie_603": 2, ...}, "new":
 // {"tv_93740": "S3 E5", ...}}: the rows of Lampa's CUB home that are yours, for the top of lampa-native's Home,
-// every film's mark and grade (the film page's ⋯ and ★ show them; grades: KV GRADES as /grades, "skip" = Didn't
+// every film's mark and grade (the film page's ⋯ and ★ show them; grades: D1 grades as /grades, "skip" = Didn't
 // watch / not mine), the series with a new episode out (nextNew, freshOut): first in Continue browsing, and "mylist":
 // ["movie_603", ...], what My list holds (the film page's ⋯ adds or removes), "left": {"movie_603": 4000, ...}, the
 // seconds left of each film started (3 min in, under 90 %, not graded), for its poster, and "tv_1399": "26 ep", a
@@ -2197,7 +2250,7 @@ async function mine(request, env) {
   if (!who) return corsError(request, 'CUB sign-in required.', 401);
   const db = (sql, ...args) => (env.DB ? env.DB.prepare(sql).bind(...args).all().then((r) => r.results).catch(() => []) : []);
   const [dump, ours, graded, picks, uhd, follows, told, learned] = await Promise.all([cubApi(request, 'bookmarks/dump'),
-    db('SELECT card, mark FROM marks WHERE who = ?', who), env.GRADES ? env.GRADES.get(who, 'json').catch(() => null) : null,
+    db('SELECT card, mark FROM marks WHERE who = ?', who), env.DB ? gradesOf(env, who).catch(() => null) : null,
     db('SELECT cards FROM foryou WHERE who = ?', who), db('SELECT type, id, card FROM uhd WHERE card IS NOT NULL ORDER BY t DESC, pos LIMIT 100'),
     db('SELECT person, name, coming FROM follows WHERE who = ?', who),
     db('SELECT t, card, head, line FROM news WHERE who = ? AND t > ? ORDER BY t DESC LIMIT ?', who, Date.now() - NEWS_DAYS * 86400e3,
@@ -2543,7 +2596,8 @@ const voiceAnswer = (request, o) => new Response(JSON.stringify(o), {
 });
 
 async function voiceHear(request, env) {
-  if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
+  if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
+  if (Number(request.headers.get('Content-Length')) > VOICE_WAV_MAX) return corsError(request, 'A WAV of 30 s at most.', 413);
   const wav = await request.arrayBuffer();
   if (wav.byteLength <= 44 || wav.byteLength > VOICE_WAV_MAX) return corsError(request, 'A WAV of 30 s at most.', 413);
   try {
@@ -2590,7 +2644,7 @@ async function voiceDiscover(env, d) {
 }
 
 async function voiceFind(request, env) {
-  if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
+  if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
   const ask = await request.json().catch(() => null);
   const text = String(ask?.text || '').trim().slice(0, 300);
   let understood = ask?.understood && typeof ask.understood === 'object' ? ask.understood : null;
@@ -2661,102 +2715,118 @@ export default {
     if (!env.DB) return undefined;
     if (event.cron === HOURLY_CRON) {
       const empty = !(await env.DB.prepare('SELECT 1 FROM uhd LIMIT 1').first()); // the first run fills it at once
-      if (new Date(event.scheduledTime).getUTCHours() === 4 || empty) return refreshUhd(env, event.scheduledTime);
+      if (new Date(event.scheduledTime).getUTCHours() === 4 || empty) {
+        return refreshUhd(env, event.scheduledTime).catch((e) => console.log('uhd', String(e)));
+      }
       // follows beside For you (25 of the 50 subrequests), not beside New in 4K (up to 35); a failure stays theirs
       const night = [1, 2, 3].includes(new Date(event.scheduledTime).getUTCHours());
-      return Promise.all([env.GRADES && refreshForYou(env),
+      return Promise.all([refreshForYou(env).catch((e) => console.log('for you', String(e))),
         refreshFollows(env, event.scheduledTime).catch((e) => console.log('follows', e)),
         night && dropProbeAdds(env, event.scheduledTime).catch((e) => console.log('adds', e))]);
     }
     return TITLE_CRONS[event.cron] ? refreshTitles(env, TITLE_CRONS[event.cron]) : undefined;
   },
 
+  // Whatever a route throws (a DB or network error nobody caught) is a 500 with CORS and a log line, not Cloudflare's
+  // error page: the Lampa plugin can read the first, and `wrangler tail` shows which route failed.
   async fetch(request, env, ctx) {
-    if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: corsHeaders(request) });
+    try {
+      return await route(request, env, ctx);
+    } catch (e) {
+      console.log('failed', request.method, new URL(request.url).pathname, String(e));
+      return corsError(request, 'The worker failed.', 500);
     }
-
-    if (!METHODS.includes(request.method)) {
-      return corsError(request, `${request.method}: this worker answers ${METHODS.join(', ')} and OPTIONS.`, 405);
-    }
-
-    if (new URL(request.url).pathname === '/grades' && request.method === 'POST') return grades(request, env);
-    if (new URL(request.url).pathname === '/home' && request.method === 'GET') return home(request, env);
-    if (new URL(request.url).pathname === '/search' && request.method === 'GET') return search(request, env);
-    const film = new URL(request.url).pathname.match(/^\/card\/(movie|tv)\/(\d+)$/);
-    if (film && request.method === 'GET') { // the token first: each new address spends MDBList's daily 1,000
-      if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
-      return edgeCached(request, ctx, () => filmCard(request, env, film[1], film[2]));
-    }
-    const season = new URL(request.url).pathname.match(/^\/season\/(\d+)\/(\d+)$/);
-    if (season && request.method === 'GET') {
-      return edgeCached(request, ctx, () => seasonPage(request, env, season[1], season[2]));
-    }
-    const actor = new URL(request.url).pathname.match(/^\/person\/(\d+)$/);
-    if (actor && request.method === 'GET') return edgeCached(request, ctx, () => personPage(request, env, actor[1]));
-    const imdb = new URL(request.url).pathname.match(/^\/find\/(tt\d{1,10})$/);
-    if (imdb && request.method === 'GET') return edgeCached(request, ctx, () => findImdb(request, env, imdb[1]));
-    const genre = new URL(request.url).pathname.match(/^\/genre\/([a-z-]+)$/);
-    if (genre && request.method === 'GET') return edgeCached(request, ctx, () => genrePage(request, env, genre[1]));
-    const picked = new URL(request.url).pathname.match(/^\/discover\/([a-z-]+)$/);
-    if (picked && request.method === 'GET') return edgeCached(request, ctx, () => discover(request, env, picked[1]));
-    const ext = new URL(request.url).pathname.match(/^\/ext\/([a-z][a-z0-9]{0,15})(\/[\w/-]*)$/);
-    if (ext && /^(GET|POST)$/.test(request.method)) {
-      return extension(request, env, ext[1], ext[2] + new URL(request.url).search);
-    }
-    if (new URL(request.url).pathname === '/torbox' && request.method === 'GET') return torboxAccount(request, env);
-    const drop = new URL(request.url).pathname.match(/^\/torbox\/drop\/([0-9a-f]{40})$/);
-    if (drop && request.method === 'POST') return torboxDrop(request, env, drop[1]);
-    const mv = new URL(request.url).pathname.match(/^\/maxvol\/(tt\d+)$/);
-    if (mv && request.method === 'GET') {
-      if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
-      return env.DB ? new Response(JSON.stringify(await maxvolAudio(env, mv[1])), {
-        headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' },
-      }) : corsError(request, 'No database.', 503);
-    }
-    // The streams addon's address, for the app to ask it itself when it refuses the worker (Cloudflare's shared IPs)
-    if (new URL(request.url).pathname === '/addon' && request.method === 'GET') {
-      if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
-      return env.STREAM_ADDON ? new Response(env.STREAM_ADDON) : corsError(request, 'No streams addon set.', 404);
-    }
-    const src = new URL(request.url).pathname.match(/^\/streams\/(movie|series)\/(tt\d+)(?:\/(\d+)\/(\d+))?$/);
-    if (src && /^(GET|POST)$/.test(request.method) && (src[1] === 'series') === Boolean(src[3])) {
-      return sources(request, env, ctx, src[1], src[2], src[3], src[4]);
-    }
-
-    if (/^\/segments\/(jobs|own)$/.test(new URL(request.url).pathname) && env.DB) return introJobs(request, env);
-    const skip = new URL(request.url).pathname.match(/^\/segments\/(movie|tv)\/(\d+)\/(tt\d+)$/);
-    if (skip && request.method === 'GET') return segments(request, env, skip[1], skip[2], skip[3]);
-    const tracks = new URL(request.url).pathname.match(/^\/audio\/([0-9a-f]{40})$/);
-    if (tracks && request.method === 'GET') return audio(request, env, tracks[1]);
-    const link = new URL(request.url).pathname.match(/^\/play\/([0-9a-f]{40})$/);
-    if (link && request.method === 'GET') return play(request, env, ctx, link[1]);
-    const file = new URL(request.url).pathname.match(/^\/stream\/(\d+)\/(\d+)$/);
-    if (file && /^(GET|HEAD)$/.test(request.method)) return stream(request, env, ctx, file[1], file[2]);
-    if (new URL(request.url).pathname === '/timeline') return timeline(request, env);
-    if (new URL(request.url).pathname === '/mine' && request.method === 'GET') return mine(request, env);
-    if (new URL(request.url).pathname === '/mine/history' && request.method === 'GET') return historyPage(request, env);
-    if (new URL(request.url).pathname === '/mine/unwatch' && request.method === 'POST') return unwatch(request, env);
-    const followed = new URL(request.url).pathname.match(/^\/mine\/(follow|unfollow)\/(\d{1,10})$/);
-    if (followed && request.method === 'POST') return follow(request, env, followed[1] === 'follow', followed[2]);
-    const listed = new URL(request.url).pathname
-      .match(/^\/mine\/(history|unhistory|book|unbook|viewed|scheduled|thrown|none)\/(movie|tv)\/(\d+)$/);
-    if (listed && request.method === 'POST') return bookmark(request, env, listed[1], listed[2], listed[3]);
-    if (new URL(request.url).pathname === '/voice/hear' && request.method === 'POST') return voiceHear(request, env);
-    if (new URL(request.url).pathname === '/voice/find' && request.method === 'POST') return voiceFind(request, env);
-
-    // The Lampa plugin's routes, only when wanted (PASS_THROUGH=1 in wrangler.toml's [vars]): open to anyone, they
-    // spend the MDBList key and pass requests through
-    if (env.PASS_THROUGH !== '1') return corsError(request, 'Not found.', 404);
-    const scores = new URL(request.url).pathname.match(/^\/mdblist\/(movie|show)(?:\/(\d+))?$/);
-    if (scores && (scores[2] || request.method === 'POST')) return mdblist(request, env, scores[1], scores[2]);
-    // the Lampa plugin playing a torrent a probe added (its requestdl, answered by TorBox with its key): the user's
-    // now, the night leaves it alone
-    const out = await passThrough(request);
-    const played = out.status === 200 ? pluginPlay(request) : null;
-    if (played !== null && env.DB) {
-      ctx.waitUntil(env.DB.prepare('DELETE FROM added WHERE id = ?').bind(played).run().catch(() => {}));
-    }
-    return out;
   },
 };
+
+async function route(request, env, ctx) {
+  if (request.method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers: corsHeaders(request) });
+  }
+
+  if (!METHODS.includes(request.method)) {
+    return corsError(request, `${request.method}: this worker answers ${METHODS.join(', ')} and OPTIONS.`, 405);
+  }
+
+  // The app's screens spend the TMDB key (and the Workers quota): the stick's token first, as /card. No other client
+  // asks them: the Lampa plugin uses /grades, /timeline, /mdblist and ?url= only; imdb-import.py sends the token.
+  if (/^\/(home|search|season\/|person\/|find\/|discover\/)/.test(new URL(request.url).pathname) && !isStick(request, env)) {
+    return corsError(request, 'Forbidden.', 403);
+  }
+  if (new URL(request.url).pathname === '/grades' && request.method === 'POST') return grades(request, env);
+  if (new URL(request.url).pathname === '/home' && request.method === 'GET') return home(request, env);
+  if (new URL(request.url).pathname === '/search' && request.method === 'GET') return search(request, env);
+  const film = new URL(request.url).pathname.match(/^\/card\/(movie|tv)\/(\d+)$/);
+  if (film && request.method === 'GET') { // the token first: each new address spends MDBList's daily 1,000
+    if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
+    return edgeCached(request, ctx, () => filmCard(request, env, film[1], film[2]));
+  }
+  const season = new URL(request.url).pathname.match(/^\/season\/(\d+)\/(\d+)$/);
+  if (season && request.method === 'GET') {
+    return edgeCached(request, ctx, () => seasonPage(request, env, season[1], season[2]));
+  }
+  const actor = new URL(request.url).pathname.match(/^\/person\/(\d+)$/);
+  if (actor && request.method === 'GET') return edgeCached(request, ctx, () => personPage(request, env, actor[1]));
+  const imdb = new URL(request.url).pathname.match(/^\/find\/(tt\d{1,10})$/);
+  if (imdb && request.method === 'GET') return edgeCached(request, ctx, () => findImdb(request, env, imdb[1]));
+  const picked = new URL(request.url).pathname.match(/^\/discover\/([a-z-]+)$/);
+  if (picked && request.method === 'GET') return edgeCached(request, ctx, () => discover(request, env, picked[1]));
+  const ext = new URL(request.url).pathname.match(/^\/ext\/([a-z][a-z0-9]{0,15})(\/[\w/-]*)$/);
+  if (ext && /^(GET|POST)$/.test(request.method)) {
+    return extension(request, env, ext[1], ext[2] + new URL(request.url).search);
+  }
+  if (new URL(request.url).pathname === '/torbox' && request.method === 'GET') return torboxAccount(request, env);
+  const drop = new URL(request.url).pathname.match(/^\/torbox\/drop\/([0-9a-f]{40})$/);
+  if (drop && request.method === 'POST') return torboxDrop(request, env, drop[1]);
+  const mv = new URL(request.url).pathname.match(/^\/maxvol\/(tt\d+)$/);
+  if (mv && request.method === 'GET') {
+    if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
+    return env.DB ? new Response(JSON.stringify(await maxvolAudio(env, mv[1])), {
+      headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' },
+    }) : corsError(request, 'No database.', 503);
+  }
+  // The streams addon's address, for the app to ask it itself when it refuses the worker (Cloudflare's shared IPs)
+  if (new URL(request.url).pathname === '/addon' && request.method === 'GET') {
+    if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
+    return env.STREAM_ADDON ? new Response(env.STREAM_ADDON) : corsError(request, 'No streams addon set.', 404);
+  }
+  const src = new URL(request.url).pathname.match(/^\/streams\/(movie|series)\/(tt\d+)(?:\/(\d+)\/(\d+))?$/);
+  if (src && /^(GET|POST)$/.test(request.method) && (src[1] === 'series') === Boolean(src[3])) {
+    return sources(request, env, ctx, src[1], src[2], src[3], src[4]);
+  }
+
+  if (/^\/segments\/(jobs|own)$/.test(new URL(request.url).pathname) && env.DB) return introJobs(request, env);
+  const skip = new URL(request.url).pathname.match(/^\/segments\/(movie|tv)\/(\d+)\/(tt\d+)$/);
+  if (skip && request.method === 'GET') return segments(request, env, skip[1], skip[2], skip[3]);
+  const tracks = new URL(request.url).pathname.match(/^\/audio\/([0-9a-f]{40})$/);
+  if (tracks && request.method === 'GET') return audio(request, env, tracks[1]);
+  const link = new URL(request.url).pathname.match(/^\/play\/([0-9a-f]{40})$/);
+  if (link && request.method === 'GET') return play(request, env, ctx, link[1]);
+  const file = new URL(request.url).pathname.match(/^\/stream\/(\d+)\/(\d+)$/);
+  if (file && /^(GET|HEAD)$/.test(request.method)) return stream(request, env, ctx, file[1], file[2]);
+  if (new URL(request.url).pathname === '/timeline') return timeline(request, env);
+  if (new URL(request.url).pathname === '/mine' && request.method === 'GET') return mine(request, env);
+  if (new URL(request.url).pathname === '/mine/history' && request.method === 'GET') return historyPage(request, env);
+  if (new URL(request.url).pathname === '/mine/unwatch' && request.method === 'POST') return unwatch(request, env);
+  const followed = new URL(request.url).pathname.match(/^\/mine\/(follow|unfollow)\/(\d{1,10})$/);
+  if (followed && request.method === 'POST') return follow(request, env, followed[1] === 'follow', followed[2]);
+  const listed = new URL(request.url).pathname
+    .match(/^\/mine\/(history|unhistory|book|unbook|viewed|scheduled|thrown|none)\/(movie|tv)\/(\d+)$/);
+  if (listed && request.method === 'POST') return bookmark(request, env, listed[1], listed[2], listed[3]);
+  if (new URL(request.url).pathname === '/voice/hear' && request.method === 'POST') return voiceHear(request, env);
+  if (new URL(request.url).pathname === '/voice/find' && request.method === 'POST') return voiceFind(request, env);
+
+  // The Lampa plugin's routes, only when wanted (PASS_THROUGH=1 in wrangler.toml's [vars]): open to anyone, they
+  // spend the MDBList key and pass requests through
+  if (env.PASS_THROUGH !== '1') return corsError(request, 'Not found.', 404);
+  const scores = new URL(request.url).pathname.match(/^\/mdblist\/(movie|show)(?:\/(\d+))?$/);
+  if (scores && (scores[2] || request.method === 'POST')) return mdblist(request, env, scores[1], scores[2], ctx);
+  // the Lampa plugin playing a torrent a probe added (its requestdl, answered by TorBox with its key): the user's
+  // now, the night leaves it alone
+  const out = await passThrough(request);
+  const played = out.status === 200 ? pluginPlay(request) : null;
+  if (played !== null && env.DB) {
+    ctx.waitUntil(env.DB.prepare('DELETE FROM added WHERE id = ?').bind(played).run().catch(() => {}));
+  }
+  return out;
+}

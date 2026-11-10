@@ -263,7 +263,7 @@ shaping; custom-drawn rows would only save Java heap, which is 3 MB. Re-checked 
      30: 45 were outside them), but Not interested and Finish later; TMDB asked again on the next air date, a month
      after it ended, every 3 days while it waits for a date (`shows.status`, `next_air`).
    - **6b** built 2026-10-31, stick test pending: **★** beside ⋯ on the film page, in the grade's color
-     (Loved/Good/OK/Bad/Didn't watch → `/grades`, KV, Lampa's plugin's format, so Lampa shows it on its next sync);
+     (Loved/Good/OK/Bad/Didn't watch → `/grades`, D1 `grades` (one row a film; it was one KV value an account, so two devices posting together overwrote each other), Lampa's plugin's format, so Lampa shows it on its next sync);
      `/mine` brings the grades and **Rate what you watched** (the newest 100 history films past 70 % on the
      timeline, a series by any episode, no grade yet: 11 on 2026-10-31); a graded film leaves it.
    - **6c** built 2026-10-31: **For you**, made by the worker's hourly cron (TMDB recommendations of 240+ graded
@@ -492,7 +492,7 @@ shaping; custom-drawn rows would only save Java heap, which is 3 MB. Re-checked 
     logs `setup: connected to …` or `setup: kept …`, which connect.sh prints). Every request to the worker carries the
     token; `/streams` now needs it too, and the plugin's `?url=` pass-through is off unless `PASS_THROUGH=1`. The home server
     (Claude for voice search and Story so far) is the build's `HOME_SERVER` (`app/local.env`), plain http to it only,
-    and gets HMAC(play token, "home") instead of the token. Progress acts only on the address playing. Icon, banner,
+    and signs each request (X-Home-Time in ms, X-Home-Sig = HMAC(play token, "home\n" + time + "\n" + body), once within 60 s) instead of sending the token. Progress acts only on the address playing. Icon, banner,
     Settings → Worker and About (TMDB's logo and notice). Audio languages default to all.
 
 11. **Extensions: a Learn button** ✅ 2026-11-10 (on main; checked on the stick: The Dark Knight shows "Learned 94%"). Worker: `/ext/<name>/<path>` over a service

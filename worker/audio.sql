@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS audio (
   t INTEGER NOT NULL     -- read at (ms)
 );
 CREATE TABLE IF NOT EXISTS probes (
-  t INTEGER NOT NULL     -- a TorBox add for reading one (ms); rows older than an hour go
+  t INTEGER NOT NULL     -- a TorBox add for reading one (ms); rows older than a day go
 );
 CREATE TABLE IF NOT EXISTS plays (
   hash TEXT PRIMARY KEY, -- a release Play asked for: a torrent a probe added stays in the account; a week kept
