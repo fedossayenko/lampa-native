@@ -2355,3 +2355,39 @@ test('edge cache: unknown query parameters share one entry, a language or versio
     delete globalThis.caches;
   }
 });
+
+// /mdblist is open (the plugin can't hold our token) and spends the key /card's scores share.
+test('mdblist: a title and a batch are kept a day at the location; new batches are capped; bad ids refused', async () => {
+  const kept = new Map();
+  globalThis.caches = { default: {
+    match: async (req) => kept.get(req.url)?.clone(),
+    put: async (req, res) => { kept.set(req.url, res); },
+  } };
+  const on = { ...env, PASS_THROUGH: '1', MDBLIST_API_KEY: 'k' };
+  const mdb = [];
+  globalThis.fetch = async (url, init) => {
+    mdb.push(String(url));
+    return String(url).includes('/tmdb/movie/603') ? new Response(JSON.stringify({ ratings: [{ source: 'imdb', value: 8.7 }] }),
+      { headers: { 'X-RateLimit-Remaining': '900' } })
+      : new Response(JSON.stringify(JSON.parse(init.body).ids.map((id) => ({ ids: { tmdb: Number(id) }, ratings: [{ source: 'imdb', value: 7 }] }))));
+  };
+  try {
+    const one = () => worker.fetch(new Request('https://w/mdblist/movie/603?x=' + Math.random()), on);
+    assert.deepEqual(await (await one()).json(), { imdb: 8.7 });
+    assert.equal((await one()).status, 200);
+    assert.equal(mdb.length, 1, 'the second title ask came from the cache');
+    const batch = (ids) => worker.fetch(new Request('https://w/mdblist/movie', { method: 'POST', body: JSON.stringify({ ids }) }), on);
+    assert.deepEqual(await (await batch([2, 1])).json(), { 1: { imdb: 7 }, 2: { imdb: 7 } });
+    assert.equal((await batch([1, 2, 2])).status, 200);
+    assert.equal(mdb.length, 2, 'the same ids in another order: one MDBList call');
+    assert.equal((await batch([])).status, 400);
+    assert.equal((await batch(['1; DROP'])).status, 400);
+    for (let i = 100; i < 200; i++) await batch([i]); // 98 more fill today's 100
+    const before = mdb.length;
+    assert.equal((await batch([9999])).status, 429, 'the 101st new batch of the day');
+    assert.equal(mdb.length, before, 'and MDBList was not asked');
+    assert.equal((await batch([100])).status, 200, 'a kept one still answers');
+  } finally {
+    delete globalThis.caches;
+  }
+});

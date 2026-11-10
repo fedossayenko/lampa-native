@@ -75,37 +75,63 @@ function ratingsOf(media) {
   return ratings;
 }
 
-async function mdblist(request, env, type, id) {
-  let res;
-  if (id) {
-    res = await fetch(`https://api.mdblist.com/tmdb/${type}/${id}?apikey=${env.MDBLIST_API_KEY}`);
-  } else {
-    let ids;
-    try {
-      ids = (await request.json()).ids;
-    } catch {}
-    if (!Array.isArray(ids) || !ids.length || ids.length > 200 || !ids.every((x) => /^\d+$/.test(String(x)))) {
-      return corsError(request, 'Bad request: "ids" must be 1-200 TMDB ids.', 400);
-    }
-    res = await fetch(`https://api.mdblist.com/tmdb/${type}?apikey=${env.MDBLIST_API_KEY}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids: ids.map(String) }),
-    });
-  }
-  if (!res.ok) return corsError(request, `MDBList ${res.status}`, res.status);
-  const json = await res.json();
-  let body = {};
-  if (id) body = ratingsOf(json);
-  else for (const m of Array.isArray(json) ? json : []) if (m.ids && m.ids.tmdb) body[m.ids.tmdb] = ratingsOf(m);
-  return new Response(JSON.stringify(body), {
+// The plugin can't hold our token, so these two are open and spend the key that /card's scores use (MDBList's 1,000
+// a day). A title's scores are kept a day at this Cloudflare location (the Cache API), a batch by its ids, and no more
+// than MDBLIST_BATCHES new batches a day go to MDBList from one location: a loop of ever new ids can't empty the quota
+// the TV's film pages share (the rest get 429, scores missing, never a failed page).
+const MDBLIST_BATCHES = 100;
+// Counts today's uses of `name` at this location (the Cache API has no atomic add: close enough for a cap); true while under max.
+async function underCap(name, max) {
+  const key = new Request(`https://cap.invalid/${name}/${new Date().toISOString().slice(0, 10)}`);
+  const used = Number(await caches.default.match(key).then((r) => (r ? r.text() : 0))) || 0;
+  if (used >= max) return false;
+  await caches.default.put(key, new Response(String(used + 1), { headers: { 'Cache-Control': 'max-age=86400' } }));
+  return true;
+}
+
+async function mdblist(request, env, type, id, ctx) {
+  const scores = (res, body) => new Response(JSON.stringify(body), {
     headers: {
       'Content-Type': 'application/json',
+      'Cache-Control': 'max-age=86400',
       'X-RateLimit-Remaining': res.headers.get('X-RateLimit-Remaining') || '',
       'Access-Control-Expose-Headers': 'X-RateLimit-Remaining',
       ...corsHeaders(request),
     },
   });
+  if (id) {
+    return edgeCached(request, ctx, async () => {
+      const res = await fetch(`https://api.mdblist.com/tmdb/${type}/${id}?apikey=${env.MDBLIST_API_KEY}`);
+      return res.ok ? scores(res, ratingsOf(await res.json())) : corsError(request, `MDBList ${res.status}`, res.status);
+    });
+  }
+  let ids;
+  try {
+    ids = (await request.json()).ids;
+  } catch {}
+  if (!Array.isArray(ids) || !ids.length || ids.length > 200 || !ids.every((x) => /^\d+$/.test(String(x)))) {
+    return corsError(request, 'Bad request: "ids" must be 1-200 TMDB ids.', 400);
+  }
+  const ask = async () => {
+    const res = await fetch(`https://api.mdblist.com/tmdb/${type}?apikey=${env.MDBLIST_API_KEY}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: ids.map(String) }),
+    });
+    if (!res.ok) return corsError(request, `MDBList ${res.status}`, res.status);
+    const json = await res.json();
+    const body = {};
+    for (const m of Array.isArray(json) ? json : []) if (m.ids && m.ids.tmdb) body[m.ids.tmdb] = ratingsOf(m);
+    return scores(res, body);
+  };
+  if (typeof caches === 'undefined') return ask();
+  const key = new Request(`https://cap.invalid/mdblist/${type}/${[...new Set(ids.map(Number))].sort((a, b) => a - b).join(',')}`);
+  const hit = await caches.default.match(key);
+  if (hit) return hit;
+  if (!(await underCap('mdblist', MDBLIST_BATCHES))) return corsError(request, 'MDBList: no more batches today.', 429);
+  const res = await ask();
+  if (res.ok) ctx ? ctx.waitUntil(caches.default.put(key, res.clone())) : await caches.default.put(key, res.clone());
+  return res;
 }
 
 // The Lampa plugin's film grades, shared by every Lampa signed in to the same CUB account + profile (KV GRADES).
@@ -2721,7 +2747,7 @@ export default {
     // spend the MDBList key and pass requests through
     if (env.PASS_THROUGH !== '1') return corsError(request, 'Not found.', 404);
     const scores = new URL(request.url).pathname.match(/^\/mdblist\/(movie|show)(?:\/(\d+))?$/);
-    if (scores && (scores[2] || request.method === 'POST')) return mdblist(request, env, scores[1], scores[2]);
+    if (scores && (scores[2] || request.method === 'POST')) return mdblist(request, env, scores[1], scores[2], ctx);
     // the Lampa plugin playing a torrent a probe added (its requestdl, answered by TorBox with its key): the user's
     // now, the night leaves it alone
     const out = await passThrough(request);
