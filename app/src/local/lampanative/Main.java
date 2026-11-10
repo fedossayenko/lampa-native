@@ -1864,10 +1864,11 @@ public class Main extends Activity {
             TextView detail = r.findViewWithTag(DETAIL);
             View level = (View) req.list().getParent();
             audioReads.execute(() -> {
-                // left before its turn (or covered by a page: asked again when the list is next opened), or DDD
-                // plays: no TorBox add for a row nobody sees (alive() is the UI thread's; a level off screen is
-                // detached). ponytail: one already asking runs on (a socket
-                // waiting <= 30 s): cut off, the worker would stop before taking its add out of the account again.
+                // left before its turn (or covered by a page: read on the next Watch, Back doesn't rebuild the row),
+                // or DDD plays: no TorBox add for a row nobody sees (alive() is the UI thread's; a level off screen is
+                // detached; read off the UI thread, a stale answer only costs or skips one read). ponytail: one already
+                // asking runs on (a socket waiting <= 30 s) and keeps the closed list's few views until it ends: cut
+                // off, the worker would stop before taking its add out of the account again.
                 if (stopped || !level.isAttachedToWindow()) return;
                 try {
                     Answer a = ask(Sources.audioPath(s), null);
@@ -1891,11 +1892,13 @@ public class Main extends Activity {
         SpannableStringBuilder line = new SpannableStringBuilder();
         List<Sources.Heard> heard = Sources.heard(s, langs);
         for (String b : Sources.badges(s, Sources.fileRead(s))) chip(line, b);
+        // size and tracker before the audio groups: a one-line row cut at its end keeps what rows are compared by
+        line.append(Sources.details(s, heard.isEmpty())).append("  ");
         for (Sources.Heard h : heard) { // its chips, then where they come from in the line's own color
             for (String c : h.chips()) chip(line, c);
             line.append(h.from()).append("  ");
         }
-        return line.append(Sources.details(s, heard.isEmpty()));
+        return line;
     }
 
     void chip(SpannableStringBuilder line, String b) {

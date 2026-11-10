@@ -2029,6 +2029,14 @@ test('audio: a probe add with nothing to read (a disc: no video) still leaves at
   assert.equal(e.DB.raw.prepare('SELECT COUNT(*) n FROM probes').get().n, spent);
 });
 
+test('audio: TorBox failing right after our add: the add is still recorded for the night, not settled', async () => {
+  const e = audioEnv();
+  torbox({ ...fresh, 'mylist?id': undefined }); // createtorrent answers, then TorBox is down (500)
+  assert.equal((await audioOf(e)).status, 502);
+  assert.equal(e.DB.raw.prepare('SELECT id FROM added WHERE hash = ?').get(H).id, 11);
+  assert.equal(e.DB.raw.prepare('SELECT COUNT(*) n FROM audio').get().n, 0, 'asked again on the next list');
+});
+
 test('pass-through: the Lampa plugin starting a play (requestdl) keeps a torrent a probe added', async () => {
   const e = { ...audioEnv(), PASS_THROUGH: '1' };
   e.DB.raw.prepare('INSERT INTO added (hash, id, t) VALUES (?, 11, 1), (?, 12, 1)').run('ab'.repeat(20), 'cd'.repeat(20));
@@ -2038,6 +2046,11 @@ test('pass-through: the Lampa plugin starting a play (requestdl) keeps a torrent
   await worker.fetch(new Request(`https://w/?url=${encodeURIComponent(dl)}`), e, { waitUntil: (p) => waits.push(p) });
   await Promise.all(waits);
   assert.deepEqual(e.DB.raw.prepare('SELECT id FROM added').all().map((r) => r.id), [12]);
+  globalThis.fetch = async () => new Response('{"success":false}', { status: 401 }); // anyone's made-up request
+  const fake = dl.replace('torrent_id=11', 'torrent_id=12');
+  await worker.fetch(new Request(`https://w/?url=${encodeURIComponent(fake)}`), e, { waitUntil: (p) => waits.push(p) });
+  await Promise.all(waits);
+  assert.deepEqual(e.DB.raw.prepare('SELECT id FROM added').all().map((r) => r.id), [12], 'refused by TorBox: kept');
 });
 
 test('audio: not MKV or MP4 → [] kept (not read again); TorBox still downloading it → 502, our add noted', async () => {

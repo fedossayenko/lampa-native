@@ -1022,6 +1022,15 @@ async function torboxLink(env, hash, fileIdx, name, mine) {
     id = (all?.data || []).find((t) => String(t.hash).toLowerCase() === hash)?.id;
   }
   if (id === undefined) return { error: answer?.detail || answer?.error || 'TorBox refused it.', status: 502 };
+  try {
+    return await linkIn(env, id, fileIdx, name);
+  } catch (e) {
+    if (mine === undefined) return { id, error: 'TorBox unavailable.', status: 503 }; // our add: still recorded
+    throw e;
+  }
+}
+
+async function linkIn(env, id, fileIdx, name) {
   const t = (await torboxApi(env, `mylist?id=${id}&bypass_cache=true`))?.data;
   if (!t) return { id, error: 'TorBox lost it.', status: 502 }; // id: an add of ours still leaves at night
   if (!t.download_present) return { id, progress: Math.round((t.progress || 0) * 100) };
@@ -1111,7 +1120,7 @@ async function audio(request, env, hash) {
     await env.DB.prepare('INSERT OR REPLACE INTO added (hash, id, t) VALUES (?, ?, ?)').bind(hash, got.id, now).run();
   }
   const tracks = got.link ? await rememberAudio(env, hash, got.link) : null;
-  if (got.error) { // no video in it (a disc), lost, no link: unreadable, not asked again for a day (settled)
+  if (got.error && got.status !== 503) { // no video in it (a disc), lost, no link: unreadable, settled for a day
     await env.DB.prepare("INSERT OR REPLACE INTO audio (hash, tracks, t) VALUES (?, 'null', ?)").bind(hash, now).run();
   }
   if (!got.link) return corsError(request, got.error || 'Not on TorBox yet.', 502);
@@ -2725,11 +2734,13 @@ export default {
     if (env.PASS_THROUGH !== '1') return corsError(request, 'Not found.', 404);
     const scores = new URL(request.url).pathname.match(/^\/mdblist\/(movie|show)(?:\/(\d+))?$/);
     if (scores && (scores[2] || request.method === 'POST')) return mdblist(request, env, scores[1], scores[2]);
-    // the Lampa plugin playing a torrent a probe added (its requestdl): the user's now, the night leaves it alone
-    const played = pluginPlay(request);
+    // the Lampa plugin playing a torrent a probe added (its requestdl, answered by TorBox with its key): the user's
+    // now, the night leaves it alone
+    const out = await passThrough(request);
+    const played = out.status === 200 ? pluginPlay(request) : null;
     if (played !== null && env.DB) {
       ctx.waitUntil(env.DB.prepare('DELETE FROM added WHERE id = ?').bind(played).run().catch(() => {}));
     }
-    return passThrough(request);
+    return out;
   },
 };
