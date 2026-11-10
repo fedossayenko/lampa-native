@@ -2602,7 +2602,7 @@ public class Main extends Activity {
             c.setConnectTimeout(3000);
             c.setRequestProperty("X-Play-Token", Voice.homeToken(token()));
             Answer a = send(c, Voice.understandBody(text).getBytes(StandardCharsets.UTF_8), "application/json");
-            if (a.code() == 200) return a.body();
+            if (a.code() == 200) return Voice.understood(a.body());
             Log.w(TAG, "voice: Claude Code answered " + a.code());
         } catch (IOException | JSONException e) {
             Log.w(TAG, "voice: no Claude Code", e);
