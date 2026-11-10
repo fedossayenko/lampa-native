@@ -2,6 +2,8 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -22,7 +24,9 @@ public class TestRunner {
             Class<?> c = Class.forName(root.relativize(p).toString().replace('/', '.').replaceAll("\\.class$", ""));
             var make = c.getDeclaredConstructor();
             make.setAccessible(true);
-            for (Method m : c.getDeclaredMethods()) {
+            Method[] methods = c.getDeclaredMethods();
+            Arrays.sort(methods, Comparator.comparing(Method::getName)); // getDeclaredMethods' order is unspecified
+            for (Method m : methods) {
                 if (!m.getName().startsWith("test")) continue;
                 run++;
                 m.setAccessible(true);
@@ -30,7 +34,8 @@ public class TestRunner {
                     m.invoke(make.newInstance());
                 } catch (InvocationTargetException e) {
                     failed++;
-                    System.out.println("FAIL " + c.getSimpleName() + "." + m.getName() + ": " + e.getCause());
+                    System.out.println("FAIL " + c.getSimpleName() + "." + m.getName() + ": " + e.getCause()
+                        + " at " + e.getCause().getStackTrace()[0]);
                 }
             }
         }
