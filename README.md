@@ -120,6 +120,9 @@ position every 30 seconds (so a power cut loses nothing). Stock DDD ignores thos
 
 ## Development
 
+Needs JDK 21, Node 22.8+, Python 3, [shellcheck](https://www.shellcheck.net), and the Android SDK (`ANDROID_HOME`:
+build-tools 36.1.0, platform 36, and `cmdline-tools/latest/bin` on the PATH for `lint`).
+
 ```sh
 app/build.sh                # app/build/lampa-native.apk (SDK build-tools 36.1.0, platform 36, JDK 21; ANDROID_HOME)
 tools/check.sh              # shellcheck, javac -Xlint:all -Werror, the app's host tests and the worker's
