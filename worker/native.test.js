@@ -1915,7 +1915,7 @@ const mkvFilm = (dub = 'Дубляж', original = 'Original', dubFrame = eac3(tr
       el(0xae, elUint(0xd7, 4), elUint(0x83, 2), el(0x86, 'A_DTS'), el(0x22b59c, 'ukr'), el(0x22b59d, 'uk-UA'),
         el(0xe1, elUint(0x9f, 6))),
       el(0xae, elUint(0xd7, 5), elUint(0x83, 2), el(0x86, 'A_AC3'), el(0x536e, 'Commentary'), el(0xe1, elUint(0x9f, 2)))),
-    el(0x1f43b675, elUint(0xe7, 0),
+    el(0x1f43b675, el(0xbf, new Uint8Array(4)), elUint(0xe7, 0), // CRC-32 first, as ffmpeg's muxer writes
       block(1, new Uint8Array(300 * 1024)), // a key frame past the first 256 KB read: stepped over, not read
       block(2, dubFrame),
       block(3, originalFrame),
@@ -1999,7 +1999,7 @@ test('audio: only the stick; a TorBox add budget for unread releases (4 a minute
   for (let i = 0; i < 4; i++) e.DB.raw.prepare('INSERT INTO probes (t) VALUES (?)').run(now - 1000);
   const busy = await audioOf(e);
   assert.deepEqual([busy.status, await busy.json()], [429, { later: true }]);
-  assert.deepEqual(asked, []); // TorBox not asked
+  assert.deepEqual(asked.map((u) => new URL(u).pathname), ['/v1/api/torrents/mylist'], 'only the account looked at: no add');
   e.DB.raw.prepare('UPDATE probes SET t = ?').run(now - 120_000); // a minute later: 4 of 20 this hour
   assert.equal((await audioOf(e)).status, 200);
   for (let i = 0; i < 16; i++) e.DB.raw.prepare('INSERT INTO probes (t) VALUES (?)').run(now - 120_000);

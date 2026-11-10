@@ -1087,27 +1087,27 @@ async function audio(request, env, hash) {
     return known.tracks !== 'null' ? json({ tracks: JSON.parse(known.tracks) })
       : corsError(request, 'Its audio couldn\'t be read today.', 502);
   }
-  const spent = await env.DB.prepare('SELECT SUM(t > ?) minute, SUM(t > ?) hour, COUNT(*) day FROM probes WHERE t > ?')
-    .bind(now - 60_000, now - 3_600_000, now - 86_400_000).first();
-  if ((spent?.minute || 0) >= PROBES_MINUTE || (spent?.hour || 0) >= PROBES_HOUR || (spent?.day || 0) >= PROBES_DAY()) {
-    return json({ later: true }, 429);
-  }
-  await env.DB.prepare('DELETE FROM probes WHERE t <= ?').bind(now - 86_400_000).run();
   const q = new URL(request.url).searchParams;
   let got;
   let mine;
   try {
-    // in the account already (played before): read as it is, no add (none spent), and left there
-    mine = (await accountTorrents(env))
-      .find((t) => String(t.hash).toLowerCase() === hash)?.id;
-    if (mine === undefined) await env.DB.prepare('INSERT INTO probes (t) VALUES (?)').bind(now).run();
+    // in the account already (played before): read as it is, no add (none of the budget), and left there
+    mine = (await accountTorrents(env)).find((t) => String(t.hash).toLowerCase() === hash)?.id;
+    if (mine === undefined) {
+      const spent = await env.DB.prepare('SELECT SUM(t > ?) minute, SUM(t > ?) hour, COUNT(*) day FROM probes WHERE t > ?')
+        .bind(now - 60_000, now - 3_600_000, now - 86_400_000).first();
+      if ((spent?.minute || 0) >= PROBES_MINUTE || (spent?.hour || 0) >= PROBES_HOUR
+        || (spent?.day || 0) >= PROBES_DAY()) return json({ later: true }, 429);
+      await env.DB.prepare('DELETE FROM probes WHERE t <= ?').bind(now - 86_400_000).run();
+    }
     got = await torboxLink(env, hash, Number(q.get('file') ?? -1), q.get('name') || '', mine);
   } catch {
     return corsError(request, 'TorBox unavailable.', 502);
   }
   // our add: out of the account again at night unless played by then (dropProbeAdds), not now: the user may be
   // pressing OK on this very row
-  if (mine === undefined && got.id !== undefined) {
+  if (mine === undefined && got.id !== undefined) { // an add happened: it spends the budget
+    await env.DB.prepare('INSERT INTO probes (t) VALUES (?)').bind(now).run();
     await env.DB.prepare('INSERT OR REPLACE INTO added (hash, id, t) VALUES (?, ?, ?)').bind(hash, got.id, now).run();
   }
   const tracks = got.link ? await rememberAudio(env, hash, got.link) : null;
@@ -1419,7 +1419,9 @@ async function firstFrames(read, at, want) {
       p = base + x.data;
       continue;
     }
-    if (x.end === Infinity || ![0xe7, 0xa3, 0xa0, 0xab, 0xa7].includes(x.id)) return; // past the clusters
+    // Timestamp, SimpleBlock, BlockGroup, PrevSize, Position, and CRC-32 / Void (ffmpeg writes a CRC-32 first in
+    // every cluster): stepped over; anything else is past the clusters
+    if (x.end === Infinity || ![0xe7, 0xa3, 0xa0, 0xab, 0xa7, 0xbf, 0xec].includes(x.id)) return;
     const block = x.id === 0xa0 ? [...ebmlKids(b, x.data, x.end)].find((k) => k.id === 0xa1) : x;
     const track = block && vint(b, block.data);
     if (track && left.has(track.v)) {
