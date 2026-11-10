@@ -290,6 +290,18 @@ async function refreshTitles(env, language) {
       votes: m.vote_count || 0, en: words(`${m.title || m.name} ${m.original_title || m.original_name || ''}`) }))), now)
     .run();
   await env.DB.prepare('DELETE FROM titles WHERE seen < ?').bind(now - 30 * 86400e3).run(); // off every list a month
+  await purgeOld(env, now);
+}
+
+// What nothing reads any more, once a day (with the English index): each of these tables only grew. Days kept: skip
+// times a series' episode got (asked again after a week anyway), "out in your language" answers (a new episode's, asked
+// for a month), a followed film's news (the app shows 30 days), recommendations of a film no longer graded, MaxVol's
+// lists (a day's), jobs of the intro detector that nothing has taken for a month (it asks the queue every 10 minutes).
+const PURGE = [['segments', 60], ['fresh', 30], ['news', 90], ['recs', 60], ['maxvol', 30], ['intro_jobs', 30]];
+async function purgeOld(env, now) {
+  for (const [table, days] of PURGE) {
+    await env.DB.prepare(`DELETE FROM ${table} WHERE t < ?`).bind(now - days * 86400e3).run().catch((e) => console.log('purge', table, String(e)));
+  }
 }
 
 // GET /search?q=<text> -> lampa-native's search, as Home cards: well-known titles with a word starting so (the
@@ -801,6 +813,12 @@ async function introJobs(request, env) {
   const json = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...corsHeaders(request) };
   if (request.method === 'GET') {
     const jobs = (await env.DB.prepare('SELECT key, file, name, series FROM intro_jobs ORDER BY t LIMIT 5').all()).results;
+    // each taken goes to the back of the queue: one the detector can't finish (its torrent gone, a timeout) is asked
+    // again after the others, never first for ever (five such would starve every new one)
+    if (jobs.length) {
+      await env.DB.prepare('UPDATE intro_jobs SET t = ?1 WHERE key IN (SELECT value FROM json_each(?2))')
+        .bind(Date.now(), JSON.stringify(jobs.map((j) => j.key))).run();
+    }
     for (const j of jobs) {
       j.have = (await env.DB.prepare("SELECT key FROM intros WHERE key LIKE ?").bind(`${j.key.split('/')[0]}/%`).all())
         .results.map((r) => r.key.split('/').slice(1).join(':'));

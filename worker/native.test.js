@@ -2456,3 +2456,32 @@ test('cron For you: the recommendations and the cards missing from the index tog
   assert.ok(calls <= 25, `${calls} TMDB calls`);
   assert.ok(calls > 20, 'the budget was used, not skipped');
 });
+
+test('the daily run purges what nothing reads any more, and keeps the rest', async () => {
+  const e = { ...env, DB: d1() };
+  const day = 86400e3;
+  const old = Date.now() - 100 * day;
+  const fresh = Date.now() - day;
+  for (const t of [old, fresh]) {
+    e.DB.raw.prepare('INSERT INTO segments (key, value, t) VALUES (?, ?, ?)').run(`tv/1/1/${t}`, '', t);
+    e.DB.raw.prepare('INSERT INTO fresh (key, out, t) VALUES (?, ?, ?)').run(`k${t}`, null, t);
+    e.DB.raw.prepare('INSERT INTO news (who, key, t, card, head, line) VALUES (?, ?, ?, ?, ?, ?)').run('w', `k${t}`, t, '[]', 'h', 'l');
+    e.DB.raw.prepare('INSERT INTO recs (key, list, t) VALUES (?, ?, ?)').run(`movie_${t}`, '[]', t);
+    e.DB.raw.prepare('INSERT INTO maxvol (imdb, tracks, t) VALUES (?, ?, ?)').run(`tt${t}`, '{}', t);
+    e.DB.raw.prepare('INSERT INTO intro_jobs (key, file, name, series, t) VALUES (?, ?, ?, ?, ?)').run(`h${t}`, 1, 'n', 's', t);
+  }
+  tmdbAnswers(known);
+  await worker.scheduled({ cron: '7 3 * * *' }, e);
+  for (const table of ['segments', 'fresh', 'news', 'recs', 'maxvol', 'intro_jobs']) {
+    assert.equal(e.DB.raw.prepare(`SELECT count(*) n FROM ${table}`).get().n, 1, table);
+    assert.ok(e.DB.raw.prepare(`SELECT t FROM ${table}`).get().t > old + day, `${table}: the new one stays`);
+  }
+});
+
+test('segments/jobs: a job taken goes to the back, so five the detector can\'t finish never starve the rest', async () => {
+  const e = { ...env, DB: d1() };
+  for (let i = 1; i <= 7; i++) e.DB.raw.prepare('INSERT INTO intro_jobs (key, file, name, series, t) VALUES (?, 1, ?, ?, ?)').run(`${'a'.repeat(40)}/1/${i}`, 'n', 's', i);
+  const take = async () => (await (await worker.fetch(new Request('https://w/segments/jobs', { headers: stick }), e)).json()).jobs.map((j) => j.key.split('/')[2]);
+  assert.deepEqual(await take(), ['1', '2', '3', '4', '5']);
+  assert.deepEqual(await take(), ['6', '7', '1', '2', '3'], 'the two never taken come first');
+});
