@@ -1603,7 +1603,7 @@ test('segments: our own intro for the release played wins; episodes without one 
   assert.equal((await own({ intros: [{ hash: H, season: 1, episode: 9, start: 31800, end: 113900, recap: 31800 },
     { hash: H, season: 1, episode: 8, start: 20000, end: 100000, recap: 25000 }, // a recap past the intro: none
     { hash: H, season: 1, episode: 10, start: 0, end: 0 }, { hash: H, season: 1, episode: 1, start: 5, end: 5 },
-    { hash: 'x', season: 1, episode: 1, start: 0, end: 1 }],
+    { hash: 'x', season: 1, episode: 1, start: 0, end: 1 }, null],
     done: [`${H}/1/9`] })).status, 204);
   assert.equal(skipEnv.DB.raw.prepare('SELECT count(*) n FROM intro_jobs').get().n, 0);
   skipAnswers(foundation);
@@ -2390,4 +2390,46 @@ test('mdblist: a title and a batch are kept a day at the location; new batches a
   } finally {
     delete globalThis.caches;
   }
+});
+
+// A route that throws is a 500 with CORS and a log line (not Cloudflare's error page); every call out has a timeout.
+test('a route that throws answers 500 with CORS; calls out carry a timeout signal', async () => {
+  const log = console.log;
+  console.log = () => {};
+  try {
+    const res = await worker.fetch(new Request('https://w/timeline', { headers: stick }), env); // no DB: the query throws
+    assert.equal(res.status, 500);
+    assert.equal(res.headers.get('Access-Control-Allow-Origin'), '*');
+  } finally {
+    console.log = log;
+  }
+  let signal;
+  globalThis.fetch = async (url, init) => { signal = init?.signal; return new Response('{"results":[]}'); };
+  await worker.fetch(new Request('https://w/home', { headers: stick }), env);
+  assert.ok(signal instanceof AbortSignal, 'TMDB with a v4 token');
+  await worker.fetch(new Request('https://w/home', { headers: stick }), { ...env, TMDB_API_KEY: 'a'.repeat(32) });
+  assert.ok(signal instanceof AbortSignal, 'TMDB with a v3 key');
+  cub({ 'users/get': { user: { id: 42 } } });
+  globalThis.fetch = async (url, init) => { signal = init?.signal; return new Response('{"user":{"id":42}}'); };
+  await worker.fetch(new Request('https://w/timeline', { headers: lampa }), { ...env, DB: d1(), CUB_ACCOUNTS: '42' });
+  assert.ok(signal instanceof AbortSignal, 'CUB');
+});
+
+test('CUB_ACCOUNTS: spaces around the ids don\'t matter', async () => {
+  cub({ 'users/get': { user: { id: 42 } } });
+  const ok = await worker.fetch(new Request('https://w/timeline', { headers: lampa }), { ...env, DB: d1(), CUB_ACCOUNTS: '7, 42 ,9' });
+  assert.equal(ok.status, 200);
+  const no = await worker.fetch(new Request('https://w/timeline', { headers: lampa }), { ...env, DB: d1(), CUB_ACCOUNTS: '7, 43' });
+  assert.equal(no.status, 403);
+});
+
+test('bodies: a stick\'s streams post with a null in it is skipped, not a 500; too long a body is refused by its header', async () => {
+  const post = (path, body, headers = {}) => worker.fetch(new Request('https://w' + path, { method: 'POST', body,
+    headers: { ...stick, ...headers } }), env);
+  tmdbAnswers({});
+  const res = await post('/streams/movie/tt1', JSON.stringify({ streams: [null, 5, { infoHash: 'a'.repeat(40), title: 'T' }] }));
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).total, 1);
+  assert.equal((await post('/streams/movie/tt1', '{}', { 'Content-Length': '5000000' })).status, 413);
+  assert.equal((await post('/voice/hear', 'x', { 'Content-Length': '2000000' })).status, 413);
 });

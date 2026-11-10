@@ -8,6 +8,10 @@ import VOICE from './voice-prompt.json' with { type: 'json' };
 const TORBOX_HOST = 'api.torbox.app';
 const METHODS = ['GET', 'POST', 'HEAD'];
 
+// Every call out gives up after a time (Cloudflare's own wall limit is far longer): a hanging TMDB, CUB mirror or
+// TorBox then fails like a refused one, which each caller already handles, instead of holding the screen.
+const within = (ms = 8000) => ({ signal: AbortSignal.timeout(ms) });
+
 // CORS goes on every answer, a 4xx or 5xx as much as a 200, so the Lampa plugin can read what went wrong; a
 // preflight is answered with the headers it asked to send.
 function corsHeaders(request) {
@@ -101,7 +105,7 @@ async function mdblist(request, env, type, id, ctx) {
   });
   if (id) {
     return edgeCached(request, ctx, async () => {
-      const res = await fetch(`https://api.mdblist.com/tmdb/${type}/${id}?apikey=${env.MDBLIST_API_KEY}`);
+      const res = await fetch(`https://api.mdblist.com/tmdb/${type}/${id}?apikey=${env.MDBLIST_API_KEY}`, within());
       return res.ok ? scores(res, ratingsOf(await res.json())) : corsError(request, `MDBList ${res.status}`, res.status);
     });
   }
@@ -117,6 +121,7 @@ async function mdblist(request, env, type, id, ctx) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ids: ids.map(String) }),
+      ...within(),
     });
     if (!res.ok) return corsError(request, `MDBList ${res.status}`, res.status);
     const json = await res.json();
@@ -147,8 +152,8 @@ async function cubApi(request, path, form) {
   for (const domain of CUB_DOMAINS) {
     try {
       return await (await fetch(`https://${domain}/api/${path}`, form
-        ? { method: 'POST', headers: { token, profile }, body: new URLSearchParams(form) }
-        : { headers: { token, profile } })).json();
+        ? { method: 'POST', headers: { token, profile }, body: new URLSearchParams(form), ...within(4000) }
+        : { headers: { token, profile }, ...within(4000) })).json();
     } catch {
       // mirror down, try the next
     }
@@ -160,7 +165,7 @@ async function cubUser(request, env) {
   const json = await cubApi(request, 'users/get');
   const id = json && json.user && json.user.id;
   if (!id) return null;
-  if (!String(env.CUB_ACCOUNTS || '').split(',').includes(String(id))) {
+  if (!String(env.CUB_ACCOUNTS || '').split(',').map((x) => x.trim()).includes(String(id))) { // "1, 2" works as "1,2"
     console.log(`CUB account ${id} isn't in CUB_ACCOUNTS`); // setup: npx wrangler@4 tail shows whose to add
     return null;
   }
@@ -169,9 +174,11 @@ async function cubUser(request, env) {
 
 // POST /grades {"grades": {"movie_603": {g, t, card}, ...}} -> all grades of this account, merged:
 // per film the newer `t` wins; g null = grade removed (kept so the removal reaches other devices).
+const GRADES_BODY_MAX = 2e6; // a few thousand graded films with their cards; a KV value may hold 25 MB
 async function grades(request, env) {
   const who = await cubUser(request, env);
   if (!who) return corsError(request, 'CUB sign-in required.', 401);
+  if (Number(request.headers.get('Content-Length')) > GRADES_BODY_MAX) return corsError(request, 'Too large.', 413);
   let mine;
   try {
     mine = (await request.json()).grades;
@@ -209,7 +216,7 @@ function tmdb(env, path, query = '', language = 'en-US') {
   const key = env.TMDB_API_KEY;
   const v3 = /^[0-9a-f]{32}$/.test(key);
   const url = `https://api.themoviedb.org/3/${path}?language=${language}${query}${v3 ? `&api_key=${key}` : ''}`;
-  return fetch(url, v3 ? {} : { headers: { Authorization: `Bearer ${key}` } });
+  return fetch(url, v3 ? within() : { headers: { Authorization: `Bearer ${key}` }, ...within() });
 }
 
 // A Home card: [id, type, name, year, poster_path, score, backdrop_path]. Never null: the stick's org.json turns it
@@ -358,7 +365,7 @@ async function filmCard(request, env, type, id) {
   const mdbType = type === 'tv' ? 'show' : 'movie';
   const [res, r] = await Promise.all([
     tmdb(env, `${type}/${id}`, '&append_to_response=credits,external_ids,videos,recommendations'),
-    fetch(`https://api.mdblist.com/tmdb/${mdbType}/${id}?apikey=${env.MDBLIST_API_KEY}`)
+    fetch(`https://api.mdblist.com/tmdb/${mdbType}/${id}?apikey=${env.MDBLIST_API_KEY}`, within())
       .then((x) => (x.ok ? x.json() : {})).then(ratingsOf).catch(() => ({})), // no scores beats no page
   ]);
   if (!res.ok) return corsError(request, `TMDB ${res.status}`, res.status === 404 ? 404 : 502);
@@ -801,7 +808,7 @@ async function introJobs(request, env) {
     return new Response(JSON.stringify({ jobs }), { headers: json });
   }
   const body = await request.json().catch(() => ({}));
-  const intros = (Array.isArray(body.intros) ? body.intros : []).filter((x) => /^[0-9a-f]{40}$/.test(x.hash)
+  const intros = (Array.isArray(body.intros) ? body.intros : []).filter((x) => x && /^[0-9a-f]{40}$/.test(x.hash)
     && [x.season, x.episode, x.start, x.end].every(Number.isInteger) && x.start >= 0 && (x.end > x.start || x.end === 0));
   if (intros.length) {
     await env.DB.prepare(`INSERT INTO intros (key, start_ms, end_ms, recap_ms, t) SELECT j.value->>'k', j.value->>'s',
@@ -867,7 +874,7 @@ async function cachedOnTorBox(env, hashes) {
   if (!env.TORBOX_API_KEY || !hashes.length) return null;
   try {
     const res = await fetch(`https://${TORBOX_HOST}/v1/api/torrents/checkcached?hash=${hashes.join(',')}` +
-      '&format=list&list_files=false', { headers: { Authorization: `Bearer ${env.TORBOX_API_KEY}` } }); // not in the URL
+      '&format=list&list_files=false', { headers: { Authorization: `Bearer ${env.TORBOX_API_KEY}` }, ...within() }); // not in the URL
     if (!res.ok) return null;
     return new Set(((await res.json()).data || []).map((t) => String(t.hash).toLowerCase()));
   } catch {
@@ -880,6 +887,7 @@ async function sources(request, env, ctx, kind, imdb, season, episode) {
   if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
   let list;
   if (request.method === 'POST') {
+    if (Number(request.headers.get('Content-Length')) > 4e6) return corsError(request, 'Too big.', 413);
     const text = await request.text();
     if (text.length > 4e6) return corsError(request, 'Too big.', 413);
     try {
@@ -892,7 +900,7 @@ async function sources(request, env, ctx, kind, imdb, season, episode) {
     if (!env.STREAM_ADDON) return corsError(request, 'No streams addon set: npx wrangler@4 secret put STREAM_ADDON.', 503);
     try {
       const id = kind === 'series' ? `${imdb}:${season}:${episode}` : imdb;
-      const res = await fetch(addonStreams(env, kind, id));
+      const res = await fetch(addonStreams(env, kind, id), within(10000));
       if (!res.ok) throw new Error(String(res.status));
       list = (await res.json()).streams || [];
     } catch (e) {
@@ -903,6 +911,7 @@ async function sources(request, env, ctx, kind, imdb, season, episode) {
   const seen = new Set();
   const all = [];
   for (const st of list) {
+    if (!st || typeof st !== 'object') continue; // the addon's answer, or the stick's post of it: not trusted
     const hash = String(st.infoHash || '').toLowerCase();
     if (!/^[0-9a-f]{40}$/.test(hash) || seen.has(hash)) continue;
     seen.add(hash);
@@ -984,7 +993,7 @@ async function accountTorrents(env) {
 }
 
 async function torboxApi(env, path, init = {}) {
-  const res = await fetch(TORBOX_API + path, { ...init, headers: { ...init.headers, Authorization: `Bearer ${env.TORBOX_API_KEY}` } });
+  const res = await fetch(TORBOX_API + path, { ...within(10000), ...init, headers: { ...init.headers, Authorization: `Bearer ${env.TORBOX_API_KEY}` } });
   if (!res.ok && res.status >= 500) throw new Error(`TorBox ${res.status}`);
   return res.json();
 }
@@ -1196,7 +1205,7 @@ async function maxvolAudio(env, imdb) {
     if (title) {
       const year = (m.release_date || m.first_air_date || '').slice(0, 4);
       const res = await fetch(`${MAXVOL}?${new URLSearchParams({ Query: `${title} ${year}`.trim(), title_original: title,
-        year, Category: '2000,5000' })}`);
+        year, Category: '2000,5000' })}`, within(10000));
       for (const r of res.ok ? (await res.json()).Results || [] : []) {
         const hash = (String(r.MagnetUri).match(/btih:([0-9a-f]{40})/i) || [])[1];
         if (!hash || !Array.isArray(r.ffprobe)) continue;
@@ -1283,7 +1292,7 @@ async function audioTracks(link) {
   let reads = 0;
   const read = async (from, n) => {
     if (++reads > 24) throw new Error('too many reads');
-    const res = await fetch(link, { headers: { Range: `bytes=${from}-${from + n - 1}` } });
+    const res = await fetch(link, { headers: { Range: `bytes=${from}-${from + n - 1}` }, ...within() });
     if (res.status !== 206) { // 200 would be the whole film
       await res.body?.cancel();
       throw new Error(`range: HTTP ${res.status}`);
@@ -2025,7 +2034,7 @@ async function refreshUhd(env, now) {
   const got = [];
   for (const [cat, pages] of UHD_LISTS) {
     for (let p = 1; p <= pages; p++) {
-      const json = await fetch(`https://tmdb.cub.best/?cat=${cat}&sort=latest&uhd=true&page=${p}`)
+      const json = await fetch(`https://tmdb.cub.best/?cat=${cat}&sort=latest&uhd=true&page=${p}`, within())
         .then((res) => (res.ok ? res.json() : null)).catch(() => null);
       (json?.results || []).forEach((c, i) => {
         if (c?.id && (Number(c.vote_count) >= 100 || Number(c.imdb_rating) >= 7)) got.push({ type: cat, id: Number(c.id), pos: (p - 1) * 20 + i });
@@ -2140,7 +2149,7 @@ async function extension(request, env, name, rest) {
   if (!env[`EXT_${name.toUpperCase()}`]) return corsError(request, 'Not found.', 404);
   if (Number(request.headers.get('Content-Length')) > EXT_BODY_MAX) return corsError(request, 'Too large.', 413);
   const body = request.method === 'POST' ? await request.text() : undefined;
-  if (body !== undefined && body.length > EXT_BODY_MAX) return corsError(request, 'Too large.', 413);
+  if (body !== undefined && new TextEncoder().encode(body).length > EXT_BODY_MAX) return corsError(request, 'Too large.', 413);
   try {
     const res = await extFetch(env, name, rest, { method: request.method, body });
     const out = await res.text();
@@ -2539,6 +2548,7 @@ const voiceAnswer = (request, o) => new Response(JSON.stringify(o), {
 
 async function voiceHear(request, env) {
   if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
+  if (Number(request.headers.get('Content-Length')) > VOICE_WAV_MAX) return corsError(request, 'A WAV of 30 s at most.', 413);
   const wav = await request.arrayBuffer();
   if (wav.byteLength <= 44 || wav.byteLength > VOICE_WAV_MAX) return corsError(request, 'A WAV of 30 s at most.', 413);
   try {
@@ -2656,105 +2666,118 @@ export default {
     if (!env.DB) return undefined;
     if (event.cron === HOURLY_CRON) {
       const empty = !(await env.DB.prepare('SELECT 1 FROM uhd LIMIT 1').first()); // the first run fills it at once
-      if (new Date(event.scheduledTime).getUTCHours() === 4 || empty) return refreshUhd(env, event.scheduledTime);
+      if (new Date(event.scheduledTime).getUTCHours() === 4 || empty) {
+        return refreshUhd(env, event.scheduledTime).catch((e) => console.log('uhd', String(e)));
+      }
       // follows beside For you (25 of the 50 subrequests), not beside New in 4K (up to 35); a failure stays theirs
       const night = [1, 2, 3].includes(new Date(event.scheduledTime).getUTCHours());
-      return Promise.all([env.GRADES && refreshForYou(env),
+      return Promise.all([env.GRADES && refreshForYou(env).catch((e) => console.log('for you', String(e))),
         refreshFollows(env, event.scheduledTime).catch((e) => console.log('follows', e)),
         night && dropProbeAdds(env, event.scheduledTime).catch((e) => console.log('adds', e))]);
     }
     return TITLE_CRONS[event.cron] ? refreshTitles(env, TITLE_CRONS[event.cron]) : undefined;
   },
 
+  // Whatever a route throws (a DB or network error nobody caught) is a 500 with CORS and a log line, not Cloudflare's
+  // error page: the Lampa plugin can read the first, and `wrangler tail` shows which route failed.
   async fetch(request, env, ctx) {
-    if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: corsHeaders(request) });
+    try {
+      return await route(request, env, ctx);
+    } catch (e) {
+      console.log('failed', request.method, new URL(request.url).pathname, String(e));
+      return corsError(request, 'The worker failed.', 500);
     }
-
-    if (!METHODS.includes(request.method)) {
-      return corsError(request, `${request.method}: this worker answers ${METHODS.join(', ')} and OPTIONS.`, 405);
-    }
-
-    // The app's screens spend the TMDB key (and the Workers quota): the stick's token first, as /card. No other client
-    // asks them: the Lampa plugin uses /grades, /timeline, /mdblist and ?url= only; imdb-import.py sends the token.
-    if (/^\/(home|search|season\/|person\/|find\/|discover\/)/.test(new URL(request.url).pathname) && !isStick(request, env)) {
-      return corsError(request, 'Forbidden.', 403);
-    }
-    if (new URL(request.url).pathname === '/grades' && request.method === 'POST') return grades(request, env);
-    if (new URL(request.url).pathname === '/home' && request.method === 'GET') return home(request, env);
-    if (new URL(request.url).pathname === '/search' && request.method === 'GET') return search(request, env);
-    const film = new URL(request.url).pathname.match(/^\/card\/(movie|tv)\/(\d+)$/);
-    if (film && request.method === 'GET') { // the token first: each new address spends MDBList's daily 1,000
-      if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
-      return edgeCached(request, ctx, () => filmCard(request, env, film[1], film[2]));
-    }
-    const season = new URL(request.url).pathname.match(/^\/season\/(\d+)\/(\d+)$/);
-    if (season && request.method === 'GET') {
-      return edgeCached(request, ctx, () => seasonPage(request, env, season[1], season[2]));
-    }
-    const actor = new URL(request.url).pathname.match(/^\/person\/(\d+)$/);
-    if (actor && request.method === 'GET') return edgeCached(request, ctx, () => personPage(request, env, actor[1]));
-    const imdb = new URL(request.url).pathname.match(/^\/find\/(tt\d{1,10})$/);
-    if (imdb && request.method === 'GET') return edgeCached(request, ctx, () => findImdb(request, env, imdb[1]));
-    const picked = new URL(request.url).pathname.match(/^\/discover\/([a-z-]+)$/);
-    if (picked && request.method === 'GET') return edgeCached(request, ctx, () => discover(request, env, picked[1]));
-    const ext = new URL(request.url).pathname.match(/^\/ext\/([a-z][a-z0-9]{0,15})(\/[\w/-]*)$/);
-    if (ext && /^(GET|POST)$/.test(request.method)) {
-      return extension(request, env, ext[1], ext[2] + new URL(request.url).search);
-    }
-    if (new URL(request.url).pathname === '/torbox' && request.method === 'GET') return torboxAccount(request, env);
-    const drop = new URL(request.url).pathname.match(/^\/torbox\/drop\/([0-9a-f]{40})$/);
-    if (drop && request.method === 'POST') return torboxDrop(request, env, drop[1]);
-    const mv = new URL(request.url).pathname.match(/^\/maxvol\/(tt\d+)$/);
-    if (mv && request.method === 'GET') {
-      if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
-      return env.DB ? new Response(JSON.stringify(await maxvolAudio(env, mv[1])), {
-        headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' },
-      }) : corsError(request, 'No database.', 503);
-    }
-    // The streams addon's address, for the app to ask it itself when it refuses the worker (Cloudflare's shared IPs)
-    if (new URL(request.url).pathname === '/addon' && request.method === 'GET') {
-      if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
-      return env.STREAM_ADDON ? new Response(env.STREAM_ADDON) : corsError(request, 'No streams addon set.', 404);
-    }
-    const src = new URL(request.url).pathname.match(/^\/streams\/(movie|series)\/(tt\d+)(?:\/(\d+)\/(\d+))?$/);
-    if (src && /^(GET|POST)$/.test(request.method) && (src[1] === 'series') === Boolean(src[3])) {
-      return sources(request, env, ctx, src[1], src[2], src[3], src[4]);
-    }
-
-    if (/^\/segments\/(jobs|own)$/.test(new URL(request.url).pathname) && env.DB) return introJobs(request, env);
-    const skip = new URL(request.url).pathname.match(/^\/segments\/(movie|tv)\/(\d+)\/(tt\d+)$/);
-    if (skip && request.method === 'GET') return segments(request, env, skip[1], skip[2], skip[3]);
-    const tracks = new URL(request.url).pathname.match(/^\/audio\/([0-9a-f]{40})$/);
-    if (tracks && request.method === 'GET') return audio(request, env, tracks[1]);
-    const link = new URL(request.url).pathname.match(/^\/play\/([0-9a-f]{40})$/);
-    if (link && request.method === 'GET') return play(request, env, ctx, link[1]);
-    const file = new URL(request.url).pathname.match(/^\/stream\/(\d+)\/(\d+)$/);
-    if (file && /^(GET|HEAD)$/.test(request.method)) return stream(request, env, ctx, file[1], file[2]);
-    if (new URL(request.url).pathname === '/timeline') return timeline(request, env);
-    if (new URL(request.url).pathname === '/mine' && request.method === 'GET') return mine(request, env);
-    if (new URL(request.url).pathname === '/mine/history' && request.method === 'GET') return historyPage(request, env);
-    if (new URL(request.url).pathname === '/mine/unwatch' && request.method === 'POST') return unwatch(request, env);
-    const followed = new URL(request.url).pathname.match(/^\/mine\/(follow|unfollow)\/(\d{1,10})$/);
-    if (followed && request.method === 'POST') return follow(request, env, followed[1] === 'follow', followed[2]);
-    const listed = new URL(request.url).pathname
-      .match(/^\/mine\/(history|unhistory|book|unbook|viewed|scheduled|thrown|none)\/(movie|tv)\/(\d+)$/);
-    if (listed && request.method === 'POST') return bookmark(request, env, listed[1], listed[2], listed[3]);
-    if (new URL(request.url).pathname === '/voice/hear' && request.method === 'POST') return voiceHear(request, env);
-    if (new URL(request.url).pathname === '/voice/find' && request.method === 'POST') return voiceFind(request, env);
-
-    // The Lampa plugin's routes, only when wanted (PASS_THROUGH=1 in wrangler.toml's [vars]): open to anyone, they
-    // spend the MDBList key and pass requests through
-    if (env.PASS_THROUGH !== '1') return corsError(request, 'Not found.', 404);
-    const scores = new URL(request.url).pathname.match(/^\/mdblist\/(movie|show)(?:\/(\d+))?$/);
-    if (scores && (scores[2] || request.method === 'POST')) return mdblist(request, env, scores[1], scores[2], ctx);
-    // the Lampa plugin playing a torrent a probe added (its requestdl, answered by TorBox with its key): the user's
-    // now, the night leaves it alone
-    const out = await passThrough(request);
-    const played = out.status === 200 ? pluginPlay(request) : null;
-    if (played !== null && env.DB) {
-      ctx.waitUntil(env.DB.prepare('DELETE FROM added WHERE id = ?').bind(played).run().catch(() => {}));
-    }
-    return out;
   },
 };
+
+async function route(request, env, ctx) {
+  if (request.method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers: corsHeaders(request) });
+  }
+
+  if (!METHODS.includes(request.method)) {
+    return corsError(request, `${request.method}: this worker answers ${METHODS.join(', ')} and OPTIONS.`, 405);
+  }
+
+  // The app's screens spend the TMDB key (and the Workers quota): the stick's token first, as /card. No other client
+  // asks them: the Lampa plugin uses /grades, /timeline, /mdblist and ?url= only; imdb-import.py sends the token.
+  if (/^\/(home|search|season\/|person\/|find\/|discover\/)/.test(new URL(request.url).pathname) && !isStick(request, env)) {
+    return corsError(request, 'Forbidden.', 403);
+  }
+  if (new URL(request.url).pathname === '/grades' && request.method === 'POST') return grades(request, env);
+  if (new URL(request.url).pathname === '/home' && request.method === 'GET') return home(request, env);
+  if (new URL(request.url).pathname === '/search' && request.method === 'GET') return search(request, env);
+  const film = new URL(request.url).pathname.match(/^\/card\/(movie|tv)\/(\d+)$/);
+  if (film && request.method === 'GET') { // the token first: each new address spends MDBList's daily 1,000
+    if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
+    return edgeCached(request, ctx, () => filmCard(request, env, film[1], film[2]));
+  }
+  const season = new URL(request.url).pathname.match(/^\/season\/(\d+)\/(\d+)$/);
+  if (season && request.method === 'GET') {
+    return edgeCached(request, ctx, () => seasonPage(request, env, season[1], season[2]));
+  }
+  const actor = new URL(request.url).pathname.match(/^\/person\/(\d+)$/);
+  if (actor && request.method === 'GET') return edgeCached(request, ctx, () => personPage(request, env, actor[1]));
+  const imdb = new URL(request.url).pathname.match(/^\/find\/(tt\d{1,10})$/);
+  if (imdb && request.method === 'GET') return edgeCached(request, ctx, () => findImdb(request, env, imdb[1]));
+  const picked = new URL(request.url).pathname.match(/^\/discover\/([a-z-]+)$/);
+  if (picked && request.method === 'GET') return edgeCached(request, ctx, () => discover(request, env, picked[1]));
+  const ext = new URL(request.url).pathname.match(/^\/ext\/([a-z][a-z0-9]{0,15})(\/[\w/-]*)$/);
+  if (ext && /^(GET|POST)$/.test(request.method)) {
+    return extension(request, env, ext[1], ext[2] + new URL(request.url).search);
+  }
+  if (new URL(request.url).pathname === '/torbox' && request.method === 'GET') return torboxAccount(request, env);
+  const drop = new URL(request.url).pathname.match(/^\/torbox\/drop\/([0-9a-f]{40})$/);
+  if (drop && request.method === 'POST') return torboxDrop(request, env, drop[1]);
+  const mv = new URL(request.url).pathname.match(/^\/maxvol\/(tt\d+)$/);
+  if (mv && request.method === 'GET') {
+    if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
+    return env.DB ? new Response(JSON.stringify(await maxvolAudio(env, mv[1])), {
+      headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' },
+    }) : corsError(request, 'No database.', 503);
+  }
+  // The streams addon's address, for the app to ask it itself when it refuses the worker (Cloudflare's shared IPs)
+  if (new URL(request.url).pathname === '/addon' && request.method === 'GET') {
+    if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
+    return env.STREAM_ADDON ? new Response(env.STREAM_ADDON) : corsError(request, 'No streams addon set.', 404);
+  }
+  const src = new URL(request.url).pathname.match(/^\/streams\/(movie|series)\/(tt\d+)(?:\/(\d+)\/(\d+))?$/);
+  if (src && /^(GET|POST)$/.test(request.method) && (src[1] === 'series') === Boolean(src[3])) {
+    return sources(request, env, ctx, src[1], src[2], src[3], src[4]);
+  }
+
+  if (/^\/segments\/(jobs|own)$/.test(new URL(request.url).pathname) && env.DB) return introJobs(request, env);
+  const skip = new URL(request.url).pathname.match(/^\/segments\/(movie|tv)\/(\d+)\/(tt\d+)$/);
+  if (skip && request.method === 'GET') return segments(request, env, skip[1], skip[2], skip[3]);
+  const tracks = new URL(request.url).pathname.match(/^\/audio\/([0-9a-f]{40})$/);
+  if (tracks && request.method === 'GET') return audio(request, env, tracks[1]);
+  const link = new URL(request.url).pathname.match(/^\/play\/([0-9a-f]{40})$/);
+  if (link && request.method === 'GET') return play(request, env, ctx, link[1]);
+  const file = new URL(request.url).pathname.match(/^\/stream\/(\d+)\/(\d+)$/);
+  if (file && /^(GET|HEAD)$/.test(request.method)) return stream(request, env, ctx, file[1], file[2]);
+  if (new URL(request.url).pathname === '/timeline') return timeline(request, env);
+  if (new URL(request.url).pathname === '/mine' && request.method === 'GET') return mine(request, env);
+  if (new URL(request.url).pathname === '/mine/history' && request.method === 'GET') return historyPage(request, env);
+  if (new URL(request.url).pathname === '/mine/unwatch' && request.method === 'POST') return unwatch(request, env);
+  const followed = new URL(request.url).pathname.match(/^\/mine\/(follow|unfollow)\/(\d{1,10})$/);
+  if (followed && request.method === 'POST') return follow(request, env, followed[1] === 'follow', followed[2]);
+  const listed = new URL(request.url).pathname
+    .match(/^\/mine\/(history|unhistory|book|unbook|viewed|scheduled|thrown|none)\/(movie|tv)\/(\d+)$/);
+  if (listed && request.method === 'POST') return bookmark(request, env, listed[1], listed[2], listed[3]);
+  if (new URL(request.url).pathname === '/voice/hear' && request.method === 'POST') return voiceHear(request, env);
+  if (new URL(request.url).pathname === '/voice/find' && request.method === 'POST') return voiceFind(request, env);
+
+  // The Lampa plugin's routes, only when wanted (PASS_THROUGH=1 in wrangler.toml's [vars]): open to anyone, they
+  // spend the MDBList key and pass requests through
+  if (env.PASS_THROUGH !== '1') return corsError(request, 'Not found.', 404);
+  const scores = new URL(request.url).pathname.match(/^\/mdblist\/(movie|show)(?:\/(\d+))?$/);
+  if (scores && (scores[2] || request.method === 'POST')) return mdblist(request, env, scores[1], scores[2], ctx);
+  // the Lampa plugin playing a torrent a probe added (its requestdl, answered by TorBox with its key): the user's
+  // now, the night leaves it alone
+  const out = await passThrough(request);
+  const played = out.status === 200 ? pluginPlay(request) : null;
+  if (played !== null && env.DB) {
+    ctx.waitUntil(env.DB.prepare('DELETE FROM added WHERE id = ?').bind(played).run().catch(() => {}));
+  }
+  return out;
+}
