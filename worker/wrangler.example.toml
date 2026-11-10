@@ -24,7 +24,7 @@ binding = "AI"
 # gets its own 10 ms of CPU, not the source list's (maxvolOf). The worker's own name.
 [[services]]
 binding = "SELF"
-service = "<NAME>"
+service = "<WORKER>"
 
 # The search index (titles.sql): English at 03:07, Russian at 03:37 UTC (TITLE_CRONS in the worker); hourly: New in 4K
 # at 04 UTC (uhd.sql), For you and the people you follow the other hours (HOURLY_CRON).
