@@ -31,13 +31,13 @@ final class SearchScreen extends Main.Part {
         @Override
         public View focusSearch(View focused, int direction) {
             View next = super.focusSearch(focused, direction);
-            if (direction == FOCUS_UP && Main.inside(focused, SearchScreen.this.keys) && next != null
-                && Main.inside(next, SearchScreen.this.results)) return (View) tabs.getChildAt(0).getTag();
+            if (direction == FOCUS_UP && Ui.inside(focused, SearchScreen.this.keys) && next != null
+                && Ui.inside(next, SearchScreen.this.results)) return (View) tabs.getChildAt(0).getTag();
             return next;
         }
     }, keys = new LinearLayout(m), results = new LinearLayout(m);
     FrameLayout tabs; // the tab bar over it
-    final TextView query = m.text("", 26, Color.WHITE);
+    final TextView query = m.ux.text("", 26, Color.WHITE);
     final List<ImageView> pics = new ArrayList<>();
     final Map<String, String> sure = new HashMap<>(); // voice results: how sure each is ("97%"), by Timeline.card
     int asks; // voice presses here: only the latest one's answers are shown
@@ -55,28 +55,28 @@ final class SearchScreen extends Main.Part {
         screen.addView(body, new LinearLayout.LayoutParams(-1, 0, 1));
         LinearLayout left = new LinearLayout(m);
         left.setOrientation(LinearLayout.VERTICAL);
-        query.setBackground(m.shape(m.pill, 0x14ffffff, 0x26ffffff));
+        query.setBackground(m.ux.shape(m.pill, 0x14ffffff, 0x26ffffff));
         query.setPadding(m.dp(22), 0, m.dp(22), 0);
         query.setGravity(Gravity.CENTER_VERTICAL);
         query.setSingleLine();
         query.setEllipsize(TextUtils.TruncateAt.START); // a long query keeps its end in view
         left.addView(query, m.dp(336), m.dp(56)); // the keyboard's width: the results don't move as it grows
-        TextView hint = m.text("Hold the voice button and say a title", 15, 0xff9a9a9a);
+        TextView hint = m.ux.text("Hold the voice button and say a title", 15, 0xff9a9a9a);
         hint.setPadding(m.dp(22), m.dp(8), 0, m.dp(12));
         left.addView(hint);
         keys.setOrientation(LinearLayout.VERTICAL);
         left.addView(keys);
         layout();
         LinearLayout actions = new LinearLayout(m);
-        actions.addView(m.key("Space", 2, v -> set(Search.type(q, " "))));
-        actions.addView(m.key("⌫", 1, v -> set(Search.erase(q))));
-        actions.addView(m.key(ru ? "EN" : "RU", 1, v -> {
+        actions.addView(m.ux.key("Space", 2, v -> set(Search.type(q, " "))));
+        actions.addView(m.ux.key("⌫", 1, v -> set(Search.erase(q))));
+        actions.addView(m.ux.key(ru ? "EN" : "RU", 1, v -> {
             ru = !ru;
             m.settings().edit().putBoolean("search_ru", ru).apply();
             ((TextView) v).setText(ru ? "EN" : "RU");
             layout();
         }));
-        actions.addView(m.key("Clear", 2, v -> set("")));
+        actions.addView(m.ux.key("Clear", 2, v -> set("")));
         left.addView(actions);
         body.addView(left);
         ScrollView sv = new ScrollView(m);
@@ -99,7 +99,7 @@ final class SearchScreen extends Main.Part {
         for (int i = 0; i < all.length(); i++) {
             if (i % 6 == 0) keys.addView(row = new LinearLayout(m));
             String k = all.substring(i, i + 1);
-            row.addView(m.key(k, 1, v -> set(Search.type(q, k)))); // lower case, as typed
+            row.addView(m.ux.key(k, 1, v -> set(Search.type(q, k)))); // lower case, as typed
         }
     }
 
@@ -140,7 +140,7 @@ final class SearchScreen extends Main.Part {
                     show(asked, f);
                 } else {
                     clear();
-                    results.addView(m.text("Can't search now. Try again.", 18, 0xff9a9a9a));
+                    results.addView(m.ux.text("Can't search now. Try again.", 18, 0xff9a9a9a));
                 }
             });
         });
@@ -163,19 +163,19 @@ final class SearchScreen extends Main.Part {
         shownFor = asked;
         if (found == null) {
             List<String> recent = Search.recent(m.settings().getString("searches", ""));
-            if (!recent.isEmpty()) results.addView(m.heading("Recent searches", 0));
-            for (String r : recent) results.addView(m.row(r, null, v -> set(r)));
-            results.addView(m.heading("Genres", recent.isEmpty() ? 0 : m.dp(24)));
+            if (!recent.isEmpty()) results.addView(m.ux.heading("Recent searches", 0));
+            for (String r : recent) results.addView(m.ux.row(r, null, v -> set(r)));
+            results.addView(m.ux.heading("Genres", recent.isEmpty() ? 0 : m.dp(24)));
             LinearLayout line = null;
             for (int i = 0; i < Search.GENRES.size(); i++) { // 3 a row: 3 keys 3 wide fill the 508 dp
                 if (i % 3 == 0) results.addView(line = new LinearLayout(m));
                 String g = Search.GENRES.get(i);
-                line.addView(m.key(g, 3, v -> m.showGenre(g)));
+                line.addView(m.ux.key(g, 3, v -> m.showGenre(g)));
             }
         } else if (found.isEmpty()) {
-            results.addView(m.text("Nothing found", 18, 0xff9a9a9a));
+            results.addView(m.ux.text("Nothing found", 18, 0xff9a9a9a));
         } else {
-            results.addView(m.heading("Top results", 0));
+            results.addView(m.ux.heading("Top results", 0));
         }
         LinearLayout row = null;
         for (int i = 0; found != null && i < found.size(); i++) {
@@ -209,7 +209,7 @@ final class SearchScreen extends Main.Part {
     int listening() {
         say(Voice.meter(0));
         clear();
-        results.addView(m.text("Speak while you hold the button: a title, what happens in it, or what you would"
+        results.addView(m.ux.text("Speak while you hold the button: a title, what happens in it, or what you would"
             + " like to watch. English, Russian or Ukrainian.", 18, 0xff9a9a9a));
         return ++asks;
     }
@@ -227,7 +227,7 @@ final class SearchScreen extends Main.Part {
         ProgressBar spin = new ProgressBar(m); // indeterminate: turns while shown, gone with the row
         spin.setIndeterminateTintList(ColorStateList.valueOf(0xff21d07a));
         row.addView(spin, m.dp(36), m.dp(36));
-        TextView t = m.text(what, 20, 0xff9a9a9a);
+        TextView t = m.ux.text(what, 20, 0xff9a9a9a);
         t.setPadding(m.dp(14), 0, 0, 0);
         row.addView(t);
         results.addView(row);
@@ -253,7 +253,7 @@ final class SearchScreen extends Main.Part {
         }
         if (a == null) {
             clear();
-            results.addView(m.text("Can't search now. Try again.", 18, 0xff9a9a9a));
+            results.addView(m.ux.text("Can't search now. Try again.", 18, 0xff9a9a9a));
             return;
         }
         Log.i(Main.TAG, "voice: " + a.intent() + " by " + a.by() + ", " + a.results().size() + " found");

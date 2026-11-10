@@ -25,8 +25,8 @@ final class Discover extends Main.Part {
     boolean hide = true;
     final List<ImageView> pics = new ArrayList<>();
     final List<Home.Card> shown = new ArrayList<>();
-    final LinearLayout grid = new LinearLayout(m), pills = m.line();
-    final TextView words = m.text("", 15, 0xff9a9a9a);
+    final LinearLayout grid = new LinearLayout(m), pills = m.ux.line();
+    final TextView words = m.ux.text("", 15, 0xff9a9a9a);
     TextView type, years, country, score, sort, watched;
     View level;
     LinearLayout last; // the grid's line being filled
@@ -47,7 +47,7 @@ final class Discover extends Main.Part {
         column.setOrientation(LinearLayout.VERTICAL);
         int pad = m.dp(60);
         column.setPadding(pad - m.halo, m.dp(36), pad, pad); // the posters' halos (strip())
-        TextView head = m.text(genre, 36, Color.WHITE);
+        TextView head = m.ux.text(genre, 36, Color.WHITE);
         head.setTypeface(m.medium);
         head.setPadding(m.halo, 0, 0, 0);
         column.addView(head);
@@ -90,13 +90,13 @@ final class Discover extends Main.Part {
     }
 
     private TextView pill(String label, View.OnClickListener action) {
-        TextView p = m.button(label, action);
+        TextView p = m.ux.button(label, action);
         p.setTextSize(16);
         p.setTypeface(Typeface.DEFAULT);
         p.setSingleLine(true);
         p.setMinHeight(m.dp(40));
         p.setPadding(m.dp(16), 0, m.dp(16), 0);
-        LinearLayout.LayoutParams lp = Main.wrap();
+        LinearLayout.LayoutParams lp = Ui.wrap();
         if (pills.getChildCount() > 0) lp.setMarginStart(m.dp(8));
         pills.addView(p, lp);
         return p;
@@ -104,9 +104,9 @@ final class Discover extends Main.Part {
 
     // A filter's choices in a sheet, the one set ✓.
     private void choose(String title, String[][] choices, String now, Consumer<String> picked) {
-        LinearLayout list = m.sheet(title, null, null);
+        LinearLayout list = m.ux.sheet(title, null, null);
         for (String[] c : choices) {
-            list.addView(m.sheetRow(c[1], null, Main.check(c[0].equals(now)), v -> {
+            list.addView(m.ux.sheetRow(c[1], null, Ui.check(c[0].equals(now)), v -> {
                 m.closeOverlay();
                 picked.accept(c[0]);
             }));
@@ -170,7 +170,7 @@ final class Discover extends Main.Part {
         for (Home.Card c : cards) {
             if (hide && m.cub.watched(Timeline.card(c))) continue;
             if (last == null || last.getChildCount() == 5) {
-                last = m.line();
+                last = m.ux.line();
                 LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
                 lp.topMargin = m.dp(8);
                 grid.addView(last, lp);

@@ -24,13 +24,11 @@ import android.graphics.Path;
 import android.graphics.PixelFormat;
 import android.graphics.PorterDuff;
 import android.graphics.PorterDuffColorFilter;
-import android.graphics.Rect;
 import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
-import android.graphics.drawable.StateListDrawable;
 import android.icu.util.ULocale;
 import android.media.AudioFormat;
 import android.media.AudioRecord;
@@ -44,12 +42,8 @@ import android.os.Process;
 import android.os.SystemClock;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
-import android.text.TextPaint;
 import android.text.TextUtils;
-import android.text.style.CharacterStyle;
-import android.text.style.ReplacementSpan;
 import android.util.Log;
-import android.util.StateSet;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
@@ -57,10 +51,8 @@ import android.view.ViewGroup;
 import android.view.ViewOutlineProvider;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
-import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -69,7 +61,6 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.net.HttpURLConnection;
-import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.time.Instant;
@@ -86,7 +77,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.PrimitiveIterator;
 import java.util.Set;
 import java.util.TimeZone;
 import java.util.concurrent.Callable;
@@ -100,7 +90,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
-import java.util.stream.IntStream;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -109,6 +98,7 @@ import org.json.JSONObject;
  * Home screen: Lampa's TMDB rows from the worker's /home, drawn with plain views. Memory rules from PLAN.md:
  * only pictures near the viewport of the level shown hold a bitmap, and none do while the app is in the background.
  */
+@SuppressWarnings("this-escape") // the screens' parts (ux, filmPage, ...) are made with the activity and only keep it
 public class Main extends Activity {
     static final String TAG = "LampaNative";
     static final String POSTER = "https://image.tmdb.org/t/p/w300"; // 300×450 = the card at density 2, no scaling
@@ -136,6 +126,7 @@ public class Main extends Activity {
         return th;
     });
     final Handler ui = new Handler(Looper.getMainLooper());
+    final Ui ux = new Ui(this); // widgets: text, buttons, rows, sheets, tiles
     final List<ImageView> posters = new ArrayList<>(); // Home's
     List<ImageView> pictures = List.of(); // the page's top level's: its poster, photos, collection posters
     final Set<ImageView> loading = new HashSet<>(); // UI thread only
@@ -456,22 +447,22 @@ public class Main extends Activity {
         comingTab.setText(comingLabel(cub.comingOut()));
         bell(bellTab);
         View old = page != null ? from : overlay != null ? overlayFrom : scroll.findFocus();
-        Object was = old != null && inside(old, mine) ? old.getTag() : null;
+        Object was = old != null && Ui.inside(old, mine) ? old.getTag() : null;
         posters.removeAll(minePosters);
         minePosters.clear();
         // Home's TMDB rows are built once: their badges follow your grades and films started (a film finished
         // mustn't keep its "53m left" for the days the app stays open)
         for (ImageView p : posters) {
-            if (p.getParent() instanceof FrameLayout f && cardOf(p).getTag() instanceof Home.Card c) badges(f, c, null);
+            if (p.getParent() instanceof FrameLayout f && Ui.cardOf(p).getTag() instanceof Home.Card c) badges(f, c, null);
         }
         mine.removeAllViews();
         int before = posters.size();
         for (Home.Row row : data) {
-            TextView title = text(row.title(), 22, Color.WHITE);
+            TextView title = ux.text(row.title(), 22, Color.WHITE);
             // Continue browsing as landscape tiles with how far in, the rest as posters
             boolean tiles = row.title().equals("Continue browsing");
             boolean rate = row.title().equals("Rate what you watched"); // OK grades it here (rateBar)
-            LinearLayout line = strip(mine, title, (tiles ? dp(195) : cardW) + gap);
+            LinearLayout line = ux.strip(mine, title, (tiles ? dp(195) : cardW) + gap);
             for (Home.Card c : row.cards()) {
                 View card = tiles ? continueTile(c, title) : card(c, title);
                 if (rate) card.setOnClickListener(v -> rateBar(c, v, true));
@@ -481,11 +472,11 @@ public class Main extends Activity {
         }
         minePosters.addAll(posters.subList(before, posters.size()));
         List<Home.Card> tags = new ArrayList<>();
-        for (ImageView p : minePosters) tags.add(cardOf(p).getTag() instanceof Home.Card c ? c : null);
+        for (ImageView p : minePosters) tags.add(Ui.cardOf(p).getTag() instanceof Home.Card c ? c : null);
         int at = Home.focusIndex(tags, was, old == null || old == firstCard);
-        View target = at < 0 ? null : cardOf(minePosters.get(at));
+        View target = at < 0 ? null : Ui.cardOf(minePosters.get(at));
         if (HISTORY.equals(was)) target = historyTile;
-        if (target == null && was != null && !posters.isEmpty()) target = cardOf(posters.get(0));
+        if (target == null && was != null && !posters.isEmpty()) target = Ui.cardOf(posters.get(0));
         if (page != null) {
             if (was != null) from = target; // Back lands there
         } else if (overlay != null) {
@@ -497,16 +488,6 @@ public class Main extends Activity {
                 if (old.hasFocus() && old.getOnFocusChangeListener() != null) old.getOnFocusChangeListener().onFocusChange(old, true);
             });
         }
-    }
-
-    // The card a Home picture is on: picture → its frame (with the badges) → the halo → the card.
-    static View cardOf(ImageView picture) {
-        return (View) picture.getParent().getParent().getParent();
-    }
-
-    static boolean inside(View v, ViewGroup group) {
-        for (View p = v; p != null; p = p.getParent() instanceof View parent ? parent : null) if (p == group) return true;
-        return false;
     }
 
     File mineFile() {
@@ -562,7 +543,7 @@ public class Main extends Activity {
     }
 
     void showError() {
-        TextView retry = text(Home.worker.isEmpty() ? "No worker set: on a computer, run tools/connect.sh (README, Setup)."
+        TextView retry = ux.text(Home.worker.isEmpty() ? "No worker set: on a computer, run tools/connect.sh (README, Setup)."
             : "Can't load the home screen. Press OK to try again.", 22, Color.WHITE);
         retry.setPadding(halo, 0, 0, 0);
         retry.setFocusable(true);
@@ -577,51 +558,14 @@ public class Main extends Activity {
     void showRows(List<Home.Row> data) {
         int stride = cardW + gap;
         for (Home.Row row : data) {
-            TextView title = text(row.title(), 22, Color.WHITE);
-            LinearLayout line = strip(rows, title, stride);
+            TextView title = ux.text(row.title(), 22, Color.WHITE);
+            LinearLayout line = ux.strip(rows, title, stride);
             for (Home.Card c : row.cards()) line.addView(card(c, title));
         }
         if (!posters.isEmpty()) {
-            firstCard = cardOf(posters.get(0));
+            firstCard = Ui.cardOf(posters.get(0));
             firstCard.requestFocus();
         }
-    }
-
-    // A row title and a strip under it that scrolls sideways by whole cards; returns the strip's line for the cards.
-    // The strip starts a halo left of the title (its parent's padding is a halo less), so the pictures line up with
-    // the title and the first card's halo isn't cut by the parent's padding.
-    LinearLayout strip(LinearLayout parent, TextView title, int stride) {
-        title.setPadding(halo, dp(16), 0, dp(8) - halo); // the halo's room above the pictures
-        title.setTypeface(medium);
-        parent.addView(title);
-        HorizontalScrollView strip = new HorizontalScrollView(this) {
-            // Every scroll the row makes for focus comes through here, so it lands on whole cards (LayoutTest).
-            // A scroll in the focus listener instead would get overridden by this one.
-            @Override
-            protected int computeScrollDeltaToGetChildRectOnScreen(Rect r) {
-                return Layout.alignedScroll(getScrollX(), getWidth(), r.left, r.right, stride) - getScrollX();
-            }
-        };
-        strip.setHorizontalScrollBarEnabled(false);
-        strip.setSmoothScrollingEnabled(false); // jump: one redraw per press instead of a 15-frame animation
-        LinearLayout line = line();
-        strip.addView(line);
-        parent.addView(strip);
-        return line;
-    }
-
-    // A horizontal line of focusables (a row's cards, a film's buttons) that Left and Right never leave: at its ends
-    // they stop, instead of jumping to the nearest card further left or right in another row, on the screen or off
-    // it in a row scrolled sideways (the row "goes on" in the next one).
-    LinearLayout line() {
-        return new LinearLayout(this) {
-            @Override
-            public View focusSearch(View focused, int direction) {
-                View next = super.focusSearch(focused, direction);
-                boolean sideways = direction == FOCUS_LEFT || direction == FOCUS_RIGHT;
-                return sideways && (next == null || !inside(next, this)) ? focused : next;
-            }
-        };
     }
 
     // A Home card: Home's poster window loads its poster; focus puts its row at the top.
@@ -649,9 +593,9 @@ public class Main extends Activity {
         FrameLayout frame = new FrameLayout(this);
         frame.addView(picture, w, h);
         String fresh = cub.fresh().get(key);
-        if (fresh != null) frame.addView(chip(text("New · " + fresh, 15, 0xff111111), 0xff21d07a), badge(Gravity.TOP | Gravity.START));
+        if (fresh != null) frame.addView(ux.chip(ux.text("New · " + fresh, 15, 0xff111111), 0xff21d07a), ux.badge(Gravity.TOP | Gravity.START));
         String left = Timeline.posterLeft(cub.left().get(key)), next = cub.next().get(key); // a series: "S3 E5 · up next"
-        return homeCard(c, tile(frame, w, h, 12 * dp, c.name(), next != null ? next : left != null ? left : c.year()),
+        return homeCard(c, ux.tile(frame, w, h, 12 * dp, c.name(), next != null ? next : left != null ? left : c.year()),
             rowTitle);
     }
 
@@ -694,7 +638,7 @@ public class Main extends Activity {
         FrameLayout frame = new FrameLayout(this);
         frame.addView(poster, cardW, cardH);
         badges(frame, c, sure);
-        return tile(frame, cardW, cardH, 10 * dp, c.name(), c.year());
+        return ux.tile(frame, cardW, cardH, 10 * dp, c.name(), c.year());
     }
 
     // A poster's badges (all its frame holds but the picture), again when /mine changes them (showMine).
@@ -704,78 +648,20 @@ public class Main extends Activity {
         String fresh = cub.fresh().get(key);
         String[] grade = fresh == null && sure == null ? Cub.posterGrade(cub.grades().get(key)) : null;
         if (fresh != null || sure != null || grade != null) {
-            TextView badge = fresh != null ? text("New · " + fresh, 15, 0xff111111)
-                : sure != null ? text(sure, 15, Color.WHITE)
-                : text(grade[1], 15, Color.parseColor(grade[2])); // GRADES' own colors (CubTest checks each)
-            frame.addView(chip(badge, fresh != null ? 0xff21d07a : 0xcc000000), badge(Gravity.TOP | Gravity.START));
+            TextView badge = fresh != null ? ux.text("New · " + fresh, 15, 0xff111111)
+                : sure != null ? ux.text(sure, 15, Color.WHITE)
+                : ux.text(grade[1], 15, Color.parseColor(grade[2])); // GRADES' own colors (CubTest checks each)
+            frame.addView(ux.chip(badge, fresh != null ? 0xff21d07a : 0xcc000000), ux.badge(Gravity.TOP | Gravity.START));
         }
         String left = Timeline.posterLeft(cub.left().get(key));
         if (left != null) {
-            frame.addView(chip(text(left, 15, Color.WHITE), 0xcc000000), badge(Gravity.TOP | Gravity.END));
+            frame.addView(ux.chip(ux.text(left, 15, Color.WHITE), 0xcc000000), ux.badge(Gravity.TOP | Gravity.END));
         }
         int score = c.score();
         if (score > 0) {
-            frame.addView(chip(text(String.valueOf(score), 15, Home.scoreColor(score)), 0xcc000000),
-                badge(Gravity.BOTTOM | Gravity.END));
+            frame.addView(ux.chip(ux.text(String.valueOf(score), 15, Home.scoreColor(score)), 0xcc000000),
+                ux.badge(Gravity.BOTTOM | Gravity.END));
         }
-    }
-
-    // A poster's badge: the text on its round background, padded.
-    TextView chip(TextView t, int background) {
-        t.setBackground(shape(6 * dp, background, 0));
-        t.setPadding(dp(6), dp(2), dp(6), dp(2));
-        return t;
-    }
-
-    // Where a badge sits: in a corner, 6 dp in (clear of the picture's round corner).
-    FrameLayout.LayoutParams badge(int gravity) {
-        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(-2, -2, gravity);
-        int in = dp(6);
-        lp.setMargins(in, in, in, in);
-        return lp;
-    }
-
-    // A card: a picture (w × h, corners radius; < 0: a circle) in its focus halo, a name and a gray line under it, up
-    // to two lines each. The halo is a ring drawn by the card only while focused (the old frame sat inside the
-    // picture, over the badges); the card reaches a halo past the picture on each side, inside the gap.
-    View tile(View picture, int w, int h, float radius, String name, String sub) {
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setFocusable(true);
-        FrameLayout ring = new FrameLayout(this);
-        GradientDrawable on = shape(radius < 0 ? 0 : radius + halo, 0, Color.WHITE);
-        on.setStroke(dp(3), Color.WHITE);
-        if (radius < 0) on.setShape(GradientDrawable.OVAL);
-        StateListDrawable states = new StateListDrawable();
-        states.addState(FOCUSED, on);
-        // Over the picture, not under it: software drawing paints a picture's corners the ground's color, and a corner
-        // square reaches past a 10-12 dp curve into the ring (dark notches in it). Over it, the ring
-        // hides them; in the 3 dp gap they are the ground's color anyway. A margin, not padding: a FrameLayout's
-        // foreground is drawn inside its padding.
-        ring.setForeground(states);
-        ring.setDuplicateParentStateEnabled(true);
-        FrameLayout.LayoutParams in = new FrameLayout.LayoutParams(w, h);
-        in.setMargins(halo, halo, halo, halo);
-        ring.addView(picture, in);
-        card.addView(ring, w + 2 * halo, h + 2 * halo);
-        TextView n = text(name, 15, Color.WHITE);
-        n.setTextColor(new ColorStateList(new int[][] {FOCUSED, {}}, new int[] {Color.WHITE, 0xffdddddd}));
-        n.setDuplicateParentStateEnabled(true);
-        n.setMaxLines(2);
-        n.setEllipsize(TextUtils.TruncateAt.END);
-        LinearLayout.LayoutParams under = new LinearLayout.LayoutParams(w, -2);
-        under.setMargins(halo, dp(4), halo, 0); // 10 dp under the picture
-        card.addView(n, under);
-        TextView s = text(sub, 13, 0xff9a9a9a);
-        s.setMaxLines(2);
-        s.setEllipsize(TextUtils.TruncateAt.END);
-        LinearLayout.LayoutParams sub2 = new LinearLayout.LayoutParams(w, -2);
-        sub2.setMargins(halo, 0, halo, 0);
-        card.addView(s, sub2);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(w + 2 * halo, -2);
-        lp.setMargins(0, 0, gap - 2 * halo, 0); // the same stride as before: picture + gap
-        card.setLayoutParams(lp);
-        return card;
     }
 
     // Focus resting on a card (Home's, Search's) for 0.5 s: its /card (~1.5 KB; cold 0.2-0.9 s, from the disk
@@ -863,12 +749,6 @@ public class Main extends Activity {
         // ponytail: a restore whose /card fails stays without its backdrop; Back and in again shows it
     }
 
-    // The level a content column is on, which is what alive() and the loaders take: the scroll view that pushList,
-    // showFilm, rowsPage and tabPage put it in. The one place that knows that.
-    static View levelOf(View content) {
-        return (View) content.getParent();
-    }
-
     // Whether this level is still on the page (on top or under it): loaders check it before drawing.
     boolean alive(View level) {
         return level == pageTop || levels.stream().anyMatch(l -> l.view() == level);
@@ -910,34 +790,34 @@ public class Main extends Activity {
         boolean series = c.type().equals("tv");
         info.removeAllViews();
         int textW = dp(540);
-        TextView name = text(f.name(), 44, Color.WHITE);
+        TextView name = ux.text(f.name(), 44, Color.WHITE);
         name.setTypeface(medium);
         name.setMaxWidth(textW);
-        info.addView(name, wrap()); // a max width holds only for a wrapped one
-        if (!f.original().isEmpty()) info.addView(text(f.original(), 18, 0xff9a9a9a));
+        info.addView(name, Ui.wrap()); // a max width holds only for a wrapped one
+        if (!f.original().isEmpty()) info.addView(ux.text(f.original(), 18, 0xff9a9a9a));
         // a film: when it ends if started now
         String ends = series ? "" : Film.endsAt(f.runtime(), LocalTime.now());
-        TextView line = text(ends.isEmpty() ? f.line() : f.line() + " · " + ends, 18, 0xffdddddd);
+        TextView line = ux.text(ends.isEmpty() ? f.line() : f.line() + " · " + ends, 18, 0xffdddddd);
         line.setPadding(0, dp(8), 0, 0);
         line.setMaxWidth(textW);
-        info.addView(line, wrap());
+        info.addView(line, Ui.wrap());
         for (List<Film.Score> scores : List.of(f.scores(), f.seasons())) {
             if (scores.isEmpty()) continue;
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
             lp.topMargin = dp(16);
             info.addView(scoreRow(scores), lp);
         }
-        LinearLayout buttons = line();
+        LinearLayout buttons = ux.line();
         boolean watchable = f.watchable(series); // a series with no episodes yet: none
         // Settings → Play picks: Best cached: a film's ▶ Play starts the release picked
         // for it (pickSource, under the buttons), Sources lists them all
         boolean picks = !series && picks();
-        TextView plays = text("", 15, 0xffdddddd);
+        TextView plays = ux.text("", 15, 0xffdddddd);
         if (watchable) {
             Sources.Source[] best = new Sources.Source[1]; // ▶ Play's release, once the first sources are read
-            TextView watch = button(picks ? "▶  Play" : "▶  Watch", v -> {
+            TextView watch = ux.button(picks ? "▶  Play" : "▶  Watch", v -> {
                 if (series) new Episodes(this, f, c, Timeline.resume(f.episodes(), (s, e) -> marks.get(Timeline.key(f, s, e)))).show();
-                else if (best[0] != null) play(f, c, 0, 0, best[0].hash(), best[0].fileIdx(), best[0].title(), levelOf(column));
+                else if (best[0] != null) play(f, c, 0, 0, best[0].hash(), best[0].fileIdx(), best[0].title(), Ui.levelOf(column));
                 else showSources(f, c, 0, 0, null, false); // none cached, or not read yet
             });
             watch.setOnFocusChangeListener((v, focused) -> { // up from the rows: the whole top again
@@ -948,38 +828,38 @@ public class Main extends Activity {
             before.setMarginEnd(dp(12)); // its own gap: hidden, Watch starts the row
             buttons.addView(cont, before); // first, as the design: the one to press
             buttons.addView(watch);
-            if (picks) buttons.addView(button("Sources", v -> showSources(f, c, 0, 0, null, false)), spaced());
+            if (picks) buttons.addView(ux.button("Sources", v -> showSources(f, c, 0, 0, null, false)), ux.spaced());
             (cont.getVisibility() == View.VISIBLE ? cont : watch).requestFocus(); // marks known: Continue
-            if (picks && loaded) pickSource(f, best, plays, levelOf(column));
+            if (picks && loaded) pickSource(f, best, plays, Ui.levelOf(column));
         }
         // each film's trailer on its page, not a row of trailers
         if (!f.trailer().isEmpty()) {
-            buttons.addView(button("Trailer", v -> playTrailer(f.trailer())),
-                buttons.getChildCount() > 0 ? spaced() : new LinearLayout.LayoutParams(-2, -2));
+            buttons.addView(ux.button("Trailer", v -> playTrailer(f.trailer())),
+                buttons.getChildCount() > 0 ? ux.spaced() : new LinearLayout.LayoutParams(-2, -2));
         }
         // the page's top (alive() knows it), not column: given column, the status's answer was always dropped
         if (loaded && cub.learnBound() && !series && !f.imdb().isEmpty()) {
-            learnButton(f, c, buttons, levelOf(column));
+            learnButton(f, c, buttons, Ui.levelOf(column));
         }
         // Story so far: a series with episodes watched before the one Continue goes on with. Its tag shows it
         // once the marks are known (remark), as Continue's
         if (series && loaded && watchable) {
             Supplier<List<int[]>> last = () -> Film.before(f.episodes(),
                 Timeline.continueTo(true, f, marks::get, last(c)), 3);
-            TextView story = button("Story so far", v -> {
+            TextView story = ux.button("Story so far", v -> {
                 List<int[]> now = last.get();
                 if (!now.isEmpty()) storySoFar(c, now);
             });
             Runnable mark = () -> story.setVisibility(last.get().isEmpty() ? View.GONE : View.VISIBLE);
             story.setTag(mark);
             mark.run();
-            buttons.addView(story, buttons.getChildCount() > 0 ? spaced() : new LinearLayout.LayoutParams(-2, -2));
+            buttons.addView(story, buttons.getChildCount() > 0 ? ux.spaced() : new LinearLayout.LayoutParams(-2, -2));
         }
         // ⋯ and ★ need only the sign-in: a film with nothing to watch is still marked and graded (e.g.
         // The Miniaturist's "TV Movie" entry on TMDB has no IMDb id, so no sources, and had no ★ either)
         if (loaded && account() != null) {
-            buttons.addView(gradeButton(c, f), buttons.getChildCount() > 0 ? spaced() : new LinearLayout.LayoutParams(-2, -2));
-            buttons.addView(markButton(c), spaced());
+            buttons.addView(gradeButton(c, f), buttons.getChildCount() > 0 ? ux.spaced() : new LinearLayout.LayoutParams(-2, -2));
+            buttons.addView(markButton(c), ux.spaced());
             if (!watchable) buttons.getChildAt(0).requestFocus();
         }
         if (buttons.getChildCount() > 0) {
@@ -992,52 +872,52 @@ public class Main extends Activity {
             info.addView(plays);
         }
         if (loaded && !watchable) {
-            TextView none = text(f.imdb().isEmpty() ? "Nothing to watch: TMDB gives this one no IMDb id, so no sources."
+            TextView none = ux.text(f.imdb().isEmpty() ? "Nothing to watch: TMDB gives this one no IMDb id, so no sources."
                 + (!series ? " Look for it as a series too." : "") : "No episodes out yet.", 16, 0xff9a9a9a);
             none.setPadding(0, dp(10), 0, 0);
             info.addView(none);
         }
-        TextView overview = text(f.overview(), 18, 0xffdddddd);
+        TextView overview = ux.text(f.overview(), 18, 0xffdddddd);
         overview.setPadding(0, dp(20), 0, 0);
         overview.setLineSpacing(0, 1.5f);
         overview.setMaxWidth(dp(480));
         overview.setMaxLines(3);
         overview.setEllipsize(TextUtils.TruncateAt.END);
-        info.addView(overview, wrap());
-        TextView people = text(f.people(), 16, 0xff9a9a9a);
+        info.addView(overview, Ui.wrap());
+        TextView people = ux.text(f.people(), 16, 0xff9a9a9a);
         people.setPadding(0, dp(12), 0, 0);
         people.setMaxWidth(textW);
         people.setMaxLines(2);
         people.setEllipsize(TextUtils.TruncateAt.END);
-        info.addView(people, wrap());
+        info.addView(people, Ui.wrap());
         if (!f.cast().isEmpty()) {
             // w185's 185×278 cut to a 184 px circle (92 dp): software drawing makes it that size once (a third less
             // memory a photo), the GPU crops and clips it
             int w = dp(92);
-            LinearLayout cast = strip(column, text("Cast", 22, Color.WHITE), w + gap);
+            LinearLayout cast = ux.strip(column, ux.text("Cast", 22, Color.WHITE), w + gap);
             // OK: their page (showPerson). A /card from before person ids (0) only scrolls the row.
             // ponytail: a 185×278 photo replacing the 300×450 stand-in costs a layout pass per photo loaded or
             // dropped (≤ 12); a photo-sized stand-in if gfxinfo shows it while scrolling to the Cast row
             Iterator<Film.Actor> members = f.cast().iterator();
-            addRows(cast, () -> {
+            ux.addRows(cast, () -> {
                 if (!members.hasNext()) return null;
                 Film.Actor p = members.next();
                 ImageView photo = picture(PHOTO + p.photo(), pics, -1);
-                View t = tile(photo, w, w, -1, p.name(), p.character());
+                View t = ux.tile(photo, w, w, -1, p.name(), p.character());
                 if (p.id() > 0) t.setOnClickListener(v -> showPerson(p, photo.getDrawable()));
                 return t;
             }, 8); // 7.7 fit: built in one frame with the info, so no more than that
         }
         Iterator<Home.Card> parts = f.parts().iterator(); // the others: the worker leaves this one out
         if (parts.hasNext()) {
-            addRows(strip(column, text(f.collection(), 22, Color.WHITE), cardW + gap),
+            ux.addRows(ux.strip(column, ux.text(f.collection(), 22, Color.WHITE), cardW + gap),
                 () -> parts.hasNext() ? filmCard(parts.next(), pics) : null, 7); // 5.5 fit; Bond has 27
         }
         // More like this: TMDB's recommendations of it, without what was graded or watched already
         Iterator<Home.Card> similar = f.similar().stream().filter(x -> !cub.grades().containsKey(Timeline.card(x))
             && !cub.seen().contains(Timeline.card(x))).iterator();
         if (similar.hasNext()) {
-            addRows(strip(column, text("More like this", 22, Color.WHITE), cardW + gap),
+            ux.addRows(ux.strip(column, ux.text("More like this", 22, Color.WHITE), cardW + gap),
                 () -> similar.hasNext() ? filmCard(similar.next(), pics) : null, 7);
         }
     }
@@ -1104,16 +984,16 @@ public class Main extends Activity {
         }
         LinearLayout info = new LinearLayout(this);
         info.setOrientation(LinearLayout.VERTICAL);
-        TextView name = text(title, 36, Color.WHITE);
+        TextView name = ux.text(title, 36, Color.WHITE);
         name.setTypeface(medium);
         name.setSingleLine(); // one line, the born line one, the biography 3: the info stays ~160 dp
         name.setEllipsize(TextUtils.TruncateAt.END);
         if (tag instanceof Film.Actor a && account() != null) { // Follow beside the name: the info stays as high
-            LinearLayout top = line();
+            LinearLayout top = ux.line();
             top.setGravity(Gravity.CENTER_VERTICAL);
             name.setMaxWidth(getResources().getDisplayMetrics().widthPixels * 2 / 3 - dp(220));
-            top.addView(name, wrap());
-            top.addView(followButton(a), spaced());
+            top.addView(name, Ui.wrap());
+            top.addView(followButton(a), ux.spaced());
             info.addView(top);
         } else {
             info.addView(name);
@@ -1123,13 +1003,13 @@ public class Main extends Activity {
         pushLevel(sv, "", pics, false);
         load(sv, "rows " + url, () -> Person.parse(new String(read(url), StandardCharsets.UTF_8)),
             p -> fillPerson(column, info, p, pics),
-            () -> info.addView(text("TMDB didn't answer. Back, and " + again + " again.", 18, 0xff9a9a9a)));
+            () -> info.addView(ux.text("TMDB didn't answer. Back, and " + again + " again.", 18, 0xff9a9a9a)));
     }
 
     // Follow on a person's page: their coming films (directed, or a lead) go to Coming up.
     // The worker keeps it per CUB account and profile (Lampa's own Subscribe is CUB Premium).
     TextView followButton(Film.Actor a) {
-        TextView b = button("", null);
+        TextView b = ux.button("", null);
         b.setMinHeight(dp(44));
         b.setTextSize(18);
         Runnable label = () -> b.setText(cub.follows().contains(a.id()) ? "✓  Following" : "Follow");
@@ -1158,12 +1038,12 @@ public class Main extends Activity {
     // has neither.
     void fillPerson(LinearLayout column, LinearLayout info, Person p, List<ImageView> pics) {
         if (!p.line().isEmpty() || !p.about().isEmpty()) {
-            TextView line = text(p.line(), 18, 0xffdddddd);
+            TextView line = ux.text(p.line(), 18, 0xffdddddd);
             line.setPadding(0, dp(8), 0, dp(8));
             line.setSingleLine();
             line.setEllipsize(TextUtils.TruncateAt.END);
             info.addView(line);
-            TextView about = text(p.about(), 18, 0xffbbbbbb);
+            TextView about = ux.text(p.about(), 18, 0xffbbbbbb);
             about.setMaxLines(3);
             about.setEllipsize(TextUtils.TruncateAt.END);
             info.addView(about);
@@ -1189,9 +1069,9 @@ public class Main extends Activity {
     // (back up, the row's title and the name stayed above the screen).
     LinearLayout personRow(LinearLayout column, Home.Row row, List<ImageView> pics, boolean first) {
         Iterator<Home.Card> cards = row.cards().iterator();
-        TextView title = text(row.title(), 22, Color.WHITE);
-        LinearLayout line = strip(column, title, cardW + gap);
-        addRows(line, () -> {
+        TextView title = ux.text(row.title(), 22, Color.WHITE);
+        LinearLayout line = ux.strip(column, title, cardW + gap);
+        ux.addRows(line, () -> {
             if (!cards.hasNext()) return null;
             View card = filmCard(cards.next(), pics);
             card.setOnFocusChangeListener((v, on) -> {
@@ -1294,22 +1174,22 @@ public class Main extends Activity {
     // As many as fit the page's width (a long series' seasons: the first ones), none cut in half.
     View scoreRow(List<Film.Score> scores) {
         LinearLayout row = new LinearLayout(this);
-        row.setBackground(shape(pill, 0x14ffffff, 0x26ffffff));
+        row.setBackground(ux.shape(pill, 0x14ffffff, 0x26ffffff));
         int side = dp(18), between = dp(20), beside = dp(6);
         row.setPadding(side, dp(8), side, dp(8));
         float room = getResources().getDisplayMetrics().widthPixels - 120 * dp - 2 * side; // the page's 60 dp sides
         for (Film.Score s : scores) {
-            TextView score = text(s.text(), 20, Home.scoreColor(s.score()));
+            TextView score = ux.text(s.text(), 20, Home.scoreColor(s.score()));
             score.setTypeface(medium);
-            TextView label = text(s.label(), 13, 0xffb0b0b0);
+            TextView label = ux.text(s.label(), 13, 0xffb0b0b0);
             float w = score.getPaint().measureText(s.text()) + beside + label.getPaint().measureText(s.label());
             if (row.getChildCount() > 0) w += between;
             if (w > room) break;
             room -= w;
-            LinearLayout.LayoutParams lp = wrap();
+            LinearLayout.LayoutParams lp = Ui.wrap();
             if (row.getChildCount() > 0) lp.setMarginStart(between);
             row.addView(score, lp);
-            LinearLayout.LayoutParams beside2 = wrap();
+            LinearLayout.LayoutParams beside2 = Ui.wrap();
             beside2.setMarginStart(beside);
             row.addView(label, beside2);
         }
@@ -1343,7 +1223,7 @@ public class Main extends Activity {
         Learn.State[] state = {null};
         boolean[] busy = {false}; // a request is out (disabling the button would drop its focus)
         String key = Timeline.card(c);
-        TextView b = button("Learn", null);
+        TextView b = ux.button("Learn", null);
         b.setVisibility(View.GONE);
         Runnable draw = () -> b.setText(Learn.label(state[0], cub.learned().get(key)));
         b.setOnClickListener(v -> {
@@ -1369,7 +1249,7 @@ public class Main extends Activity {
                 });
             });
         });
-        buttons.addView(b, buttons.getChildCount() > 0 ? spaced() : new LinearLayout.LayoutParams(-2, -2));
+        buttons.addView(b, buttons.getChildCount() > 0 ? ux.spaced() : new LinearLayout.LayoutParams(-2, -2));
         pool.execute(() -> {
             Learn.State got = null;
             try {
@@ -1392,11 +1272,11 @@ public class Main extends Activity {
     // "Plays [4K] [DV] [REMUX] · RU · 74.3 GB · ⚡ Cached": the picture's badges as the source rows' chips.
     CharSequence playsLine(Sources.Source s) {
         SpannableStringBuilder line = new SpannableStringBuilder("Plays  ");
-        for (String b : Sources.picture(s)) chip(line, b);
+        for (String b : Sources.picture(s)) ux.chip(line, b);
         line.append(Sources.tracks(s.languages(), langs())).append(" · ").append(s.size()).append(" · ");
         int start = line.length();
         line.append(Sources.BOLT + " Cached");
-        line.setSpan(new Tint(Home.GREEN, Home.GREEN), start, line.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        line.setSpan(new Ui.Tint(Home.GREEN, Home.GREEN), start, line.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         return line;
     }
 
@@ -1407,12 +1287,12 @@ public class Main extends Activity {
     // hides: watch is ▶ Play, which Continue stands in for while it shows (both resume; a shorter row).
     View continueButton(Film f, Home.Card c, View watch, View column, boolean hides) {
         boolean series = c.type().equals("tv");
-        TextView b = button("", v -> {
+        TextView b = ux.button("", v -> {
             Timeline.Last last = last(c);
             int[] to = Timeline.continueTo(series, f, marks::get, last);
             if (to == null) return; // hidden meanwhile
             if (Timeline.replays(last, to)) {
-                play(f, c, to[0], to[1], last.hash(), last.fileIdx(), last.name(), levelOf(column));
+                play(f, c, to[0], to[1], last.hash(), last.fileIdx(), last.name(), Ui.levelOf(column));
             } else {
                 reopen(f, c, to[0], to[1], last != null ? last.hash() : null, true);
             }
@@ -1439,21 +1319,21 @@ public class Main extends Activity {
     // One character: the info column is half the screen and a worded button wrapped onto three lines next to
     // "Continue S1 E9". Home's rows follow.
     TextView markButton(Home.Card c) {
-        return round(button("⋯", v -> marksSheet(c, true)));
+        return ux.round(ux.button("⋯", v -> marksSheet(c, true)));
     }
 
     // The ⋯ sheet: My list (withList: from the film page; ≡ on a poster has its own row), then the marks.
     void marksSheet(Home.Card c, boolean withList) {
         String now = cub.marks().get(Timeline.card(c)), name = Cub.markName(now);
-        LinearLayout list = sheet(c.name(), name == null ? null : "Marked: " + name, null);
+        LinearLayout list = ux.sheet(c.name(), name == null ? null : "Marked: " + name, null);
         if (withList) {
             boolean listed = cub.list().contains(Timeline.card(c));
-            list.addView(sheetRow(listed ? "Remove from My list" : "Add to My list", "Lampa's Bookmarks, its Later too",
+            list.addView(ux.sheetRow(listed ? "Remove from My list" : "Add to My list", "Lampa's Bookmarks, its Later too",
                 null, r -> toggleList(c)));
-            list.addView(divider());
+            list.addView(ux.divider());
         }
-        for (String[] m : Cub.MARKS) list.addView(sheetRow(m[1], m[2], check(m[0].equals(now)), r -> setMark(c, m[0])));
-        if (now != null) list.addView(sheetRow("No mark", "Back in Continue browsing while it's being watched",
+        for (String[] mark : Cub.MARKS) list.addView(ux.sheetRow(mark[1], mark[2], Ui.check(mark[0].equals(now)), r -> setMark(c, mark[0])));
+        if (now != null) list.addView(ux.sheetRow("No mark", "Back in Continue browsing while it's being watched",
             null, r -> setMark(c, "none")));
     }
 
@@ -1472,7 +1352,7 @@ public class Main extends Activity {
     // ★ beside ⋯: the film's grade, Lampa's (shared through the worker's /grades), the star in its color; OK: the
     // grade bar under the buttons. A graded film leaves Home's Rate what you watched.
     TextView gradeButton(Home.Card c, Film f) {
-        TextView b = button("★", null);
+        TextView b = ux.button("★", null);
         paintGrade(b, cub.grades().get(Timeline.card(c)));
         Consumer<String> under = asked -> {
             View buttons = (View) b.getParent();
@@ -1487,7 +1367,7 @@ public class Main extends Activity {
             if (b.isAttachedToWindow()) under.accept(c.name());
         };
         ui.post(this::askGrade); // a page built after DDD answered (the app was killed while it played)
-        return round(b);
+        return ux.round(b);
     }
 
     // How was it?: back from DDD with a film watched to the end and not graded, its page's
@@ -1525,12 +1405,12 @@ public class Main extends Activity {
     void gradeBar(Home.Card c, String original, int x, int y, Consumer<String> saved, Runnable open,
                           String asked) {
         String now = cub.grades().get(Timeline.card(c));
-        LinearLayout pills = trapped();
-        TextView hint = text("", 15, 0xffdddddd);
+        LinearLayout pills = ux.trapped();
+        TextView hint = ux.text("", 15, 0xffdddddd);
         String after = open != null ? ". Graded, " + c.name() + " leaves this row." : "";
         for (String[] g : Cub.GRADES) {
             SpannableStringBuilder label = new SpannableStringBuilder("★  " + g[1] + (g[0].equals(now) ? "  ✓" : ""));
-            label.setSpan(new Tint(Color.parseColor(g[2]), 0xff111111), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            label.setSpan(new Ui.Tint(Color.parseColor(g[2]), 0xff111111), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             gradePill(pills, label, g[3] + after, hint, v -> setGrade(c, original, g[0], saved));
         }
         if (open == null && now != null) {
@@ -1540,19 +1420,19 @@ public class Main extends Activity {
             gradePill(pills, "Open film  →", "Its page: watch it, mark it", hint, v -> {
                 closeOverlay();
                 open.run();
-            }).setBackground(glass(pill, 0, 0x26ffffff));
+            }).setBackground(ux.glass(pill, 0, 0x26ffffff));
         }
         if (asked != null) {
             gradePill(pills, "Later", "Grade it from ★ on its page any time", hint, v -> closeOverlay())
-                .setBackground(glass(pill, 0, 0x26ffffff));
+                .setBackground(ux.glass(pill, 0, 0x26ffffff));
         }
         LinearLayout bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.VERTICAL);
         int in = dp(16);
         bar.setPadding(in, in, in, in);
-        bar.setBackground(shape(24 * dp, 0xff2a2d30, 0x26ffffff));
+        bar.setBackground(ux.shape(24 * dp, 0xff2a2d30, 0x26ffffff));
         if (asked != null) {
-            TextView title = text("How was " + asked + "?", 22, Color.WHITE);
+            TextView title = ux.text("How was " + asked + "?", 22, Color.WHITE);
             title.setPadding(dp(4), 0, 0, dp(12));
             bar.addView(title);
         }
@@ -1567,29 +1447,19 @@ public class Main extends Activity {
 
     TextView gradePill(LinearLayout pills, CharSequence label, String does, TextView hint,
                                View.OnClickListener action) {
-        TextView p = button("", action);
+        TextView p = ux.button("", action);
         p.setText(label);
         p.setTextSize(17);
         p.setPadding(dp(16), 0, dp(16), 0);
         p.setMinHeight(dp(44));
-        p.setBackground(glass(pill, 0x22ffffff, 0));
+        p.setBackground(ux.glass(pill, 0x22ffffff, 0));
         p.setOnFocusChangeListener((v, focused) -> {
             if (focused) hint.setText(does);
         });
-        LinearLayout.LayoutParams lp = wrap();
+        LinearLayout.LayoutParams lp = Ui.wrap();
         if (pills.getChildCount() > 0) lp.setMarginStart(dp(8));
         pills.addView(p, lp);
         return p;
-    }
-
-    // A one-character button (★, ⋯): a 48 dp circle.
-    TextView round(TextView b) {
-        b.setSingleLine(); // sets its minimum to one line: the 48 dp after it
-        b.setMinHeight(dp(48));
-        b.setTextSize(22);
-        b.setPadding(0, 0, 0, 0);
-        b.setMinWidth(dp(48));
-        return b;
     }
 
     static void paintGrade(TextView b, String g) {
@@ -1608,10 +1478,10 @@ public class Main extends Activity {
                 Toast.makeText(this, "The grade wasn't saved. Try again.", Toast.LENGTH_LONG).show();
                 return;
             }
-            Map<String, String> m = new HashMap<>(cub.grades());
-            if (g == null) m.remove(Timeline.card(c));
-            else m.put(Timeline.card(c), g);
-            cub = cub.withGrades(m);
+            Map<String, String> graded = new HashMap<>(cub.grades());
+            if (g == null) graded.remove(Timeline.card(c));
+            else graded.put(Timeline.card(c), g);
+            cub = cub.withGrades(graded);
             if (overlay == panel) closeOverlay(); // not Back meanwhile
             saved.accept(g);
             loadMine(); // Home's Rate what you watched
@@ -1620,10 +1490,10 @@ public class Main extends Activity {
 
     void setMark(Home.Card c, String mark) {
         postMine(c, mark, () -> {
-            Map<String, String> m = new HashMap<>(cub.marks());
-            if (mark.equals("none")) m.remove(Timeline.card(c));
-            else m.put(Timeline.card(c), mark);
-            cub = cub.withMarks(m);
+            Map<String, String> marked = new HashMap<>(cub.marks());
+            if (mark.equals("none")) marked.remove(Timeline.card(c));
+            else marked.put(Timeline.card(c), mark);
+            cub = cub.withMarks(marked);
         });
     }
 
@@ -1656,17 +1526,10 @@ public class Main extends Activity {
             Answer a = ask("/timeline?hash=" + Timeline.keys(f), null); // up to 1000 keys: off the UI thread
             if (a.code() != 200) throw new IOException("HTTP " + a.code());
             return Timeline.marks(a.body());
-        }, m -> {
-            Timeline.merge(marks, m, played);
+        }, got -> {
+            Timeline.merge(marks, got, played);
             remark();
         }, () -> { }); // no marks
-    }
-
-    LinearLayout vertical() {
-        LinearLayout l = new LinearLayout(this);
-        l.setOrientation(LinearLayout.VERTICAL);
-        l.setPadding(0, 0, 0, dp(36));
-        return l;
     }
 
     // A row whose line (its child) shows watch marks: set now, and again by remark().
@@ -1678,13 +1541,13 @@ public class Main extends Activity {
 
     // The marks again (seasons' and episodes' rows, Continue), on top or under it: the worker's points came, or DDD's.
     void remark() {
-        if (pageTop != null) remark(pageTop);
-        for (Level l : levels) remark(l.view());
+        if (pageTop != null) remarkView(pageTop);
+        for (Level l : levels) remarkView(l.view());
     }
 
-    static void remark(View v) {
+    static void remarkView(View v) {
         if (v.getTag() instanceof Runnable mark) mark.run();
-        if (v instanceof ViewGroup g) for (int i = 0; i < g.getChildCount(); i++) remark(g.getChildAt(i));
+        if (v instanceof ViewGroup g) for (int i = 0; i < g.getChildCount(); i++) remarkView(g.getChildAt(i));
     }
 
     // TorBox sources, biggest first, in the chosen audio languages: the first 6 (5 rows fit on the screen), then the
@@ -1705,11 +1568,11 @@ public class Main extends Activity {
         LinearLayout words = new LinearLayout(this);
         words.setOrientation(LinearLayout.VERTICAL);
         words.addView(head);
-        TextView sub = text(title, 16, 0xff9a9a9a);
+        TextView sub = ux.text(title, 16, 0xff9a9a9a);
         sub.setPadding(0, dp(2), 0, 0);
         words.addView(sub);
         top.addView(words, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView audio = button("Audio: " + shownLangs().replace(",", ""), null);
+        TextView audio = ux.button("Audio: " + shownLangs().replace(",", ""), null);
         audio.setTextSize(18);
         audio.setMinHeight(dp(44));
         audio.setPadding(dp(20), 0, dp(20), 0);
@@ -1717,7 +1580,7 @@ public class Main extends Activity {
         LinearLayout.LayoutParams under = new LinearLayout.LayoutParams(-1, -2);
         under.bottomMargin = dp(18);
         list.addView(top, 0, under);
-        TextView status = text("Loading sources…", 16, 0xff9a9a9a);
+        TextView status = ux.text("Loading sources…", 16, 0xff9a9a9a);
         list.addView(status);
         // A fast Watch waits for the preload instead of asking TorBox twice.
         // ponytail: after a collection film and Back, it waits for that film's preload (≤ 0.8 s); key it by level
@@ -1726,7 +1589,7 @@ public class Main extends Activity {
         preload = null;
         SourceList req = new SourceList(f, c, season, episode, title, langs(), list, status, sub, audio,
             new ArrayDeque<>(), t, prefer, autoplay, new int[] {AUDIO_READS});
-        levelOf(list).setTag(req); // onSaveInstanceState: the list to open again after process death
+        Ui.levelOf(list).setTag(req); // onSaveInstanceState: the list to open again after process death
         loadSources(req, 0, before);
     }
 
@@ -1736,7 +1599,7 @@ public class Main extends Activity {
                       TextView status, TextView sub, TextView audio, ArrayDeque<Sources.Source> pending, long t,
                       String prefer, boolean autoplay, int[] audioReads) {
         View level() {
-            return levelOf(list);
+            return Ui.levelOf(list);
         }
     }
 
@@ -1786,7 +1649,7 @@ public class Main extends Activity {
             req.pending().addAll(p.streams());
             Supplier<View> next = () -> req.pending().isEmpty() ? null : sourceRow(req.pending().poll(), req);
             if (from > 0) {
-                addRows(req.list(), next, 5); // the others as focus gets near them
+                ux.addRows(req.list(), next, 5); // the others as focus gets near them
                 return;
             }
             req.list().removeView(req.status());
@@ -1797,8 +1660,8 @@ public class Main extends Activity {
                 popLevel(false); // no backdrop: the new list goes straight on top
                 showSources(req.f(), req.c(), req.season(), req.episode(), null, false);
             }));
-            if (p.total() == 0) req.list().addView(text("Nothing in " + shown + ".", 16, 0xff9a9a9a));
-            addRows(req.list(), next, p.streams().size());
+            if (p.total() == 0) req.list().addView(ux.text("Nothing in " + shown + ".", 16, 0xff9a9a9a));
+            ux.addRows(req.list(), next, p.streams().size());
             // the first source, under the head (Continue: the release last played, when among them); nothing
             // found: OK goes straight to the languages
             int at = 1 + Sources.focus(p.streams(), req.prefer());
@@ -1812,33 +1675,17 @@ public class Main extends Activity {
         });
     }
 
-    // Rows built as focus nears the end of the list: count now, 5 more when one of the last 3 gets focus, until next
-    // gives null. A list that isn't scrolled builds nothing more (a row is ~1.5-2 ms on the stick; 89 at once froze
-    // a frame for 121 ms).
-    void addRows(LinearLayout list, Supplier<View> next, int count) {
-        for (int i = 0; i < count; i++) {
-            View r = next.get();
-            if (r == null) return;
-            View.OnFocusChangeListener own = r.getOnFocusChangeListener(); // the row's own (a genre's: scroll)
-            r.setOnFocusChangeListener((v, focused) -> {
-                if (own != null) own.onFocusChange(v, focused);
-                if (focused && list.indexOfChild(v) >= list.getChildCount() - 3) addRows(list, next, 5);
-            });
-            list.addView(r);
-        }
-    }
-
     // ⚡ Cached, the badges on their colors, then size · seeders · tracker · languages. A cached release whose audio
     // isn't read yet (the first AUDIO_READS of a list) asks the worker for it and gets its line again with the tracks.
     View sourceRow(Sources.Source s, SourceList req) {
         SpannableStringBuilder cached = new SpannableStringBuilder(Sources.cachedLabel(s.cached()));
-        cached.setSpan(s.cached() == 1 ? new Tint(Home.GREEN, 0xff0a7d3e) : new Tint(0xff8a8a8a, 0xff4a4a4a), 0,
+        cached.setSpan(s.cached() == 1 ? new Ui.Tint(Home.GREEN, 0xff0a7d3e) : new Ui.Tint(0xff8a8a8a, 0xff4a4a4a), 0,
             cached.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        LinearLayout r = row(s.title(), sourceLine(s, req.langs()), cached, v -> play(req.f(), req.c(), req.season(),
+        LinearLayout r = ux.row(s.title(), sourceLine(s, req.langs()), cached, v -> play(req.f(), req.c(), req.season(),
             req.episode(), s.hash(), s.fileIdx(), s.title(), req.level()));
         if (Sources.readsAudio(s, req.autoplay(), req.prefer(), req.audioReads()[0])) {
             req.audioReads()[0]--;
-            TextView detail = r.findViewWithTag(DETAIL);
+            TextView detail = r.findViewWithTag(Ui.DETAIL);
             View level = req.level();
             audioReads.execute(() -> {
                 // left before its turn (or covered by a page: read on the next Watch, Back doesn't rebuild the row),
@@ -1863,69 +1710,18 @@ public class Main extends Activity {
     }
 
     static final int AUDIO_READS = 4; // the first page's cached ones (5 rows fit on the screen)
-    static final String DETAIL = "detail";
 
     SpannableStringBuilder sourceLine(Sources.Source s, String langs) {
         SpannableStringBuilder line = new SpannableStringBuilder();
         List<Sources.Heard> heard = Sources.heard(s, langs);
-        for (String b : Sources.badges(s, Sources.fileRead(s))) chip(line, b);
+        for (String b : Sources.badges(s, Sources.fileRead(s))) ux.chip(line, b);
         // size and tracker before the audio groups: a one-line row cut at its end keeps what rows are compared by
         line.append(Sources.details(s, heard.isEmpty())).append("  ");
         for (Sources.Heard h : heard) { // its chips, then where they come from in the line's own color
-            for (String c : h.chips()) chip(line, c);
+            for (String c : h.chips()) ux.chip(line, c);
             line.append(h.from()).append("  ");
         }
         return line;
-    }
-
-    void chip(SpannableStringBuilder line, String b) {
-        int start = line.length();
-        line.append(b);
-        line.setSpan(new Chip(b, Sources.badgeColor(b)), start, line.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        line.append("  ");
-    }
-
-    // A text color that follows its view's focus (a list row turns white under focus): a span can't take a
-    // ColorStateList, but the paint it gets carries the view's state.
-    static final class Tint extends CharacterStyle {
-        final int color, focused;
-
-        Tint(int color, int focused) {
-            this.color = color;
-            this.focused = focused;
-        }
-
-        @Override
-        public void updateDrawState(TextPaint tp) {
-            tp.setColor(StateSet.stateSetMatches(FOCUSED, tp.drawableState) ? focused : color);
-        }
-    }
-
-    // A source's badge (4K, DV, REMUX…): white text on a 6 dp round chip of its color. It draws its own label: in a
-    // line cut with "…" the text it is handed has its letters swapped for U+FFFC (drawn as "OBJ").
-    final class Chip extends ReplacementSpan {
-        final String label;
-        final int color;
-
-        Chip(String label, int color) {
-            this.label = label;
-            this.color = color;
-        }
-
-        @Override
-        public int getSize(Paint p, CharSequence t, int start, int end, Paint.FontMetricsInt fm) {
-            return Math.round(p.measureText(label) + 14 * dp);
-        }
-
-        @Override
-        public void draw(Canvas c, CharSequence t, int start, int end, float x, int top, int y, int bottom, Paint p) {
-            int was = p.getColor();
-            p.setColor(color);
-            c.drawRoundRect(x, top, x + p.measureText(label) + 14 * dp, bottom, 6 * dp, 6 * dp, p);
-            p.setColor(Color.WHITE);
-            c.drawText(label, x + 7 * dp, y, p);
-            p.setColor(was);
-        }
     }
 
     // OK on a source: TorBox's link from the worker (~1 s) with the resume point (Lampa's key: the worker shares it
@@ -2003,10 +1799,10 @@ public class Main extends Activity {
                 Log.w(TAG, "play " + hash, e);
                 message = e instanceof FileNotFoundException ? e.getMessage() : "Can't get the link. Try again.";
             }
-            String m = message;
+            String told = message;
             ui.post(() -> {
                 asking = false;
-                Toast.makeText(this, m, Toast.LENGTH_LONG).show();
+                Toast.makeText(this, told, Toast.LENGTH_LONG).show();
             });
         });
     }
@@ -2200,7 +1996,7 @@ public class Main extends Activity {
         openPage(from);
         LinearLayout list = tabPage("Coming up");
         String audio = audioNames();
-        list.addView(text(cub.coming().isEmpty() ? account() == null ? "Sign in to CUB in Settings: what's coming comes "
+        list.addView(ux.text(cub.coming().isEmpty() ? account() == null ? "Sign in to CUB in Settings: what's coming comes "
             + "from your history." : "Nothing new for the series you watch in the next four weeks." : "Next episodes of "
             + "the series you watch, and films from My list, for the next four weeks. The days are when an episode airs"
             + (audio == null ? "; Out once a release of it is." : " in English; " + audio + " audio usually follows a few "
@@ -2217,10 +2013,10 @@ public class Main extends Activity {
                 LinearLayout when = new LinearLayout(this);
                 when.setOrientation(LinearLayout.VERTICAL);
                 when.setPadding(0, dp(10), 0, 0);
-                TextView name = text(d[0], 18, Color.WHITE);
+                TextView name = ux.text(d[0], 18, Color.WHITE);
                 name.setTypeface(medium);
                 when.addView(name);
-                when.addView(text(d[1], 15, 0xff9a9a9a));
+                when.addView(ux.text(d[1], 15, 0xff9a9a9a));
                 group.addView(when, dp(120), -2);
                 day = new LinearLayout(this);
                 day.setOrientation(LinearLayout.VERTICAL);
@@ -2237,9 +2033,9 @@ public class Main extends Activity {
                 case "airs" -> "Airs";
                 default -> "Film";
             });
-            end.setSpan(x.state().equals("out") ? new Tint(Home.GREEN, 0xff0a7d3e) : new Tint(0xff9a9a9a, 0xff4a4a4a), 0,
+            end.setSpan(x.state().equals("out") ? new Ui.Tint(Home.GREEN, 0xff0a7d3e) : new Ui.Tint(0xff9a9a9a, 0xff4a4a4a), 0,
                 end.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            LinearLayout r = row(x.card().name(), x.what(), end, v -> showFilm(x.card(), null));
+            LinearLayout r = ux.row(x.card().name(), x.what(), end, v -> showFilm(x.card(), null));
             if (x.state().equals("out") && x.season() > 0) cachedLabel(x, (TextView) r.getChildAt(1));
             r.setPadding(dp(18), dp(8), dp(18), dp(8));
             ((LinearLayout.LayoutParams) r.getLayoutParams()).bottomMargin = dp(4);
@@ -2252,10 +2048,10 @@ public class Main extends Activity {
     // Continue browsing's last tile: History.
     View historyTile(TextView rowTitle) {
         int w = dp(195), h = dp(110);
-        TextView picture = text("↺", 40, 0xff9a9a9a);
+        TextView picture = ux.text("↺", 40, 0xff9a9a9a);
         picture.setGravity(Gravity.CENTER);
-        picture.setBackground(shape(12 * dp, 0x14ffffff, 0x26ffffff));
-        View card = tile(picture, w, h, 12 * dp, "History", "Played here and in Lampa");
+        picture.setBackground(ux.shape(12 * dp, 0x14ffffff, 0x26ffffff));
+        View card = ux.tile(picture, w, h, 12 * dp, "History", "Played here and in Lampa");
         card.setTag(HISTORY);
         card.setOnFocusChangeListener((v, focused) -> {
             if (focused) scroll.scrollTo(0, rowTitle.getTop());
@@ -2270,7 +2066,7 @@ public class Main extends Activity {
     void openHistory(View from) {
         openPage(from);
         historyList = pushList("History");
-        historyList.addView(text("Played here and in Lampa, newest first · ≡ marks one unwatched or removes it", 16,
+        historyList.addView(ux.text("Played here and in Lampa, newest first · ≡ marks one unwatched or removes it", 16,
             0xff9a9a9a));
         fillHistory(historyList, 0);
     }
@@ -2279,12 +2075,12 @@ public class Main extends Activity {
     void fillHistory(LinearLayout list, int focus) {
         list.removeViews(2, list.getChildCount() - 2); // the title and its line stay
         Cub.Account a = account();
-        TextView note = text(a == null ? "Sign in to CUB in Settings: History comes from your CUB account." : "Loading…",
+        TextView note = ux.text(a == null ? "Sign in to CUB in Settings: History comes from your CUB account." : "Loading…",
             18, 0xffdddddd);
         note.setPadding(0, dp(16), 0, 0);
         list.addView(note);
         if (a == null) return;
-        View level = levelOf(list);
+        View level = Ui.levelOf(list);
         int tz = TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 60000;
         load(level, "history", () -> {
             Answer r = send(withCub(open(Home.worker + "/mine/history?tz=" + tz, 20000), a), null, null);
@@ -2310,7 +2106,7 @@ public class Main extends Activity {
             if (!d[0].equals(at)) { // a group: its name on the left, its rows on the right (Coming up's layout)
                 at = d[0];
                 LinearLayout group = new LinearLayout(this);
-                TextView name = text(d[0], 18, Color.WHITE);
+                TextView name = ux.text(d[0], 18, Color.WHITE);
                 name.setTypeface(medium);
                 name.setPadding(0, dp(10), 0, 0);
                 group.addView(name, dp(120), -2);
@@ -2324,8 +2120,8 @@ public class Main extends Activity {
                 list.addView(group, lp);
             }
             SpannableStringBuilder end = new SpannableStringBuilder(d[1]);
-            end.setSpan(new Tint(0xff9a9a9a, 0xff4a4a4a), 0, end.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            LinearLayout r = row(p.card().name(), historyLine(p), end, v -> showFilm(p.card(), null));
+            end.setSpan(new Ui.Tint(0xff9a9a9a, 0xff4a4a4a), 0, end.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            LinearLayout r = ux.row(p.card().name(), historyLine(p), end, v -> showFilm(p.card(), null));
             r.setTag(p); // ≡ on it: historySheet
             r.setPadding(dp(18), dp(8), dp(18), dp(8));
             ((LinearLayout.LayoutParams) r.getLayoutParams()).bottomMargin = dp(4);
@@ -2344,7 +2140,7 @@ public class Main extends Activity {
             s.append(" · ");
             int from = s.length();
             s.append("Watched");
-            s.setSpan(new Tint(Home.GREEN, 0xff0a7d3e), from, s.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            s.setSpan(new Ui.Tint(Home.GREEN, 0xff0a7d3e), from, s.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         } else if (left != null) {
             s.append(" · ").append(left);
         }
@@ -2353,7 +2149,7 @@ public class Main extends Activity {
             s.append(" · ");
             int from = s.length();
             s.append("★ ").append(g[1]);
-            s.setSpan(new Tint(Color.parseColor(g[2]), 0xff111111), from, s.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            s.setSpan(new Ui.Tint(Color.parseColor(g[2]), 0xff111111), from, s.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         }
         if (p.lampa()) s.append(" · in Lampa");
         return s;
@@ -2363,20 +2159,20 @@ public class Main extends Activity {
     // of CUB's history, so Lampa's too). Both are CUB's: the worker writes them.
     void historySheet(Cub.Played p) {
         boolean series = p.card().type().equals("tv");
-        LinearLayout list = sheet(p.card().name(), historyLine(p).toString(), null);
-        list.addView(sheetRow(series ? "Series page" : "Film page", null, null, v -> {
+        LinearLayout list = ux.sheet(p.card().name(), historyLine(p).toString(), null);
+        list.addView(ux.sheetRow(series ? "Series page" : "Film page", null, null, v -> {
             closeOverlay();
             showFilm(p.card(), null);
         }));
-        list.addView(divider());
+        list.addView(ux.divider());
         int at = historyShown.indexOf(p);
         if (!p.hashes().isEmpty()) {
             String body = new JSONArray(p.hashes()).toString();
-            list.addView(sheetRow("Mark unwatched", (p.what().isEmpty() ? "Back to the start" : p.what() + " back to the "
+            list.addView(ux.sheetRow("Mark unwatched", (p.what().isEmpty() ? "Back to the start" : p.what() + " back to the "
                 + "start") + ", here and in Lampa", null, v -> historyChange("/mine/unwatch",
                 ("{\"hashes\":" + body + "}").getBytes(StandardCharsets.UTF_8), at, p.hashes())));
         }
-        list.addView(sheetRow("Remove from history", "Lampa's history loses it too", null,
+        list.addView(ux.sheetRow("Remove from history", "Lampa's history loses it too", null,
             v -> historyChange("/mine/unhistory/" + p.card().type() + "/" + p.card().id(), new byte[0], at, List.of())));
     }
 
@@ -2396,7 +2192,7 @@ public class Main extends Activity {
             closeOverlay();
             Timeline.forget(marks, played, unwatched);
             remark();
-            if (list != null && alive(levelOf(list))) fillHistory(list, Math.max(0, at));
+            if (list != null && alive(Ui.levelOf(list))) fillHistory(list, Math.max(0, at));
             loadMine(); // Continue browsing, the posters' badges
         }, () -> { });
     }
@@ -2412,7 +2208,7 @@ public class Main extends Activity {
                 0)), StandardCharsets.UTF_8));
             if (Sources.best(p.streams()) == null) return null;
             SpannableStringBuilder cached = new SpannableStringBuilder(Sources.BOLT + " Cached");
-            cached.setSpan(new Tint(Home.GREEN, 0xff0a7d3e), 0, cached.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            cached.setSpan(new Ui.Tint(Home.GREEN, 0xff0a7d3e), 0, cached.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             return cached;
         }, cached -> {
             if (cached != null) label.setText(cached);
@@ -2444,7 +2240,7 @@ public class Main extends Activity {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             s.say("No microphone");
             s.clear();
-            s.results.addView(text("This app may not use the microphone. Allow it in Fire TV's Settings → Applications"
+            s.results.addView(ux.text("This app may not use the microphone. Allow it in Fire TV's Settings → Applications"
                 + " → Manage Installed Applications → Lampa Native.", 18, 0xff9a9a9a));
             return;
         }
@@ -2554,29 +2350,6 @@ public class Main extends Activity {
         return null;
     }
 
-    // A section's title on a page (Search's): 22 sp medium, 12 dp over what it heads.
-    TextView heading(String title, int top) {
-        TextView t = text(title, 22, Color.WHITE);
-        t.setTypeface(medium);
-        t.setPadding(0, top, 0, dp(12));
-        return t;
-    }
-
-    // A keyboard key, `wide` keys wide.
-    TextView key(String label, int wide, View.OnClickListener action) {
-        TextView k = button(label, action);
-        int size = dp(52), high = dp(46), space = dp(4); // 46: the tab bar over them
-        k.setBackground(glass(12 * dp, 0x22ffffff, 0)); // a rounded square, no edge
-        k.setTypeface(Typeface.DEFAULT);
-        k.setMinHeight(0);
-        k.setPadding(0, 0, 0, 0);
-        k.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(size * wide + (wide - 1) * space, high);
-        lp.setMargins(0, 0, space, space);
-        k.setLayoutParams(lp);
-        return k;
-    }
-
     // ≡ on a Home poster (fewer presses to play, for no memory): the film's sheet, no page
     // opened, no backdrop. A film: ▶ Play (Play picks' release, Settings), its Sources; a series: its episodes from
     // the one to go on with. Then the page, My list, the grade (the bar under the row), the mark, and Settings. Its
@@ -2584,14 +2357,14 @@ public class Main extends Activity {
     void quick(Home.Card c, View card) {
         boolean series = c.type().equals("tv");
         String key = Timeline.card(c);
-        LinearLayout list = sheet(c.name(), c.year(), null);
+        LinearLayout list = ux.sheet(c.name(), c.year(), null);
         TextView sub = (TextView) list.getChildAt(1);
         Film[] film = new Film[1];
         Sources.Source[] best = new Sources.Source[1];
         TextView playLine = null, sourcesLine = null;
         if (series) {
             String next = cub.next().get(key);
-            list.addView(sheetRow("▶  Episodes", next, null, v -> {
+            list.addView(ux.sheetRow("▶  Episodes", next, null, v -> {
                 if (film[0] == null) return;
                 if (!film[0].watchable(true)) { // no season to open: Episodes shows the first
                     Toast.makeText(this, "No episodes out yet.", Toast.LENGTH_SHORT).show();
@@ -2603,7 +2376,7 @@ public class Main extends Activity {
                 new Episodes(this, film[0], c, Cub.episode(next)).show();
             }));
         } else {
-            LinearLayout play = sheetRow("▶  Play", picks() ? "Finding a source…" : "The sources list", null, v -> {
+            LinearLayout play = ux.sheetRow("▶  Play", picks() ? "Finding a source…" : "The sources list", null, v -> {
                 if (film[0] == null) return;
                 closeOverlay();
                 if (best[0] != null) {
@@ -2613,7 +2386,7 @@ public class Main extends Activity {
                     showSources(film[0], c, 0, 0, null, false);
                 }
             });
-            LinearLayout sources = sheetRow("Sources", shownLangs(), null, v -> {
+            LinearLayout sources = ux.sheetRow("Sources", shownLangs(), null, v -> {
                 if (film[0] == null) return;
                 closeOverlay();
                 openPage(card);
@@ -2624,29 +2397,29 @@ public class Main extends Activity {
             playLine = (TextView) play.getChildAt(1);
             sourcesLine = (TextView) sources.getChildAt(1);
         }
-        list.addView(sheetRow("Film page", null, null, v -> {
+        list.addView(ux.sheetRow("Film page", null, null, v -> {
             closeOverlay();
             openFilm(c, card, null);
         }));
         if (account() != null) {
-            list.addView(divider());
-            list.addView(sheetRow(cub.list().contains(key) ? "Remove from My list" : "Add to My list", null, null,
+            list.addView(ux.divider());
+            list.addView(ux.sheetRow(cub.list().contains(key) ? "Remove from My list" : "Add to My list", null, null,
                 v -> toggleList(c)));
             String[] g = Cub.grade(cub.grades().get(key));
             SpannableStringBuilder star = new SpannableStringBuilder("★  Your grade");
-            if (g != null) star.setSpan(new Tint(Color.parseColor(g[2]), 0xff111111), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            list.addView(sheetRow(star, null, g == null ? "None" : g[1], v -> {
+            if (g != null) star.setSpan(new Ui.Tint(Color.parseColor(g[2]), 0xff111111), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            list.addView(ux.sheetRow(star, null, g == null ? "None" : g[1], v -> {
                 rateBar(c, card, false);
                 overlayBack = () -> quick(c, card);
             }));
-            String m = Cub.markName(cub.marks().get(key));
-            list.addView(sheetRow("Mark", null, m == null ? "None" : m, v -> {
+            String marked = Cub.markName(cub.marks().get(key));
+            list.addView(ux.sheetRow("Mark", null, marked == null ? "None" : marked, v -> {
                 marksSheet(c, false);
                 overlayBack = () -> quick(c, card);
             }));
         }
-        list.addView(divider());
-        list.addView(sheetRow("⚙  Settings", null, null, v -> {
+        list.addView(ux.divider());
+        list.addView(ux.sheetRow("⚙  Settings", null, null, v -> {
             showSettings();
             overlayBack = () -> quick(c, card);
         }));
@@ -2692,8 +2465,8 @@ public class Main extends Activity {
 
     void showSettings(String at) {
         settingsAt = at;
-        LinearLayout list = sheet("Settings", null, null);
-        settingsRows(list, footer(list), true);
+        LinearLayout list = ux.sheet("Settings", null, null);
+        settingsRows(list, ux.footer(list), true);
     }
 
     // The Settings tab (a tab, not a sheet over Home): its rows on the left, what the focused one
@@ -2705,7 +2478,7 @@ public class Main extends Activity {
         settingsList = new LinearLayout(this);
         settingsList.setOrientation(LinearLayout.VERTICAL);
         cols.addView(settingsList, dp(560), -2);
-        settingsHelp = text("", 18, 0xff9a9a9a);
+        settingsHelp = ux.text("", 18, 0xff9a9a9a);
         LinearLayout.LayoutParams hp = new LinearLayout.LayoutParams(0, -2, 1);
         hp.setMarginStart(dp(48));
         hp.topMargin = dp(12);
@@ -2738,7 +2511,7 @@ public class Main extends Activity {
             ((TextView) ((LinearLayout) v).getChildAt(1)).setText(stats()); // the value, right
             showMeter(on);
         });
-        list.addView(divider());
+        list.addView(ux.divider());
         Cub.Account a = account();
         setting(list, help, "CUB account", a == null ? "Sign in" : "Signed in", "Lampa's account: your history on Home "
             + "and in Lampa, My list, marks and grades. OK " + (a == null ? "signs in with a code." : "signs out."), v -> {
@@ -2768,7 +2541,7 @@ public class Main extends Activity {
             + "Lampa or CUB. This application uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise "
             + "approved by TMDB.", v -> { });
         ((TextView) about.getChildAt(1)).setCompoundDrawablesRelativeWithIntrinsicBounds(drawable("tmdb"), null, null, null);
-        list.addView(divider());
+        list.addView(ux.divider());
         setting(list, help, "Play picks", picks() ? "Best cached" : "Ask each time", "Best cached: a film's ▶ Play "
             + "starts the biggest release TorBox has cached in your audio languages. Ask each time: the sources list.", v -> {
                 settings().edit().putBoolean("picks", !picks()).apply();
@@ -2811,7 +2584,7 @@ public class Main extends Activity {
     // A setting's row: its name and value on one line; focused, what it does at the sheet's foot.
     LinearLayout setting(LinearLayout list, TextView help, String title, String value, String does,
                                  View.OnClickListener action) {
-        LinearLayout r = sheetRow(title, null, value, action);
+        LinearLayout r = ux.sheetRow(title, null, value, action);
         r.setPadding(dp(12), dp(10), dp(12), dp(10));
         ((LinearLayout.LayoutParams) r.getLayoutParams()).bottomMargin = dp(2);
         r.setOnFocusChangeListener((v, focused) -> {
@@ -2828,8 +2601,8 @@ public class Main extends Activity {
     // ✓. OK switches: Home's rows are that profile's.
     void showProfiles() {
         Cub.Account a = account();
-        LinearLayout list = sheet("Profile", "Lampa uses the main one unless switched there", null);
-        TextView wait = text("Asking CUB…", 16, 0xff9a9a9a);
+        LinearLayout list = ux.sheet("Profile", "Lampa uses the main one unless switched there", null);
+        TextView wait = ux.text("Asking CUB…", 16, 0xff9a9a9a);
         wait.setPadding(dp(12), 0, 0, 0);
         list.addView(wait);
         View panel = overlay;
@@ -2837,7 +2610,7 @@ public class Main extends Activity {
             if (overlay != panel) return;
             list.removeView(wait);
             for (Cub.Profile p : all) {
-                list.addView(sheetRow(p.name(), p.main() ? "Main profile" : null, check(p.id() == a.profile()), v -> {
+                list.addView(ux.sheetRow(p.name(), p.main() ? "Main profile" : null, Ui.check(p.id() == a.profile()), v -> {
                     try {
                         saveAccount(new Cub.Account(a.token(), p.id(), p.name()));
                     } catch (IOException e) {
@@ -2876,8 +2649,8 @@ public class Main extends Activity {
     }
 
     void signOut(Runnable done) {
-        LinearLayout list = sheet("CUB account", account().name().isEmpty() ? null : account().name(), null);
-        list.addView(sheetRow("Sign out", "History leaves Home; CUB keeps it, and Lampa stays signed in", null, v -> {
+        LinearLayout list = ux.sheet("CUB account", account().name().isEmpty() ? null : account().name(), null);
+        list.addView(ux.sheetRow("Sign out", "History leaves Home; CUB keeps it, and Lampa stays signed in", null, v -> {
             //noinspection ResultOfMethodCallIgnored: gone or never there, signed out either way
             cubFile().delete();
             //noinspection ResultOfMethodCallIgnored: the same
@@ -2926,20 +2699,20 @@ public class Main extends Activity {
     // counted (from Settings).
     void showLanguages(List<Sources.Language> all, Runnable reload) {
         String before = langs();
-        LinearLayout list = sheet("Audio languages", "OK adds or removes one.", () -> {
+        LinearLayout list = ux.sheet("Audio languages", "OK adds or removes one.", () -> {
             if (reload != null && !langs().equals(before)) reload.run();
         });
-        list.addView(sheetRow("All languages", null, null, v -> {
+        list.addView(ux.sheetRow("All languages", null, null, v -> {
             setLangs("");
             closeOverlay();
         }));
-        list.addView(divider());
+        list.addView(ux.divider());
         for (Sources.Language l : all) {
             String code = l.code();
-            list.addView(sheetRow(language(code), l.releases() < 0 ? code : code + " · " + l.releases() + " releases",
-                check(Sources.selected(langs(), code)), v -> {
+            list.addView(ux.sheetRow(language(code), l.releases() < 0 ? code : code + " · " + l.releases() + " releases",
+                Ui.check(Sources.selected(langs(), code)), v -> {
                     setLangs(Sources.toggle(langs(), code));
-                    ((TextView) ((LinearLayout) v).getChildAt(1)).setText(check(Sources.selected(langs(), code)));
+                    ((TextView) ((LinearLayout) v).getChildAt(1)).setText(Ui.check(Sources.selected(langs(), code)));
                 }));
         }
     }
@@ -2988,7 +2761,7 @@ public class Main extends Activity {
         LinearLayout list = new LinearLayout(this);
         list.setOrientation(LinearLayout.VERTICAL);
         list.setPadding(dp(60), dp(36), dp(60), dp(36));
-        TextView head = text(title, 24, Color.WHITE);
+        TextView head = ux.text(title, 24, Color.WHITE);
         head.setTypeface(medium);
         head.setPadding(0, 0, 0, dp(12));
         list.addView(head);
@@ -3080,28 +2853,17 @@ public class Main extends Activity {
         return true;
     }
 
-    // A group the arrows never leave (a side sheet, the grade bar's pills): at its edges they stop.
-    LinearLayout trapped() {
-        return new LinearLayout(this) {
-            @Override
-            public View focusSearch(View focused, int direction) {
-                View next = super.focusSearch(focused, direction);
-                return next != null && inside(next, this) ? next : focused;
-            }
-        };
-    }
-
     // Story so far: the last three episodes watched with TMDB's overviews, and over them
     // Claude's summary of the series up to the last one: written once per episode on the home server
     // (voice-claude.py's /recap, Opus, nothing after it) and kept there. Away from home: the overviews only.
     void storySoFar(Home.Card c, List<int[]> last) {
         int[] upto = last.get(last.size() - 1);
-        LinearLayout list = sheet("Story so far", "Up to S" + upto[0] + " E" + upto[1], null);
-        LinearLayout claude = sheetRow("Previously", "Claude is writing it…", null, v -> {});
+        LinearLayout list = ux.sheet("Story so far", "Up to S" + upto[0] + " E" + upto[1], null);
+        LinearLayout claude = ux.sheetRow("Previously", "Claude is writing it…", null, v -> {});
         TextView summary = (TextView) claude.getChildAt(1);
         summary.setMaxLines(60);
         if (!homeServer.isEmpty()) list.addView(claude); // Claude's recap: only with a home server
-        list.addView(section("Last time"));
+        list.addView(ux.section("Last time"));
         String lang = Sources.storyLang(langs());
         // its own thread, as play()'s: the recap may wait 150 s on the home server, and one of the pool's three would
         // sit there while posters and pages queue behind it
@@ -3130,7 +2892,7 @@ public class Main extends Activity {
                 for (int[] at : last) {
                     String label = "S" + at[0] + " E" + at[1];
                     String[] e = told.stream().filter(x -> x[0].equals(label)).findFirst().orElse(null);
-                    LinearLayout r = sheetRow(e == null || e[1].isEmpty() ? label : label + " · " + e[1],
+                    LinearLayout r = ux.sheetRow(e == null || e[1].isEmpty() ? label : label + " · " + e[1],
                         e == null || e[2].isEmpty() ? "No summary on TMDB" : e[2], null, v -> {});
                     ((TextView) r.getChildAt(1)).setMaxLines(20);
                     list.addView(r);
@@ -3163,90 +2925,6 @@ public class Main extends Activity {
         });
     }
 
-    // A side sheet (⋯, Settings, Audio languages): 392 dp on the right, its title, an optional gray line, then its
-    // rows (sheetRow, section, divider). closed: runs when it goes.
-    LinearLayout sheet(String title, String sub, Runnable closed) {
-        LinearLayout panel = trapped();
-        panel.setOrientation(LinearLayout.VERTICAL);
-        int p12 = dp(12);
-        panel.setPadding(p12, dp(24), p12, p12);
-        panel.setBackground(shape(24 * dp, 0xff2a2d30, 0x26ffffff));
-        LinearLayout list = new LinearLayout(this);
-        list.setOrientation(LinearLayout.VERTICAL);
-        TextView head = text(title, 24, Color.WHITE);
-        head.setTypeface(medium);
-        head.setPadding(p12, 0, p12, sub == null ? p12 : 0);
-        list.addView(head);
-        if (sub != null) {
-            TextView s = text(sub, 15, 0xff9a9a9a);
-            s.setPadding(p12, dp(2), p12, p12);
-            list.addView(s);
-        }
-        ScrollView sv = new ScrollView(this);
-        sv.setSmoothScrollingEnabled(false);
-        sv.setVerticalScrollBarEnabled(false);
-        sv.addView(list);
-        panel.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
-        int m = dp(16);
-        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(dp(392), -1, Gravity.END);
-        lp.setMargins(m, m, m, m);
-        showOverlay(panel, lp, closed);
-        return list;
-    }
-
-    // A sheet's line at its foot, over a rule (Settings: what the focused row does).
-    TextView footer(LinearLayout list) {
-        LinearLayout panel = (LinearLayout) list.getParent().getParent();
-        View rule = new View(this);
-        rule.setBackgroundColor(0x1affffff);
-        panel.addView(rule, -1, Math.max(1, (int) dp));
-        TextView t = text("", 15, 0xffdddddd);
-        t.setPadding(dp(12), dp(12), dp(12), dp(4));
-        panel.addView(t);
-        return t;
-    }
-
-    // A sheet's row: a list row, tighter, its detail up to 3 lines (the sheet is narrow).
-    LinearLayout sheetRow(CharSequence title, CharSequence detail, CharSequence end,
-                                  View.OnClickListener action) {
-        LinearLayout r = row(title, detail, end, action);
-        int p12 = dp(12), p8 = dp(8);
-        r.setPadding(p12, p8, p12, p8);
-        ((LinearLayout.LayoutParams) r.getLayoutParams()).bottomMargin = dp(4);
-        if (detail != null) {
-            TextView d = (TextView) ((LinearLayout) (end != null ? r.getChildAt(0) : r)).getChildAt(1);
-            d.setSingleLine(false);
-            d.setMaxLines(3);
-            d.setPadding(0, dp(2), 0, 0);
-        }
-        return r;
-    }
-
-    // A sheet's group heading (Settings' Display, Account, Playback).
-    TextView section(String title) {
-        TextView t = text(title, 15, 0xff9a9a9a);
-        t.setTypeface(medium);
-        t.setPadding(dp(12), dp(16), dp(12), dp(4));
-        return t;
-    }
-
-    View divider() {
-        View d = new View(this);
-        d.setBackgroundColor(0x1affffff);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, Math.max(1, (int) dp));
-        lp.setMargins(dp(12), dp(4), dp(12), dp(8));
-        d.setLayoutParams(lp);
-        return d;
-    }
-
-    // The ✓ at a sheet row's end: the current mark, a chosen language ("" none); green, darker on a focused row.
-    static CharSequence check(boolean on) {
-        if (!on) return "";
-        SpannableStringBuilder s = new SpannableStringBuilder("✓");
-        s.setSpan(new Tint(Home.GREEN, 0xff0a7d3e), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        return s;
-    }
-
     // The level shown; its pictures load as the layout pass after this calls updateWindow.
     void show(View top, String backdrop, List<ImageView> pics) {
         page.addView(top, -1, -1);
@@ -3257,41 +2935,15 @@ public class Main extends Activity {
         shown++;
     }
 
-    static LinearLayout.LayoutParams wrap() {
-        return new LinearLayout.LayoutParams(-2, -2);
-    }
-
-    // A button after another in a row: a gap before it.
-    LinearLayout.LayoutParams spaced() {
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
-        lp.setMarginStart(dp(12));
-        return lp;
-    }
-
-    // A focusable text button (Watch, Search, Settings, the keyboard's keys): glass, a flat round shape, white at 13 %
-    // with a 1 dp edge; white with dark text under focus, so it can't be missed (a lighter gray was).
-    TextView button(String label, View.OnClickListener action) {
-        TextView b = text(label, 20, Color.WHITE);
-        b.setTypeface(medium);
-        b.setPadding(dp(24), 0, dp(24), 0);
-        b.setMinHeight(dp(48));
-        b.setGravity(Gravity.CENTER);
-        b.setBackground(glass(pill, 0x22ffffff, 0x26ffffff));
-        b.setTextColor(new ColorStateList(new int[][] {FOCUSED, {}}, new int[] {0xff111111, Color.WHITE}));
-        b.setFocusable(true);
-        b.setOnClickListener(action);
-        return b;
-    }
-
     // The tabs on one glass pill, centered, the one shown lit: on Home, and on top of Search, Coming up and Settings
     // (tabs, not screens over Home). OK on another one switches to it.
     FrameLayout tabBar(String here) {
         LinearLayout tabs = new LinearLayout(this);
         int p4 = dp(4);
         tabs.setPadding(p4, p4, p4, p4);
-        tabs.setBackground(shape(pill, 0x14ffffff, 0x26ffffff));
+        tabs.setBackground(ux.shape(pill, 0x14ffffff, 0x26ffffff));
         for (String name : List.of("Home", "Search", "Coming up", "Settings")) {
-            TextView t = tab(name, name.equals(here), v -> goTab(name, v));
+            TextView t = ux.tab(name, name.equals(here), v -> goTab(name, v));
             if (name.equals("Coming up")) t.setText(comingLabel(cub.comingOut()));
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
             if (tabs.getChildCount() > 0) lp.setMarginStart(p4);
@@ -3305,13 +2957,13 @@ public class Main extends Activity {
             public View focusSearch(View focused, int direction) {
                 View next = super.focusSearch(focused, direction);
                 boolean sideways = direction == FOCUS_LEFT || direction == FOCUS_RIGHT;
-                return sideways && (next == null || !inside(next, this)) ? focused : next;
+                return sideways && (next == null || !Ui.inside(next, this)) ? focused : next;
             }
         };
         bar.addView(tabs, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER_HORIZONTAL));
-        TextView bell = tab("", false, null);
+        TextView bell = ux.tab("", false, null);
         bell.setOnClickListener(v -> bellSheet(bell));
-        bell.setBackground(glass(pill, 0x14ffffff, 0x26ffffff));
+        bell.setBackground(ux.glass(pill, 0x14ffffff, 0x26ffffff));
         bell(bell);
         bar.addView(bell, new FrameLayout.LayoutParams(-2, -2, Gravity.END | Gravity.CENTER_VERTICAL));
         return bar;
@@ -3326,7 +2978,7 @@ public class Main extends Activity {
         SpannableStringBuilder s = new SpannableStringBuilder("New");
         if (fresh > 0) {
             s.append("  ").append(String.valueOf(fresh));
-            s.setSpan(new Tint(Home.GREEN, 0xff0a7d3e), 5, s.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            s.setSpan(new Ui.Tint(Home.GREEN, 0xff0a7d3e), 5, s.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         }
         b.setText(s);
         b.setVisibility(cub.news().isEmpty() ? View.GONE : View.VISIBLE);
@@ -3338,7 +2990,7 @@ public class Main extends Activity {
     void bellSheet(TextView from) {
         long seen = settings().getLong("bell_seen", 0);
         long fresh = cub.news().stream().filter(n -> n.t() > seen).count();
-        LinearLayout list = sheet("What's new", fresh == 0 ? "Nothing since you last looked" : fresh + " since you last "
+        LinearLayout list = ux.sheet("What's new", fresh == 0 ? "Nothing since you last looked" : fresh + " since you last "
             + "looked", null);
         LocalDate today = LocalDate.now();
         ZoneId zone = ZoneId.systemDefault();
@@ -3346,13 +2998,13 @@ public class Main extends Activity {
         for (Cub.News n : cub.news()) {
             boolean old = n.t() <= seen;
             if (old && !ruled && fresh > 0) {
-                list.addView(divider());
+                list.addView(ux.divider());
                 ruled = true;
             }
             SpannableStringBuilder end = new SpannableStringBuilder(Cub.ago(LocalDateTime.ofInstant(Instant.ofEpochMilli(n.t()),
                 zone), today));
-            end.setSpan(new Tint(0xff9a9a9a, 0xff4a4a4a), 0, end.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            LinearLayout r = sheetRow(n.head(), n.line(), end, v -> {
+            end.setSpan(new Ui.Tint(0xff9a9a9a, 0xff4a4a4a), 0, end.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            LinearLayout r = ux.sheetRow(n.head(), n.line(), end, v -> {
                 closeOverlay();
                 if (page == null) openFilm(n.card(), from, null);
                 else showFilm(n.card(), null);
@@ -3369,7 +3021,7 @@ public class Main extends Activity {
         SpannableStringBuilder coming = new SpannableStringBuilder("Coming up");
         if (out > 0) {
             coming.append("  ").append(String.valueOf(out));
-            coming.setSpan(new Tint(Home.GREEN, 0xff0a7d3e), 11, coming.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            coming.setSpan(new Ui.Tint(Home.GREEN, 0xff0a7d3e), 11, coming.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         }
         return coming;
     }
@@ -3413,89 +3065,6 @@ public class Main extends Activity {
             if (list.findFocus() == null) ((View) bar.getChildAt(0).getTag()).requestFocus();
         });
         return list;
-    }
-
-    // One of the tabs: the screen shown lit (here), the others plain; white under focus.
-    TextView tab(String label, boolean here, View.OnClickListener action) {
-        TextView t = text(label, 18, Color.WHITE);
-        if (here) t.setTypeface(medium);
-        t.setPadding(dp(22), 0, dp(22), 0);
-        t.setMinHeight(dp(38));
-        t.setGravity(Gravity.CENTER);
-        t.setBackground(glass(pill, here ? 0x2effffff : 0, 0));
-        t.setTextColor(new ColorStateList(new int[][] {FOCUSED, {}}, new int[] {0xff111111, here ? Color.WHITE : 0xffdddddd}));
-        t.setFocusable(true);
-        t.setOnClickListener(action);
-        return t;
-    }
-
-    // A focusable list row: a title line, an optional detail line and an optional label at its end (a source's
-    // ⚡ Cached); OK runs the action. Resting it draws nothing; focused, a white round row with dark text.
-    LinearLayout row(CharSequence title, CharSequence detail, View.OnClickListener action) {
-        return row(title, detail, null, action);
-    }
-
-    LinearLayout row(CharSequence title, CharSequence detail, CharSequence end, View.OnClickListener action) {
-        LinearLayout r = new LinearLayout(this);
-        r.setFocusable(true);
-        StateListDrawable bg = new StateListDrawable();
-        bg.addState(FOCUSED, shape(14 * dp, Color.WHITE, 0));
-        bg.addState(new int[] {android.R.attr.state_selected}, shape(14 * dp, 0x22ffffff, 0)); // a season shown
-        r.setBackground(bg);
-        r.setPadding(dp(18), dp(10), dp(18), dp(10));
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
-        lp.bottomMargin = dp(6);
-        r.setLayoutParams(lp);
-        LinearLayout lines = r; // the title and detail: the row itself, or its first column when there's an end label
-        if (end != null) {
-            r.setGravity(Gravity.CENTER_VERTICAL);
-            lines = new LinearLayout(this);
-            lines.setDuplicateParentStateEnabled(true);
-            r.addView(lines, new LinearLayout.LayoutParams(0, -2, 1));
-        }
-        lines.setOrientation(LinearLayout.VERTICAL);
-        TextView t = text(title, 18, Color.WHITE);
-        t.setTextColor(new ColorStateList(new int[][] {FOCUSED, {}}, new int[] {0xff111111, Color.WHITE}));
-        t.setDuplicateParentStateEnabled(true);
-        t.setSingleLine();
-        t.setEllipsize(TextUtils.TruncateAt.END);
-        lines.addView(t);
-        if (detail != null) {
-            TextView d = text(detail, 15, 0xffb0b0b0);
-            d.setTextColor(new ColorStateList(new int[][] {FOCUSED, {}}, new int[] {0xff4a4a4a, 0xffb0b0b0}));
-            d.setDuplicateParentStateEnabled(true);
-            d.setSingleLine();
-            d.setEllipsize(TextUtils.TruncateAt.END);
-            d.setPadding(0, dp(6), 0, 0);
-            d.setTag(DETAIL); // a source row's, set again when its audio is read
-            lines.addView(d);
-        }
-        if (end != null) {
-            TextView e = text(end, 18, Color.WHITE);
-            e.setTextColor(new ColorStateList(new int[][] {FOCUSED, {}}, new int[] {0xff111111, 0xffdddddd}));
-            e.setDuplicateParentStateEnabled(true);
-            e.setPadding(dp(16), 0, 0, 0);
-            r.addView(e);
-        }
-        r.setOnClickListener(action);
-        return r;
-    }
-
-    // A flat round shape: fill, and a 1 dp edge when edge isn't 0.
-    GradientDrawable shape(float radius, int fill, int edge) {
-        GradientDrawable d = new GradientDrawable();
-        d.setCornerRadius(radius);
-        d.setColor(fill);
-        if (edge != 0) d.setStroke(Math.max(1, (int) dp), edge);
-        return d;
-    }
-
-    // A button's background: the shape in glass, white under focus.
-    Drawable glass(float radius, int fill, int edge) {
-        StateListDrawable bg = new StateListDrawable();
-        bg.addState(FOCUSED, shape(radius, Color.WHITE, 0));
-        bg.addState(new int[0], shape(radius, fill, edge));
-        return bg;
     }
 
     @Override
@@ -3544,14 +3113,6 @@ public class Main extends Activity {
         pictures = List.of();
         shown++;
         collectSoon(); // the page's bitmaps
-    }
-
-    TextView text(CharSequence s, int sp, int color) {
-        TextView t = new TextView(this);
-        t.setText(s);
-        t.setTextSize(sp);
-        t.setTextColor(color);
-        return t;
     }
 
     // Load the pictures of the level shown near the viewport (Layout.near), drop the rest: Home's posters, or the
@@ -3647,12 +3208,12 @@ public class Main extends Activity {
     // bottom (to 46 % of the height), as the design's two gradients.
     static Bitmap fit(Bitmap b, int w, int h, boolean dim) {
         if (b == null || w <= 0 || h <= 0 || !dim && b.getWidth() == w && b.getHeight() == h) return b;
-        float[] m = Layout.crop(b.getWidth(), b.getHeight(), w, h);
+        float[] crop = Layout.crop(b.getWidth(), b.getHeight(), w, h);
         Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.RGB_565);
         Canvas c = new Canvas(out);
         c.save();
-        c.translate(m[1], m[2]);
-        c.scale(m[0], m[0]);
+        c.translate(crop[1], crop[2]);
+        c.scale(crop[0], crop[0]);
         Paint p = new Paint(Paint.FILTER_BITMAP_FLAG);
         if (dim) p.setColorFilter(new PorterDuffColorFilter(DIM, PorterDuff.Mode.MULTIPLY));
         c.drawBitmap(b, 0, 0, p);

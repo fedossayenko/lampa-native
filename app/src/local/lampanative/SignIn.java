@@ -17,8 +17,8 @@ import org.json.JSONException;
 // until it is. A refused or expired code is replaced. Back stops it (each step checks its level is still there).
 final class SignIn extends Main.Part {
     final Runnable done;
-    final TextView site = m.text("", 30, Color.WHITE), code = m.text("", 64, Color.WHITE),
-        status = m.text("Getting a code…", 18, 0xff9a9a9a);
+    final TextView site = m.ux.text("", 30, Color.WHITE), code = m.ux.text("", 64, Color.WHITE),
+        status = m.ux.text("Getting a code…", 18, 0xff9a9a9a);
     LinearLayout list;
     View level;
     Cub.Code c;
@@ -33,13 +33,13 @@ final class SignIn extends Main.Part {
     void show() {
         list = m.pushList("Sign in to CUB");
         level = m.pageTop;
-        list.addView(m.text("On your phone, open", 22, 0xffdddddd));
+        list.addView(m.ux.text("On your phone, open", 22, 0xffdddddd));
         list.addView(site);
         code.setTypeface(m.medium);
         code.setLetterSpacing(0.1f);
-        code.setBackground(m.shape(16 * m.dp, 0x14ffffff, 0x26ffffff));
+        code.setBackground(m.ux.shape(16 * m.dp, 0x14ffffff, 0x26ffffff));
         code.setPadding(m.dp(32), m.dp(4), m.dp(32), m.dp(4));
-        LinearLayout.LayoutParams lp = Main.wrap();
+        LinearLayout.LayoutParams lp = Ui.wrap();
         lp.setMargins(0, m.dp(16), 0, m.dp(16));
         list.addView(code, lp); // the code on a glass tile, as the query
         list.addView(status);
@@ -117,8 +117,8 @@ final class SignIn extends Main.Part {
             return;
         }
         list.removeViews(1, list.getChildCount() - 1);
-        list.addView(m.text("Signed in. Which profile does Lampa use?", 22, 0xffdddddd));
-        for (Cub.Profile p : all) list.addView(m.row(p.name(), p.main() ? "Main profile" : null, v -> save(token, p)));
+        list.addView(m.ux.text("Signed in. Which profile does Lampa use?", 22, 0xffdddddd));
+        for (Cub.Profile p : all) list.addView(m.ux.row(p.name(), p.main() ? "Main profile" : null, v -> save(token, p)));
         list.getChildAt(2).requestFocus();
     }
 

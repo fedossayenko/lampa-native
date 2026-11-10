@@ -28,9 +28,9 @@ final class Episodes extends Main.Part {
     final Film f;
     final Home.Card c;
     final int[] to;
-    final LinearLayout seasons = m.vertical(), episodes = m.vertical();
+    final LinearLayout seasons = m.ux.vertical(), episodes = m.ux.vertical();
     final ScrollView right = new ScrollView(m);
-    final TextView sub = m.text("", 16, 0xff9a9a9a);
+    final TextView sub = m.ux.text("", 16, 0xff9a9a9a);
     View level, chosen; // the season row whose episodes show
     Film.Season shown;
     List<Film.Episode> about = List.of(); // the shown season's names, runtimes and stills (/season), once in
@@ -50,8 +50,8 @@ final class Episodes extends Main.Part {
             // on with, else its first.
             @Override
             public View focusSearch(View focused, int direction) {
-                if (direction == FOCUS_LEFT && Main.inside(focused, episodes)) return chosen;
-                if (direction == FOCUS_RIGHT && Main.inside(focused, seasons)) {
+                if (direction == FOCUS_LEFT && Ui.inside(focused, episodes)) return chosen;
+                if (direction == FOCUS_RIGHT && Ui.inside(focused, seasons)) {
                     focus(to != null && to[0] == shown.number() ? to[1] - 1 : 0, next);
                     return focused; // focus() moves it, now or once the row is built
                 }
@@ -61,7 +61,7 @@ final class Episodes extends Main.Part {
         level = screen;
         screen.setOrientation(LinearLayout.VERTICAL);
         screen.setPadding(m.dp(60), m.dp(36), m.dp(60), 0);
-        TextView head = m.text(f.name(), 24, Color.WHITE);
+        TextView head = m.ux.text(f.name(), 24, Color.WHITE);
         head.setTypeface(m.medium);
         screen.addView(head);
         sub.setPadding(0, m.dp(2), 0, 0);
@@ -85,7 +85,7 @@ final class Episodes extends Main.Part {
         Film.Season first = f.episodes().get(0);
         View firstRow = null;
         for (Film.Season s : f.episodes()) {
-            LinearLayout r = m.row("Season " + s.number(), "", v -> focus(0, next)); // OK: its first episode
+            LinearLayout r = m.ux.row("Season " + s.number(), "", v -> focus(0, next)); // OK: its first episode
             TextView d = (TextView) r.getChildAt(1);
             d.setSingleLine(false); // "13 episodes · 7 watched · watching E8" in 216 dp
             d.setMaxLines(2);
@@ -118,7 +118,7 @@ final class Episodes extends Main.Part {
         chosen = row;
         row.setSelected(true); // lit while focus is in its episodes
         shown = s;
-        Main.remark(sub);
+        Main.remarkView(sub);
         m.trim(stills, true);
         stills.clear();
         about = List.of();
@@ -129,18 +129,18 @@ final class Episodes extends Main.Part {
             () -> Film.season(new String(read(Film.seasonUrl(c, s.number())), StandardCharsets.UTF_8)), got -> {
                 if (shown != s) return;
                 about = got;
-                Main.remark(episodes);
+                Main.remarkView(episodes);
                 m.updateWindow();
             }, () -> { });
         PrimitiveIterator.OfInt e = IntStream.rangeClosed(1, s.episodes()).iterator();
         next = () -> e.hasNext() ? episodeRow(s, e.nextInt()) : null;
-        m.addRows(episodes, next, 10);
+        m.ux.addRows(episodes, next, 10);
     }
 
     // The design's episode row: its still, "8 · Better Call Saul", "47m · Watching · 19 min left", a line of its
     // overview.
     private LinearLayout episodeRow(Film.Season s, int episode) {
-        LinearLayout r = m.row("", "", "", v -> m.showSources(f, c, s.number(), episode, null, false));
+        LinearLayout r = m.ux.row("", "", "", v -> m.showSources(f, c, s.number(), episode, null, false));
         r.removeViewAt(1); // no end label: the still goes first instead
         Main.Pic still = (Main.Pic) m.picture(null, stills, 10 * m.dp);
         still.onRow = true; // dark corners on the white focused row else (software drawing)
@@ -150,7 +150,7 @@ final class Episodes extends Main.Part {
         LinearLayout lines = (LinearLayout) r.getChildAt(1);
         TextView name = (TextView) lines.getChildAt(0), line = (TextView) lines.getChildAt(1);
         line.setPadding(0, m.dp(2), 0, 0);
-        TextView plot = m.text("", 15, 0xff9a9a9a);
+        TextView plot = m.ux.text("", 15, 0xff9a9a9a);
         plot.setTextColor(new ColorStateList(new int[][] {Main.FOCUSED, {}}, new int[] {0xff4a4a4a, 0xff9a9a9a}));
         plot.setDuplicateParentStateEnabled(true);
         plot.setSingleLine();
@@ -170,7 +170,7 @@ final class Episodes extends Main.Part {
                 int start = d.length();
                 d.append(mark);
                 boolean watched = Timeline.state(p) == Timeline.State.WATCHED;
-                d.setSpan(watched ? new Main.Tint(Home.GREEN, 0xff0a7d3e) : new Main.Tint(0xffb0b0b0, 0xff4a4a4a), start,
+                d.setSpan(watched ? new Ui.Tint(Home.GREEN, 0xff0a7d3e) : new Ui.Tint(0xffb0b0b0, 0xff4a4a4a), start,
                     d.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             }
             line.setText(d);
@@ -199,7 +199,7 @@ final class Episodes extends Main.Part {
             return;
         }
         int had = episodes.getChildCount();
-        m.addRows(episodes, from, 5);
+        m.ux.addRows(episodes, from, 5);
         if (episodes.getChildCount() > had) episodes.post(() -> focus(index, from));
     }
 }
