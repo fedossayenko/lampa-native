@@ -27,7 +27,8 @@ if [ -n "$HOME_SERVER" ]; then # plain http to the home server only; the rest st
         build/gen/res/xml/net.xml
     rm build/gen/res/xml/net.xml.orig
 fi
-# Version: minutes since 2020 at the commit (only ever grows, whatever the history), and its tag or hash.
+# Version: minutes since 2020 at the commit (its committer time: a commit dated before the last release's would
+# not update it), and its tag or hash.
 at=$(git log -1 --format=%ct 2>/dev/null || date +%s)
 "$BT/aapt2" compile --dir build/gen/res -o build/res.zip
 "$BT/aapt2" link -o build/unsigned.apk -I "$JAR" --manifest build/gen/AndroidManifest.xml -R build/res.zip \
@@ -35,7 +36,10 @@ at=$(git log -1 --format=%ct 2>/dev/null || date +%s)
     --version-name "$(git describe --tags --always 2>/dev/null || echo dev)" ${DEBUGGABLE:+--debug-mode}
 javac -encoding UTF-8 --release 21 -classpath "$JAR" -d build/classes src/local/lampanative/*.java
 "$BT/d8" --release --min-api 30 --lib "$JAR" --output build build/classes/local/lampanative/*.class
-(cd build && zip -q unsigned.apk classes.dex)
+# The same commit gives the same APK: classes.dex dated at the commit, no extra file attributes, no v1 signature
+# (its entries carry the signing time). TZ: zip stores local time.
+stamp=$(date -u -r "$at" +%Y%m%d%H%M.%S 2>/dev/null || date -u -d "@$at" +%Y%m%d%H%M.%S)
+(cd build && TZ=UTC touch -t "$stamp" classes.dex && TZ=UTC zip -qX unsigned.apk classes.dex)
 "$BT/zipalign" -f 4 build/unsigned.apk build/aligned.apk
 if [ -n "${KEYSTORE:-}" ]; then
     sign=(--ks "$KEYSTORE" --ks-pass env:KS_PASS ${KEY_ALIAS:+--ks-key-alias "$KEY_ALIAS"})
@@ -48,5 +52,6 @@ else
     fi
     sign=(--ks "$debug" --ks-pass pass:android)
 fi
-"$BT/apksigner" sign "${sign[@]}" --out build/lampa-native.apk build/aligned.apk
+"$BT/apksigner" sign "${sign[@]}" --v1-signing-enabled false --v4-signing-enabled false \
+    --out build/lampa-native.apk build/aligned.apk
 echo "Built build/lampa-native.apk"
