@@ -14,7 +14,8 @@ if [ ! -d "$AVD" ]; then
     "$SDK/cmdline-tools/latest/bin/sdkmanager" --install emulator "system-images;android-31;android-tv;arm64-v8a"
     echo no | "$SDK/cmdline-tools/latest/bin/avdmanager" create avd -n firetv -d tv_1080p \
         -k "system-images;android-31;android-tv;arm64-v8a"
-    sed -i '' '/^disk.dataPartition.path=/d' "$AVD/config.ini" # a temp file: the app gone at every start
+    sed -i.bak '/^disk.dataPartition.path=/d' "$AVD/config.ini" # a temp file: the app gone at every start
+    rm "$AVD/config.ini.bak"
     cat >> "$AVD/config.ini" <<'EOF'
 hw.ramSize=1792
 hw.cpu.ncore=4
