@@ -225,7 +225,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             limit = {'/understand': 4096, '/recap': 65536}.get(self.path)
             n = int(self.headers.get('Content-Length') or 0)
-            if limit is None or n > limit:
+            if limit is None or not 0 <= n <= limit:
                 return self.answer(403 if limit is None else 413, {'error': 'Forbidden.' if limit is None else 'Too large.'})
             body = self.rfile.read(n)
             with open(TOKEN, encoding='utf-8') as f:

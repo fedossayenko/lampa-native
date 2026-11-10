@@ -40,3 +40,6 @@ java -ea -cp "$out/test:$JSON" TestRunner "$out/test"
 
 # The worker's routes (Node 22.8+, no dependencies: fetch is mocked); 95 % of its lines are run, 90 is the floor
 node --test --test-reporter=dot --experimental-test-coverage --test-coverage-lines=90 worker/native.test.js
+
+# The home server's request checks (Python 3, standard library): signature, time window, replay, sizes
+python3 -I worker/home-server/test_voice_claude.py 2>&1 | tail -3

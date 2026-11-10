@@ -154,4 +154,12 @@ class CubTest {
         assert Cub.date("2026-11-10").equals(java.time.LocalDate.of(2026, 11, 10));
         assert Cub.date("") == null;
     }
+
+    // A date read once: the overload says what the string form says, and nothing for none.
+    void testDayOfReadDate() {
+        java.time.LocalDate today = java.time.LocalDate.of(2026, 11, 2);
+        assert Cub.day(Cub.date("2026-11-03"), today)[0].equals("Tomorrow");
+        assert Cub.day((java.time.LocalDate) null, today)[0].equals("Later");
+        assert Cub.date("") == null;
+    }
 }

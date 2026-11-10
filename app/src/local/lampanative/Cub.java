@@ -153,6 +153,7 @@ final class Cub {
     // A day as the worker sends TMDB's ("2026-11-10"); null for "" and for anything else ("2026-11", text): a date TMDB
     // gave in another shape is no date yet, not an exception on the UI thread.
     static LocalDate date(String text) {
+        if (text.isEmpty()) return null; // the usual case of an undated row: no exception made and caught for it
         try {
             return LocalDate.parse(text);
         } catch (DateTimeParseException e) {
@@ -163,7 +164,11 @@ final class Cub {
     // A Coming up date as its group's two lines: ["Today", "Mon 2 Nov"], ["Tomorrow", "Tue 3 Nov"], ["Thursday",
     // "5 Nov"], ["Later", "no date yet"] ("": no date, or past four weeks).
     static String[] day(String date, LocalDate today) {
-        LocalDate d = date(date);
+        return day(date(date), today);
+    }
+
+    // The same for a date read already (Film.airs reads it once); null: no date yet.
+    static String[] day(LocalDate d, LocalDate today) {
         if (d == null) return new String[] {"Later", "no date yet"};
         String named = d.format(DateTimeFormatter.ofPattern("d MMM", Locale.ENGLISH));
         String weekday = d.getDayOfWeek().getDisplayName(TextStyle.FULL, Locale.ENGLISH);

@@ -93,7 +93,7 @@ record Film(String name, String original, String line, String overview, List<Sco
     static String airs(String date, LocalDate today) {
         LocalDate at = Cub.date(date);
         if (at == null || !at.isAfter(today)) return ""; // none, out already, or a date in a shape we can't read
-        String[] d = Cub.day(date, today);
+        String[] d = Cub.day(at, today);
         return d[0].equals("Tomorrow") ? "Airs tomorrow" : "Airs " + d[0] + ", " + d[1];
     }
 
