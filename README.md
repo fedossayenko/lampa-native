@@ -29,7 +29,7 @@ Measured on the stick (the same 39 remote presses; details in [docs/measurements
 - Plays in DDD player with the resume point, and keeps it in sync with Lampa (resume points through the worker,
   history, My list, marks and grades through a CUB account).
 - Voice search with the Fire TV remote's microphone button.
-- Settings: software or GPU drawing, a memory and CPU overlay, CUB account and profile, audio languages.
+- Settings: software or GPU drawing, a memory and CPU overlay, an internet speed test, CUB account and profile, audio languages.
 
 ## How it works
 
@@ -42,8 +42,8 @@ TV: Lampa Native ──https──▶ your worker (Cloudflare Workers, free plan
 The TV does as little as it can: the worker merges each screen into one small JSON answer and holds the API keys
 (TMDB, TorBox, MDBList), so none is on the TV or in the APK. Everything is yours: you deploy the worker to your own
 Cloudflare account. Besides it, the app talks to TMDB's image server, CUB (sign-in), the streams addon directly when
-the addon refuses the worker (so its address must carry no key), the home server if your build has one, and whatever
-app opens YouTube links for trailers.
+the addon refuses the worker (so its address must carry no key), the home server if your build has one, Cloudflare's
+speed test server when you run Settings → Speed test, and whatever app opens YouTube links for trailers.
 
 ## You need
 

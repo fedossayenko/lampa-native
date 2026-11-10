@@ -317,6 +317,7 @@ public class Main extends Activity {
         stopped = true;
         recording = false;
         settingsScreen.showMeter(false); // back at onStart: no sampling behind DDD
+        Net.stopSpeed(); // nor a speed test's downloads (it shows no result)
         for (ImageView p : posters) p.setImageDrawable(empty);
         for (ImageView p : pictures) p.setImageDrawable(empty);
         for (Level l : levels) for (ImageView p : l.pictures()) p.setImageDrawable(empty); // a film under a list
