@@ -66,6 +66,23 @@ record Film(String name, String original, String line, String overview, List<Sco
         return seasonUrl(c, season) + (lang == null ? "" : "&lang=" + lang);
     }
 
+    // What a source list or DDD calls what is played: "Foundation · S3 E5", a film's name alone (season 0).
+    String heading(int season, int episode) {
+        return season > 0 ? name + " · S" + season + " E" + episode : name;
+    }
+
+    // Whether there is something to watch: an IMDb id for the sources, and for a series an episode out (a series with
+    // none yet has no seasons to open: Episodes needs the first).
+    boolean watchable(boolean series) {
+        return !imdb.isEmpty() && (!series || !episodes.isEmpty());
+    }
+
+    // A trailer's address; null unless the worker's video is a YouTube id (letters, digits, - and _ only: it is
+    // appended to a URL that any app may open).
+    static String trailerUrl(String video) {
+        return video != null && video.matches("[A-Za-z0-9_-]{6,20}") ? "https://www.youtube.com/watch?v=" + video : null;
+    }
+
     // An episode row's title: "8 · Better Call Saul"; TMDB's stand-in name till it has one ("Episode 9") just once.
     static String title(int number, Episode e) {
         return e == null || e.name().isEmpty() || e.name().equals("Episode " + number) ? "Episode " + number

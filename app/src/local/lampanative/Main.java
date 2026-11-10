@@ -664,7 +664,9 @@ public class Main extends Activity {
 
     // A film page's Trailer: the worker's YouTube video in SmartTube when installed, else whatever opens YouTube links.
     void playTrailer(String video) {
-        Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/watch?v=" + video));
+        String address = Film.trailerUrl(video);
+        if (address == null) return;
+        Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(address));
         try {
             startActivity(new Intent(i).setPackage("org.smarttube.stable"));
         } catch (ActivityNotFoundException e) {
@@ -926,7 +928,7 @@ public class Main extends Activity {
             info.addView(scoreRow(scores), lp);
         }
         LinearLayout buttons = line();
-        boolean watchable = !f.imdb().isEmpty() && (!series || !f.episodes().isEmpty()); // a series with no episodes yet: none
+        boolean watchable = f.watchable(series); // a series with no episodes yet: none
         // Settings → Play picks: Best cached: a film's ▶ Play starts the release picked
         // for it (pickSource, under the buttons), Sources lists them all
         boolean picks = !series && picks();
@@ -1726,7 +1728,7 @@ public class Main extends Activity {
     // release has this episode too (a season's torrent), it plays at once, no OK.
     void showSources(Film f, Home.Card c, int season, int episode, String prefer, boolean autoplay) {
         long t = System.currentTimeMillis();
-        String title = title(f, season, episode);
+        String title = f.heading(season, episode);
         // The head: "Sources", what for and how many under it, the audio languages on a
         // button at the right (Up from the first source)
         LinearLayout list = pushList("Sources");
@@ -1761,10 +1763,6 @@ public class Main extends Activity {
             new ArrayDeque<>(), t, prefer, autoplay, new int[] {AUDIO_READS});
         ((View) list.getParent()).setTag(req); // onSaveInstanceState: the list to open again after process death
         loadSources(req, 0, before);
-    }
-
-    static String title(Film f, int season, int episode) {
-        return season > 0 ? f.name() + " · S" + season + " E" + episode : f.name();
     }
 
     // One source list being filled: what it lists, where, the rows not built yet, and when Watch was pressed.
@@ -2031,9 +2029,9 @@ public class Main extends Activity {
                         getSharedPreferences("last", MODE_PRIVATE).edit().putString(Timeline.card(c),
                             new Timeline.Last(season, episode, hash, fileIdx, name).save()).apply();
                         addHistory(c);
-                        String[] titles = l.playlist().stream().map(e -> title(f, e.season(), e.episode()))
+                        String[] titles = l.playlist().stream().map(e -> f.heading(e.season(), e.episode()))
                             .toArray(String[]::new);
-                        startPlayer(l.url(), title(f, season, episode), Sources.audio(langs()),
+                        startPlayer(l.url(), f.heading(season, episode), Sources.audio(langs()),
                             new Timeline.Playing(key, Timeline.card(c), season, episode, l.startMs(), l.playlist()),
                             titles, stills, overviews, skip);
                     });
@@ -2651,6 +2649,10 @@ public class Main extends Activity {
             String next = cubNext.get(key);
             list.addView(sheetRow("▶  Episodes", next, null, v -> {
                 if (film[0] == null) return;
+                if (!film[0].watchable(true)) { // no season to open: Episodes shows the first
+                    Toast.makeText(this, "No episodes out yet.", Toast.LENGTH_SHORT).show();
+                    return;
+                }
                 closeOverlay();
                 openPage(card);
                 loadMarks(film[0]);
@@ -3015,13 +3017,6 @@ public class Main extends Activity {
         return settings().getString("langs", ""); // "": all languages
     }
 
-    // Story so far's language (in the language heard): the first audio language, "RU"; null: English
-    // (English among them, or any)
-    String storyLang() {
-        List<String> codes = Sources.codes(langs());
-        return codes.isEmpty() || codes.contains("EN") ? null : codes.get(0);
-    }
-
     // The audio languages by name, "Russian or Ukrainian" (Coming up); null: any language, or English among them
     String audioNames() {
         List<String> codes = Sources.codes(langs());
@@ -3168,7 +3163,7 @@ public class Main extends Activity {
         summary.setMaxLines(60);
         if (!homeServer.isEmpty()) list.addView(claude); // Claude's recap: only with a home server
         list.addView(section("Last time"));
-        String lang = storyLang();
+        String lang = Sources.storyLang(langs());
         async(() -> {
             // the seasons of the last three, and the one before the last's (Claude's overviews)
             Set<Integer> numbers = new java.util.TreeSet<>();

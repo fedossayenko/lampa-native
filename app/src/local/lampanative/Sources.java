@@ -232,10 +232,12 @@ final class Sources {
         return null;
     }
 
+    private static final List<String> PICTURE = List.of("4K", "1080p", "720p", "DV", "HDR", "HDR10+", "REMUX");
+
     // A release's picture badges (4K, DV, HDR, REMUX): what "Plays …" shows; codecs and sound left out.
     static List<String> picture(Source s) {
         List<String> out = new ArrayList<>();
-        for (String b : s.badges()) if (List.of("4K", "1080p", "720p", "DV", "HDR", "HDR10+", "REMUX").contains(b)) out.add(b);
+        for (String b : s.badges()) if (PICTURE.contains(b)) out.add(b);
         return out;
     }
 
@@ -274,6 +276,13 @@ final class Sources {
 
     static boolean selected(String langs, String code) {
         return codes(langs).contains(code);
+    }
+
+    // Story so far's language (in the language heard): the first audio language picked, "RU"; null: English (English
+    // among them, or any language)
+    static String storyLang(String langs) {
+        List<String> codes = codes(langs);
+        return codes.isEmpty() || codes.contains("EN") ? null : codes.get(0);
     }
 
     // DDD's audio_lang for the picked languages: Russian first (then Ukrainian) when picked; "" = DDD's own setting.
