@@ -1883,6 +1883,10 @@ test('ext: no binding → 404; an extension\'s 403 is a 502 (the stick keeps its
   assert.equal((await extGet('/ext/learn/queue', refusing, tv, 'POST', 'x'.repeat(20000))).status, 413);
   const down = { ...playEnv, EXT_LEARN: { fetch: async () => { throw new Error('unreachable'); } } };
   assert.equal((await extGet('/ext/learn/status', down)).status, 502);
+  const empty = { ...playEnv, EXT_LEARN: extension(() => new Response(null, { status: 204 })) };
+  assert.equal((await extGet('/ext/learn/queue', empty, tv, 'POST', '{}')).status, 204);
+  const long = { 'Content-Length': '20000', ...tv };
+  assert.equal((await extGet('/ext/learn/queue', refusing, long, 'POST', '{}')).status, 413);
   assert.equal((await extGet('/ext/Learn/status', down)).status, 404, 'names are lower case: the route is not matched');
   assert.equal((await extGet('/ext/learn/../x', down)).status, 404);
 });
@@ -1895,12 +1899,14 @@ test('mine: "learned" comes from the extension, {} when there is none, it is dow
   assert.deepEqual((await (await getMine(e)).json()).learned, { movie_155: 93 });
   assert.deepEqual(ext.seen.map((r) => [r.url, r.method]), [['https://ext/learn/progress', undefined]]);
   cub(dump);
-  assert.deepEqual((await (await getMine(mineEnv())).json()).learned ?? {}, {});
+  assert.equal('learned' in (await (await getMine(mineEnv())).json()), false, 'no extension: no key');
+  cub(dump);
+  assert.deepEqual((await (await getMine({ ...mineEnv(), EXT_LEARN: extension(() => new Response('{}')) })).json()).learned, {});
   for (const bad of [() => new Response('nope', { status: 500 }), () => new Response('[1]'), () => new Response('<html>')]) {
     cub(dump);
-    assert.deepEqual((await (await getMine({ ...mineEnv(), EXT_LEARN: extension(bad) })).json()).learned ?? {}, {});
+    assert.equal('learned' in (await (await getMine({ ...mineEnv(), EXT_LEARN: extension(bad) })).json()), false);
   }
   cub(dump);
   const down = { fetch: async () => { throw new Error('timeout'); } };
-  assert.deepEqual((await (await getMine({ ...mineEnv(), EXT_LEARN: down })).json()).learned ?? {}, {});
+  assert.equal('learned' in (await (await getMine({ ...mineEnv(), EXT_LEARN: down })).json()), false);
 });

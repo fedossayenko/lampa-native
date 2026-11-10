@@ -1437,42 +1437,46 @@ function bookmarkCard(b) {
 // reached at /ext/<name>/<path> as /<name>/<path>, for the stick only (X-Play-Token). The worker adds the secret
 // EXT_<NAME>_TOKEN as X-Ext-Token when set; nothing else of the request goes along but the method, the path and a body
 // of at most 16 KB. The answers: the extension's status (a 401 or 403 of its own becomes 502, so the stick keeps its
-// token) and JSON, never cached. GET /mine also asks EXT_LEARN's /learn/progress for "learned" (a film's percent).
+// token) and JSON, never cached. GET /mine also asks EXT_LEARN's /learn/progress for "learned" (a film's percent;
+// present, even {}, only while the extension answers: the stick shows Learn only then).
 const EXT_BODY_MAX = 16384;
-const EXT_MS = 2500; // /mine waits this long for an extension at most
+const EXT_MS = 15000; // a pass-through call waits this long at most
+const EXT_MINE_MS = 1500; // /mine waits this long for an extension at most
 
-async function extFetch(env, name, path, init = {}) {
+async function extFetch(env, name, path, init = {}, ms = EXT_MS) {
   const binding = env[`EXT_${name.toUpperCase()}`];
   if (!binding || typeof binding.fetch !== 'function') return null;
   const headers = { 'Content-Type': 'application/json' };
   const token = env[`EXT_${name.toUpperCase()}_TOKEN`];
   if (token) headers['X-Ext-Token'] = token;
-  return binding.fetch(`https://ext/${name}${path}`, { ...init, headers, signal: AbortSignal.timeout(EXT_MS) });
+  return binding.fetch(`https://ext/${name}${path}`, { ...init, headers, signal: AbortSignal.timeout(ms) });
 }
 
 async function extension(request, env, name, rest) {
   if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
   if (!env[`EXT_${name.toUpperCase()}`]) return corsError(request, 'Not found.', 404);
+  if (Number(request.headers.get('Content-Length')) > EXT_BODY_MAX) return corsError(request, 'Too large.', 413);
   const body = request.method === 'POST' ? await request.text() : undefined;
   if (body !== undefined && body.length > EXT_BODY_MAX) return corsError(request, 'Too large.', 413);
   try {
     const res = await extFetch(env, name, rest, { method: request.method, body });
     const out = await res.text();
     const status = res.status === 401 || res.status === 403 ? 502 : res.status;
-    return new Response(out, { status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store',
+    return new Response([204, 205, 304].includes(status) ? null : out, { status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store',
       ...corsHeaders(request) } });
   } catch (e) {
     return corsError(request, `${name}: ${e.message}.`, 502);
   }
 }
 
+// null: no extension, or it didn't answer well (the stick then shows no Learn button); else {"movie_603": 93, …}
 async function extLearned(env) {
   try {
-    const res = await extFetch(env, 'learn', '/progress');
+    const res = await extFetch(env, 'learn', '/progress', {}, EXT_MINE_MS);
     const got = res?.ok ? await res.json() : null;
-    return got && typeof got === 'object' && !Array.isArray(got) ? got : {};
+    return got && typeof got === 'object' && !Array.isArray(got) ? got : null;
   } catch {
-    return {};
+    return null;
   }
 }
 
@@ -1681,7 +1685,7 @@ async function mine(request, env) {
     .filter(([, h]) => h && done.get(hash(h.card))?.percent >= 90).map(([k]) => k);
   return new Response(JSON.stringify({ rows, marks, grades, new: fresh, mylist: listed.map(keyOf), left, percent,
     seen: [...new Set(seen)], next, coming, follows: follows.map((f) => f.person), news,
-    ...(Object.keys(learned).length ? { learned } : {}) }), {
+    ...(learned ? { learned } : {}) }), {
     headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...corsHeaders(request) },
   });
 }
