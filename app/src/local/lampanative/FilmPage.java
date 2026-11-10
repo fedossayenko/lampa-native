@@ -125,7 +125,7 @@ final class FilmPage extends Main.Part {
                 return;
             }
             m.pageBackdrop.setImageBitmap(done);
-            Log.i(Main.TAG, "film backdrop " + (System.currentTimeMillis() - t) + " ms after OK");
+            Log.i(Main.TAG, "film backdrop " + (System.currentTimeMillis() - t) + " ms after OK " + path);
         }, () -> { });
     }
 

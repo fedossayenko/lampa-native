@@ -138,6 +138,7 @@ public class Main extends Activity {
     Runnable overlayClosed;
     Runnable overlayBack; // Back on a sheet opened from another (Settings → Profile): that one again
     Runnable prefetch;
+    Runnable prefetchBackdrop; // 1.5 s of rest on the same card
     String prefetched; // the film (its /card URL) whose page was last preloaded or opened
     volatile boolean stopped; // audioReads' thread reads it too
     Timeline.Playing playing; // the playback DDD will answer about
@@ -622,24 +623,36 @@ public class Main extends Activity {
     }
 
     // Focus resting on a card (Home's, Search's) for 0.5 s: its /card (~1.5 KB; cold 0.2-0.9 s, from the disk
-    // 24-32 ms) and its backdrop go to the disk cache (bytes only, no decode, no RAM), so OK shows the whole page at
-    // once. The worker keeps /card at the edge a day: a film costs one MDBList lookup a day (1,000 allowed).
+    // 24-32 ms) goes to the disk cache (bytes only, no decode, no RAM), and after 1 s more of rest its backdrop
+    // (~300 KB: TLS, then the cache's write; the preload thread's 2.3 s of 13 s CPU in the log, and most of those films
+    // are never opened), so OK shows the whole page at once. The worker keeps /card at the edge a day: a film costs
+    // one MDBList lookup a day (1,000 allowed).
     // ponytail: OK pressed mid-download fetches it twice; share the download if that shows up
     void prefetch(Home.Card c, boolean focused) {
         ui.removeCallbacks(prefetch);
+        ui.removeCallbacks(prefetchBackdrop);
         if (!focused || Film.url(c).equals(prefetched)) return; // not again after Back
         prefetch = () -> {
             prefetched = Film.url(c);
             background.execute(() -> {
                 try {
                     cache(Film.url(c));
-                    if (!c.backdrop().isEmpty()) cache(BACKDROP + c.backdrop());
                 } catch (IOException e) {
                     // OK will try again
                 }
             });
         };
         ui.postDelayed(prefetch, 500);
+        if (c.backdrop().isEmpty()) return;
+        prefetchBackdrop = () -> background.execute(() -> {
+            try {
+                cache(BACKDROP + c.backdrop());
+                Log.i(TAG, "preloaded backdrop " + c.backdrop());
+            } catch (IOException e) {
+                // OK will try again
+            }
+        });
+        ui.postDelayed(prefetchBackdrop, 1500);
     }
 
     // A page (a film, the settings) takes Home's place in the same window. Home's views stay, so Back is instant
