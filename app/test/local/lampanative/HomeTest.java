@@ -60,4 +60,20 @@ class HomeTest {
         assert Home.valid("token", "0123456789abcdef0123") && !Home.valid("token", "short")
             && !Home.valid("token", "has space 0123456789");
     }
+
+    // Where focus goes when your rows are drawn again: the film that had it, wherever it moved, else the first.
+    void testFocusIndex() {
+        Home.Card a = new Home.Card(1, "movie", "A", "", "", 0, ""), b = new Home.Card(2, "movie", "B", "", "", 0, ""),
+            tv = new Home.Card(2, "tv", "B", "", "", 0, "");
+        List<Home.Card> now = java.util.Arrays.asList(a, null, tv, b);
+        assert Home.focusIndex(now, b, false) == 3 : "a film is found by id and type, a series 2 is not movie 2";
+        assert Home.focusIndex(now, tv, false) == 2;
+        assert Home.focusIndex(now, new Home.Card(9, "movie", "Gone", "", "", 0, ""), false) == 0 : "left the rows: the first";
+        assert Home.focusIndex(now, HISTORY_TAG, false) == 0 : "History tile had it: the first (the tile itself is Main's)";
+        assert Home.focusIndex(now, null, true) == 0 : "the card Home focused at start moves in";
+        assert Home.focusIndex(now, null, false) == -1 : "focus was somewhere else: left alone";
+        assert Home.focusIndex(List.of(), b, true) == -1;
+    }
+
+    private static final String HISTORY_TAG = "history";
 }

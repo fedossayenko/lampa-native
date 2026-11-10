@@ -470,16 +470,10 @@ public class Main extends Activity {
             if (tiles) line.addView(historyTile = historyTile(title));
         }
         minePosters.addAll(posters.subList(before, posters.size()));
-        View target = null;
-        for (ImageView p : minePosters) {
-            View card = cardOf(p);
-            if (target == null && (was != null || old == null || old == firstCard)) target = card; // the first
-            if (was instanceof Home.Card w && card.getTag() instanceof Home.Card c && c.id() == w.id()
-                && c.type().equals(w.type())) {
-                target = card;
-                break;
-            }
-        }
+        List<Home.Card> tags = new ArrayList<>();
+        for (ImageView p : minePosters) tags.add(cardOf(p).getTag() instanceof Home.Card c ? c : null);
+        int at = Home.focusIndex(tags, was, old == null || old == firstCard);
+        View target = at < 0 ? null : cardOf(minePosters.get(at));
         if (HISTORY.equals(was)) target = historyTile;
         if (target == null && was != null && !posters.isEmpty()) target = cardOf(posters.get(0));
         if (page != null) {
