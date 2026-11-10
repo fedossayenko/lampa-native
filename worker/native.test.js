@@ -2526,3 +2526,23 @@ test('grades: an account still in KV is copied to D1 on first use and then D1 ru
   await worker.scheduled({ cron: '23 * * * *', scheduledTime: Date.UTC(2026, 9, 31, 5, 23) }, e);
   assert.equal(e.DB.raw.prepare("SELECT count(*) n FROM grades WHERE who = '43:1'").get().n, 1, 'the cron moved the other account');
 });
+
+test('grades: 5000 grades with cards go in chunks, no bound value near D1\'s 2 MB; one over the limit is refused', async () => {
+  const e = { ...env, DB: d1(), CUB_ACCOUNTS: '42' };
+  let widest = 0;
+  const prepare = e.DB.prepare;
+  e.DB.prepare = (sql) => {
+    const st = prepare(sql);
+    return { ...st, bind: (...a) => { widest = Math.max(widest, ...a.map((x) => String(x).length)); return st.bind(...a); } };
+  };
+  cub({ 'users/get': { user: { id: 42 } } });
+  const many = (n) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`movie_${i + 1}`,
+    { g: 1, t: 1000 + i, card: { id: i + 1, overview: 'x'.repeat(400) } }]));
+  const post = (grades) => worker.fetch(new Request('https://w/grades', { method: 'POST', headers: lampa, body: JSON.stringify({ grades }) }), e);
+  const res = await post(many(5000));
+  assert.equal(res.status, 200);
+  assert.equal(Object.keys(await res.json()).length, 5000);
+  assert.equal(e.DB.raw.prepare('SELECT count(*) n FROM grades').get().n, 5000);
+  assert.ok(widest < 1e6, `${widest} characters in one bound value`);
+  assert.equal((await post(many(5001))).status, 413);
+});

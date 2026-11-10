@@ -178,26 +178,35 @@ async function cubUser(request, env) {
 const gradeOk = ([k, v]) => /^(movie|tv)_\d+$/.test(k) && v && typeof v === 'object' && Number.isFinite(v.t);
 
 // Writes grades (the older `t` of a film never replaces the newer one: one statement, whatever the order devices post in).
+// D1 takes a bound value of 2 MB at most and the posts go to 5000 grades with their cards: GRADES_CHUNK a statement.
+const GRADES_CHUNK = 500;
 async function putGrades(env, who, entries) {
-  if (!entries.length) return;
-  await env.DB.prepare(`INSERT INTO grades (who, card, t, v) SELECT ?1, value->>'k', value->>'t', value->>'v' FROM json_each(?2)
-      WHERE true ON CONFLICT (who, card) DO UPDATE SET t = excluded.t, v = excluded.v WHERE excluded.t > grades.t`)
-    .bind(who, JSON.stringify(entries.map(([k, v]) => ({ k, t: v.t, v: JSON.stringify(v) })))).run();
+  for (let at = 0; at < entries.length; at += GRADES_CHUNK) {
+    await env.DB.prepare(`INSERT INTO grades (who, card, t, v) SELECT ?1, value->>'k', value->>'t', value->>'v' FROM json_each(?2)
+        WHERE true ON CONFLICT (who, card) DO UPDATE SET t = excluded.t, v = excluded.v WHERE excluded.t > grades.t`)
+      .bind(who, JSON.stringify(entries.slice(at, at + GRADES_CHUNK).map(([k, v]) => ({ k, t: v.t, v: JSON.stringify(v) })))).run();
+  }
 }
 
-// An account's grades: {"movie_603": {g, t, card}, ...}. An account with no rows yet and a KV value (the grades' old
-// home, binding GRADES) gets it copied in first: the move to D1 needs no step of its own.
+// An account with no rows yet and a KV value (the grades' old home, binding GRADES) gets it copied in: the move to D1
+// needs no step of its own. One cheap look at the table, and the KV only when it is empty.
+async function moveKv(env, who) {
+  if (!env.GRADES || await env.DB.prepare('SELECT 1 FROM grades WHERE who = ? LIMIT 1').bind(who).first()) return;
+  const old = await env.GRADES.get(who, 'json').catch(() => null);
+  await putGrades(env, who, old && typeof old === 'object' ? Object.entries(old).filter(gradeOk) : []);
+}
+
+// An account's grades: {"movie_603": {g, t, card}, ...}
 async function gradesOf(env, who) {
-  let rows = (await env.DB.prepare('SELECT card, v FROM grades WHERE who = ?').bind(who).all()).results;
-  if (!rows.length && env.GRADES) {
-    const old = await env.GRADES.get(who, 'json').catch(() => null);
-    const entries = old && typeof old === 'object' ? Object.entries(old).filter(gradeOk) : [];
-    if (entries.length) {
-      await putGrades(env, who, entries);
-      rows = entries.map(([card, v]) => ({ card, v: JSON.stringify(v) }));
-    }
-  }
+  await moveKv(env, who);
+  const rows = (await env.DB.prepare('SELECT card, v FROM grades WHERE who = ?').bind(who).all()).results;
   return Object.fromEntries(rows.map((r) => [r.card, JSON.parse(r.v)]));
+}
+
+// Only the grade of each film, [{card, g}]: /mine needs no card, and the table's JSON is read by D1, not parsed here.
+async function gradeValues(env, who) {
+  await moveKv(env, who);
+  return (await env.DB.prepare("SELECT card, v->>'$.g' AS g FROM grades WHERE who = ?").bind(who).all()).results;
 }
 
 const GRADES_BODY_MAX = 2e6; // a few thousand graded films with their cards
@@ -214,7 +223,7 @@ async function grades(request, env) {
   if (!mine || typeof mine !== 'object' || Array.isArray(mine)) return corsError(request, 'Bad request: "grades" object expected.', 400);
   const entries = Object.entries(mine).filter(gradeOk);
   if (entries.length > GRADES_MAX) return corsError(request, 'Too many grades.', 413);
-  await gradesOf(env, who); // an account still in KV moves first: the new rows must not hide the old ones
+  await moveKv(env, who); // an account still in KV moves first: the new rows must not hide the old ones
   await putGrades(env, who, entries);
   return new Response(JSON.stringify(await gradesOf(env, who)), { headers: { 'Content-Type': 'application/json', ...corsHeaders(request) } });
 }
@@ -2250,7 +2259,7 @@ async function mine(request, env) {
   if (!who) return corsError(request, 'CUB sign-in required.', 401);
   const db = (sql, ...args) => (env.DB ? env.DB.prepare(sql).bind(...args).all().then((r) => r.results).catch(() => []) : []);
   const [dump, ours, graded, picks, uhd, follows, told, learned] = await Promise.all([cubApi(request, 'bookmarks/dump'),
-    db('SELECT card, mark FROM marks WHERE who = ?', who), env.DB ? gradesOf(env, who).catch(() => null) : null,
+    db('SELECT card, mark FROM marks WHERE who = ?', who), env.DB ? gradeValues(env, who).catch(() => null) : null,
     db('SELECT cards FROM foryou WHERE who = ?', who), db('SELECT type, id, card FROM uhd WHERE card IS NOT NULL ORDER BY t DESC, pos LIMIT 100'),
     db('SELECT person, name, coming FROM follows WHERE who = ?', who),
     db('SELECT t, card, head, line FROM news WHERE who = ? AND t > ? ORDER BY t DESC LIMIT ?', who, Date.now() - NEWS_DAYS * 86400e3,
@@ -2260,7 +2269,7 @@ async function mine(request, env) {
   for (const b of dump.bookmarks) if (MARKS.includes(b.type) && /^(movie|tv)$/.test(b.card_type)) marks[`${b.card_type}_${b.card_id}`] = b.type;
   for (const m of ours) marks[m.card] = m.mark;
   const grades = {};
-  for (const [k, v] of Object.entries(graded || {})) if (v && v.g != null) grades[k] = v.g; // null: removed
+  for (const r of graded || []) if (r.g != null) grades[r.card] = r.g; // null: removed
   const byTime = (a, b) => (Number(b.time) || 0) - (Number(a.time) || 0);
   const newest = (...types) => dump.bookmarks.filter((b) => types.includes(b.type) && /^(movie|tv)$/.test(b.card_type)).sort(byTime);
   const keyOf = (b) => `${b.card_type}_${b.card_id}`;
@@ -2740,6 +2749,8 @@ export default {
 };
 
 async function route(request, env, ctx) {
+  const url = new URL(request.url);
+  const path = url.pathname;
   if (request.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: corsHeaders(request) });
   }
@@ -2750,35 +2761,35 @@ async function route(request, env, ctx) {
 
   // The app's screens spend the TMDB key (and the Workers quota): the stick's token first, as /card. No other client
   // asks them: the Lampa plugin uses /grades, /timeline, /mdblist and ?url= only; imdb-import.py sends the token.
-  if (/^\/(home|search|season\/|person\/|find\/|discover\/)/.test(new URL(request.url).pathname) && !isStick(request, env)) {
+  if (/^\/(home|search|season\/|person\/|find\/|discover\/)/.test(path) && !isStick(request, env)) {
     return corsError(request, 'Forbidden.', 403);
   }
-  if (new URL(request.url).pathname === '/grades' && request.method === 'POST') return grades(request, env);
-  if (new URL(request.url).pathname === '/home' && request.method === 'GET') return home(request, env);
-  if (new URL(request.url).pathname === '/search' && request.method === 'GET') return search(request, env);
-  const film = new URL(request.url).pathname.match(/^\/card\/(movie|tv)\/(\d+)$/);
+  if (path === '/grades' && request.method === 'POST') return grades(request, env);
+  if (path === '/home' && request.method === 'GET') return home(request, env);
+  if (path === '/search' && request.method === 'GET') return search(request, env);
+  const film = path.match(/^\/card\/(movie|tv)\/(\d+)$/);
   if (film && request.method === 'GET') { // the token first: each new address spends MDBList's daily 1,000
     if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
     return edgeCached(request, ctx, () => filmCard(request, env, film[1], film[2]));
   }
-  const season = new URL(request.url).pathname.match(/^\/season\/(\d+)\/(\d+)$/);
+  const season = path.match(/^\/season\/(\d+)\/(\d+)$/);
   if (season && request.method === 'GET') {
     return edgeCached(request, ctx, () => seasonPage(request, env, season[1], season[2]));
   }
-  const actor = new URL(request.url).pathname.match(/^\/person\/(\d+)$/);
+  const actor = path.match(/^\/person\/(\d+)$/);
   if (actor && request.method === 'GET') return edgeCached(request, ctx, () => personPage(request, env, actor[1]));
-  const imdb = new URL(request.url).pathname.match(/^\/find\/(tt\d{1,10})$/);
+  const imdb = path.match(/^\/find\/(tt\d{1,10})$/);
   if (imdb && request.method === 'GET') return edgeCached(request, ctx, () => findImdb(request, env, imdb[1]));
-  const picked = new URL(request.url).pathname.match(/^\/discover\/([a-z-]+)$/);
+  const picked = path.match(/^\/discover\/([a-z-]+)$/);
   if (picked && request.method === 'GET') return edgeCached(request, ctx, () => discover(request, env, picked[1]));
-  const ext = new URL(request.url).pathname.match(/^\/ext\/([a-z][a-z0-9]{0,15})(\/[\w/-]*)$/);
+  const ext = path.match(/^\/ext\/([a-z][a-z0-9]{0,15})(\/[\w/-]*)$/);
   if (ext && /^(GET|POST)$/.test(request.method)) {
-    return extension(request, env, ext[1], ext[2] + new URL(request.url).search);
+    return extension(request, env, ext[1], ext[2] + url.search);
   }
-  if (new URL(request.url).pathname === '/torbox' && request.method === 'GET') return torboxAccount(request, env);
-  const drop = new URL(request.url).pathname.match(/^\/torbox\/drop\/([0-9a-f]{40})$/);
+  if (path === '/torbox' && request.method === 'GET') return torboxAccount(request, env);
+  const drop = path.match(/^\/torbox\/drop\/([0-9a-f]{40})$/);
   if (drop && request.method === 'POST') return torboxDrop(request, env, drop[1]);
-  const mv = new URL(request.url).pathname.match(/^\/maxvol\/(tt\d+)$/);
+  const mv = path.match(/^\/maxvol\/(tt\d+)$/);
   if (mv && request.method === 'GET') {
     if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
     return env.DB ? new Response(JSON.stringify(await maxvolAudio(env, mv[1])), {
@@ -2786,40 +2797,40 @@ async function route(request, env, ctx) {
     }) : corsError(request, 'No database.', 503);
   }
   // The streams addon's address, for the app to ask it itself when it refuses the worker (Cloudflare's shared IPs)
-  if (new URL(request.url).pathname === '/addon' && request.method === 'GET') {
+  if (path === '/addon' && request.method === 'GET') {
     if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
     return env.STREAM_ADDON ? new Response(env.STREAM_ADDON) : corsError(request, 'No streams addon set.', 404);
   }
-  const src = new URL(request.url).pathname.match(/^\/streams\/(movie|series)\/(tt\d+)(?:\/(\d+)\/(\d+))?$/);
+  const src = path.match(/^\/streams\/(movie|series)\/(tt\d+)(?:\/(\d+)\/(\d+))?$/);
   if (src && /^(GET|POST)$/.test(request.method) && (src[1] === 'series') === Boolean(src[3])) {
     return sources(request, env, ctx, src[1], src[2], src[3], src[4]);
   }
 
-  if (/^\/segments\/(jobs|own)$/.test(new URL(request.url).pathname) && env.DB) return introJobs(request, env);
-  const skip = new URL(request.url).pathname.match(/^\/segments\/(movie|tv)\/(\d+)\/(tt\d+)$/);
+  if (/^\/segments\/(jobs|own)$/.test(path) && env.DB) return introJobs(request, env);
+  const skip = path.match(/^\/segments\/(movie|tv)\/(\d+)\/(tt\d+)$/);
   if (skip && request.method === 'GET') return segments(request, env, skip[1], skip[2], skip[3]);
-  const tracks = new URL(request.url).pathname.match(/^\/audio\/([0-9a-f]{40})$/);
+  const tracks = path.match(/^\/audio\/([0-9a-f]{40})$/);
   if (tracks && request.method === 'GET') return audio(request, env, tracks[1]);
-  const link = new URL(request.url).pathname.match(/^\/play\/([0-9a-f]{40})$/);
+  const link = path.match(/^\/play\/([0-9a-f]{40})$/);
   if (link && request.method === 'GET') return play(request, env, ctx, link[1]);
-  const file = new URL(request.url).pathname.match(/^\/stream\/(\d+)\/(\d+)$/);
+  const file = path.match(/^\/stream\/(\d+)\/(\d+)$/);
   if (file && /^(GET|HEAD)$/.test(request.method)) return stream(request, env, ctx, file[1], file[2]);
-  if (new URL(request.url).pathname === '/timeline') return timeline(request, env);
-  if (new URL(request.url).pathname === '/mine' && request.method === 'GET') return mine(request, env);
-  if (new URL(request.url).pathname === '/mine/history' && request.method === 'GET') return historyPage(request, env);
-  if (new URL(request.url).pathname === '/mine/unwatch' && request.method === 'POST') return unwatch(request, env);
-  const followed = new URL(request.url).pathname.match(/^\/mine\/(follow|unfollow)\/(\d{1,10})$/);
+  if (path === '/timeline') return timeline(request, env);
+  if (path === '/mine' && request.method === 'GET') return mine(request, env);
+  if (path === '/mine/history' && request.method === 'GET') return historyPage(request, env);
+  if (path === '/mine/unwatch' && request.method === 'POST') return unwatch(request, env);
+  const followed = path.match(/^\/mine\/(follow|unfollow)\/(\d{1,10})$/);
   if (followed && request.method === 'POST') return follow(request, env, followed[1] === 'follow', followed[2]);
-  const listed = new URL(request.url).pathname
+  const listed = path
     .match(/^\/mine\/(history|unhistory|book|unbook|viewed|scheduled|thrown|none)\/(movie|tv)\/(\d+)$/);
   if (listed && request.method === 'POST') return bookmark(request, env, listed[1], listed[2], listed[3]);
-  if (new URL(request.url).pathname === '/voice/hear' && request.method === 'POST') return voiceHear(request, env);
-  if (new URL(request.url).pathname === '/voice/find' && request.method === 'POST') return voiceFind(request, env);
+  if (path === '/voice/hear' && request.method === 'POST') return voiceHear(request, env);
+  if (path === '/voice/find' && request.method === 'POST') return voiceFind(request, env);
 
   // The Lampa plugin's routes, only when wanted (PASS_THROUGH=1 in wrangler.toml's [vars]): open to anyone, they
   // spend the MDBList key and pass requests through
   if (env.PASS_THROUGH !== '1') return corsError(request, 'Not found.', 404);
-  const scores = new URL(request.url).pathname.match(/^\/mdblist\/(movie|show)(?:\/(\d+))?$/);
+  const scores = path.match(/^\/mdblist\/(movie|show)(?:\/(\d+))?$/);
   if (scores && (scores[2] || request.method === 'POST')) return mdblist(request, env, scores[1], scores[2], ctx);
   // the Lampa plugin playing a torrent a probe added (its requestdl, answered by TorBox with its key): the user's
   // now, the night leaves it alone
