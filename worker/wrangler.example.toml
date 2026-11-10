@@ -27,3 +27,11 @@ binding = "AI"
 
 [triggers]
 crons = ["7 3 * * *", "37 3 * * *", "23 * * * *"]
+
+# Extensions: another worker of yours, reached at /ext/<name>/... for the stick only (X-Play-Token) over a service
+# binding, so the stick holds no token for it. The binding is named EXT_<NAME>; the optional secret EXT_<NAME>_TOKEN is
+# sent to it as X-Ext-Token. EXT_LEARN also feeds the Learn button's status and the learned percent in /mine
+# (GET /learn/progress -> {"movie_603": 93}, GET /learn/status?imdb=, POST /learn/queue). Without it there is no button.
+# [[services]]
+# binding = "EXT_LEARN"
+# service = "<your other worker's name>"

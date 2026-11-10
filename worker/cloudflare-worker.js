@@ -1433,16 +1433,59 @@ function bookmarkCard(b) {
 // CUB's dump (2026-10-31): {bookmarks: [{id, type, card_id, card_type: movie|tv, time (ms), data: Lampa's card as
 // JSON text, …}]}, oldest first: ~320 KB for 365 history entries. Only the newest 100 history cards are parsed (the
 // free plan's 10 ms of CPU a request; Lampa keeps 100 in its own history).
+// Extensions: a private worker (or any service) bound in wrangler.toml as EXT_<NAME> (a [[services]] binding) is
+// reached at /ext/<name>/<path> as /<name>/<path>, for the stick only (X-Play-Token). The worker adds the secret
+// EXT_<NAME>_TOKEN as X-Ext-Token when set; nothing else of the request goes along but the method, the path and a body
+// of at most 16 KB. The answers: the extension's status (a 401 or 403 of its own becomes 502, so the stick keeps its
+// token) and JSON, never cached. GET /mine also asks EXT_LEARN's /learn/progress for "learned" (a film's percent).
+const EXT_BODY_MAX = 16384;
+const EXT_MS = 2500; // /mine waits this long for an extension at most
+
+async function extFetch(env, name, path, init = {}) {
+  const binding = env[`EXT_${name.toUpperCase()}`];
+  if (!binding || typeof binding.fetch !== 'function') return null;
+  const headers = { 'Content-Type': 'application/json' };
+  const token = env[`EXT_${name.toUpperCase()}_TOKEN`];
+  if (token) headers['X-Ext-Token'] = token;
+  return binding.fetch(`https://ext/${name}${path}`, { ...init, headers, signal: AbortSignal.timeout(EXT_MS) });
+}
+
+async function extension(request, env, name, rest) {
+  if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
+  if (!env[`EXT_${name.toUpperCase()}`]) return corsError(request, 'Not found.', 404);
+  const body = request.method === 'POST' ? await request.text() : undefined;
+  if (body !== undefined && body.length > EXT_BODY_MAX) return corsError(request, 'Too large.', 413);
+  try {
+    const res = await extFetch(env, name, rest, { method: request.method, body });
+    const out = await res.text();
+    const status = res.status === 401 || res.status === 403 ? 502 : res.status;
+    return new Response(out, { status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store',
+      ...corsHeaders(request) } });
+  } catch (e) {
+    return corsError(request, `${name}: ${e.message}.`, 502);
+  }
+}
+
+async function extLearned(env) {
+  try {
+    const res = await extFetch(env, 'learn', '/progress');
+    const got = res?.ok ? await res.json() : null;
+    return got && typeof got === 'object' && !Array.isArray(got) ? got : {};
+  } catch {
+    return {};
+  }
+}
+
 async function mine(request, env) {
   const who = await cubUser(request, env);
   if (!who) return corsError(request, 'CUB sign-in required.', 401);
   const db = (sql, ...args) => (env.DB ? env.DB.prepare(sql).bind(...args).all().then((r) => r.results).catch(() => []) : []);
-  const [dump, ours, graded, picks, uhd, follows, told] = await Promise.all([cubApi(request, 'bookmarks/dump'),
+  const [dump, ours, graded, picks, uhd, follows, told, learned] = await Promise.all([cubApi(request, 'bookmarks/dump'),
     db('SELECT card, mark FROM marks WHERE who = ?', who), env.GRADES ? env.GRADES.get(who, 'json').catch(() => null) : null,
     db('SELECT cards FROM foryou WHERE who = ?', who), db('SELECT type, id, card FROM uhd WHERE card IS NOT NULL ORDER BY t DESC, pos LIMIT 100'),
     db('SELECT person, name, coming FROM follows WHERE who = ?', who),
     db('SELECT t, card, head, line FROM news WHERE who = ? AND t > ? ORDER BY t DESC LIMIT ?', who, Date.now() - NEWS_DAYS * 86400e3,
-      NEWS_MAX)]);
+      NEWS_MAX), extLearned(env)]);
   if (!dump || !Array.isArray(dump.bookmarks)) return corsError(request, 'CUB unavailable.', 502);
   const marks = {};
   for (const b of dump.bookmarks) if (MARKS.includes(b.type) && /^(movie|tv)$/.test(b.card_type)) marks[`${b.card_type}_${b.card_id}`] = b.type;
@@ -1637,7 +1680,8 @@ async function mine(request, env) {
   const seen = all.filter((b) => b.card_type === 'movie').map((b) => [keyOf(b), bookmarkCard(b)])
     .filter(([, h]) => h && done.get(hash(h.card))?.percent >= 90).map(([k]) => k);
   return new Response(JSON.stringify({ rows, marks, grades, new: fresh, mylist: listed.map(keyOf), left, percent,
-    seen: [...new Set(seen)], next, coming, follows: follows.map((f) => f.person), news }), {
+    seen: [...new Set(seen)], next, coming, follows: follows.map((f) => f.person), news,
+    ...(Object.keys(learned).length ? { learned } : {}) }), {
     headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...corsHeaders(request) },
   });
 }
@@ -1938,6 +1982,10 @@ export default {
     if (genre && request.method === 'GET') return edgeCached(request, ctx, () => genrePage(request, env, genre[1]));
     const picked = new URL(request.url).pathname.match(/^\/discover\/([a-z-]+)$/);
     if (picked && request.method === 'GET') return edgeCached(request, ctx, () => discover(request, env, picked[1]));
+    const ext = new URL(request.url).pathname.match(/^\/ext\/([a-z][a-z0-9]{0,15})(\/[\w/-]*)$/);
+    if (ext && /^(GET|POST)$/.test(request.method)) {
+      return extension(request, env, ext[1], ext[2] + new URL(request.url).search);
+    }
     if (new URL(request.url).pathname === '/torbox' && request.method === 'GET') return torboxAccount(request, env);
     // The streams addon's address, for the app to ask it itself when it refuses the worker (Cloudflare's shared IPs)
     if (new URL(request.url).pathname === '/addon' && request.method === 'GET') {

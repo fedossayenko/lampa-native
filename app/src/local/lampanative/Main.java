@@ -141,6 +141,7 @@ public class Main extends Activity {
     Map<String, String> cubMarks = Map.of(); // the films' marks, from /mine
     Map<String, String> cubGrades = Map.of(); // and their grades
     Map<String, String> cubLeft = Map.of(); // started films' seconds left, started series' "26 ep"
+    Map<String, String> cubLearned = Map.of(); // films' learned percent (the Learn button)
     Map<String, String> cubPercent = Map.of(); // started films' percent watched: a Continue tile's bar
     Map<String, String> cubNew = Map.of(); // series with a new episode out: "S3 E5"
     Map<String, String> cubNext = Map.of(); // started series' episode to go on with: "S3 E5 · up next"
@@ -411,6 +412,7 @@ public class Main extends Activity {
         comingTab.setText(comingLabel(out));
         cubLeft = Cub.left(body);
         cubPercent = Cub.percent(body);
+        cubLearned = Cub.learned(body);
         cubList = Cub.listed(body);
         cubSeen = Cub.seen(body);
         cubFollows = Cub.follows(body);
@@ -926,6 +928,7 @@ public class Main extends Activity {
             buttons.addView(button("Trailer", v -> playTrailer(f.trailer())),
                 buttons.getChildCount() > 0 ? spaced() : new LinearLayout.LayoutParams(-2, -2));
         }
+        if (loaded && !series && !f.imdb().isEmpty()) learnButton(f, c, buttons, column);
         // Story so far: a series with episodes watched before the one Continue goes on with. Its tag shows it
         // once the marks are known (remark), as Continue's
         if (series && loaded && watchable) {
@@ -1317,6 +1320,54 @@ public class Main extends Activity {
                 best[0] = got;
                 plays.setText(got != null ? playsLine(got) : known ? "Nothing cached in " + shownLangs()
                     + ": ▶ Play lists the sources" : "");
+            });
+        });
+    }
+
+    // Learn: asks the worker's /ext/learn extension (a service the user runs beside it) for the film's status once when
+    // the page opens, and shows the button only when it answers. OK asks for it, or looks again while it is waiting.
+    void learnButton(Film f, Home.Card c, LinearLayout buttons, View level) {
+        Learn.State[] state = {null};
+        String key = Timeline.card(c);
+        TextView b = button("Learn", null);
+        b.setVisibility(View.GONE);
+        Runnable draw = () -> b.setText(Learn.label(state[0], cubLearned.get(key)));
+        b.setOnClickListener(v -> {
+            boolean start = state[0] == null || state[0].askable();
+            b.setText("Learn · …");
+            pool.execute(() -> {
+                Learn.State got = null;
+                try {
+                    Answer a = start ? ask("/ext/learn/queue", Learn.queueBody(f.imdb(), c.id(), f.name())
+                        .getBytes(StandardCharsets.UTF_8)) : ask("/ext/learn/status?imdb=" + f.imdb(), null);
+                    if (a.code() == 200) got = Learn.parse(a.body());
+                } catch (IOException e) {
+                    Log.w(TAG, "learn", e);
+                }
+                Learn.State now = got;
+                ui.post(() -> {
+                    if (!alive(level)) return;
+                    if (now != null) state[0] = now;
+                    draw.run();
+                });
+            });
+        });
+        buttons.addView(b, buttons.getChildCount() > 0 ? spaced() : new LinearLayout.LayoutParams(-2, -2));
+        pool.execute(() -> {
+            Learn.State got = null;
+            try {
+                Answer a = ask("/ext/learn/status?imdb=" + f.imdb(), null);
+                if (a.code() == 200) got = Learn.parse(a.body());
+            } catch (IOException e) {
+                Log.w(TAG, "learn status", e);
+            }
+            Learn.State now = got;
+            if (now == null) return; // no extension, or it is down: no button
+            ui.post(() -> {
+                if (!alive(level)) return;
+                state[0] = now;
+                draw.run();
+                b.setVisibility(View.VISIBLE);
             });
         });
     }

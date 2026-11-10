@@ -101,6 +101,11 @@ final class Cub {
         return strings(json, "percent");
     }
 
+    // /mine's "learned": the percent of a film understood, "movie_603" → "93" (its page's Learn button says it).
+    static Map<String, String> learned(String json) {
+        return strings(json, "learned");
+    }
+
     // /mine's "next": a series' episode to go on with, "tv_1399" → "S3 E5 · up next" (its Continue tile's line).
     static Map<String, String> next(String json) {
         return strings(json, "next");

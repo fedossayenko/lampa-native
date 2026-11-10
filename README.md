@@ -93,6 +93,10 @@ app opens YouTube links for trailers.
      then `npx wrangler@4 secret put CUB_ACCOUNTS` with that id (comma-separated for several).
    - Voice search: `adb shell pm grant local.lampanative android.permission.RECORD_AUDIO`. Fire OS takes it back
      at every boot; on a rooted stick `tools/stick/grant-mic.sh` (a Magisk boot script) gives it back.
+   - Extensions: another worker of yours, bound as `EXT_<NAME>` in `wrangler.toml` (`[[services]]`, see
+     `wrangler.example.toml`), is reached at `/ext/<name>/…` for the TV only, so the TV holds no token for it. With
+     `EXT_LEARN` the film page gets a Learn button (the extension's `/learn/status` and `/learn/queue`) and `/mine`
+     carries `learned` from its `/learn/progress`. No extension, no button.
    - Skip times: `worker/set-theintrodb-key.sh` (TheIntroDB, more requests a day).
    - A home server: `worker/home-server/` has Claude Code for voice search and Story so far (`voice-claude.py`) and
      an intro finder by sound (`intro-detect.py`), for a Mac at home; the plists say where the files go (the play
