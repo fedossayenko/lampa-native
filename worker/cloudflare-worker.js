@@ -1062,7 +1062,13 @@ async function play(request, env, ctx, hash) {
       });
     }
     // its audio for the source chips, with the link in hand: no TorBox add spent on it
-    if (env.DB && ctx) ctx.waitUntil(rememberAudio(env, hash, got.link, true));
+    // (in a call of its own when it can: up to 24 range reads and the frame walks on top of Play's work could pass the
+    // free plan's 10 ms of CPU and fail Play itself)
+    if (env.DB && ctx) {
+      ctx.waitUntil(env.SELF ? env.SELF.fetch(`https://self/audio/${hash}?file=${got.file.id}&name=${encodeURIComponent(
+        got.file.short_name || '')}`, { headers: { 'X-Play-Token': env.PLAY_TOKEN } }).catch(() => {})
+        : rememberAudio(env, hash, got.link, true));
+    }
     const playlist = q.has('series')
       ? await episodesFrom(request, env, ctx, got.id, got.files, got.file, q.get('series'), got.link, q.has('probe')) : [];
     return new Response(JSON.stringify(playlist.length
@@ -1173,7 +1179,15 @@ async function maxvolOf(env, imdb) {
   // asked in a call of its own (SELF, GET /maxvol): MaxVol's parse (1.5-5 ms, measured on a Mac) on top of the list's
   // could pass the free plan's 10 ms and kill the list itself, before D1 keeps it (so on every opening)
   if (!env.SELF) return maxvolAudio(env, imdb); // no binding (node tests)
-  return (await env.SELF.fetch(`https://self/maxvol/${imdb}`, { headers: { 'X-Play-Token': env.PLAY_TOKEN } })).json();
+  try {
+    const res = await env.SELF.fetch(`https://self/maxvol/${imdb}`, { headers: { 'X-Play-Token': env.PLAY_TOKEN } });
+    if (!res.ok) throw new Error(`maxvol ${res.status}`);
+    return await res.json();
+  } catch { // that call failed (killed past its CPU, a bad binding): {} kept an hour, not asked on every opening
+    await env.DB.prepare('INSERT OR REPLACE INTO maxvol (imdb, tracks, t) VALUES (?, ?, ?)').bind(imdb, '{}', Date.now())
+      .run();
+    return {};
+  }
 }
 
 // GET /maxvol/<IMDb id> (the play token; the worker's own call, maxvolOf): MaxVol asked, its map kept and answered.
@@ -1384,9 +1398,11 @@ async function mkvAudio(head, read) {
     if (tr.type === 2) tracks.push(tr);
   }
   const want = new Map(tracks.filter((x) => /^A_(TRUEHD|EAC3|DTS)/.test(x.codec)).map((x) => [x.num, x]));
-  if (want.size) {
-    if (clusterAt < 0) clusterAt = await hopTo(read, after, CLUSTER);
-    if (clusterAt >= 0) await firstFrames(read, clusterAt, want);
+  if (want.size) { // best effort: a failed range read here keeps the tracks, Atmos / DTS-HD then from the name
+    try {
+      if (clusterAt < 0) clusterAt = await hopTo(read, after, CLUSTER);
+      if (clusterAt >= 0) await firstFrames(read, clusterAt, want);
+    } catch { /* the frames' reads only */ }
   }
   return tracks.map((x) => {
     let codec = (MKV_CODECS.find(([re]) => re.test(x.codec)) || [, x.codec.replace(/^A_/, '')])[1];

@@ -2029,6 +2029,30 @@ test('audio: a probe add with nothing to read (a disc: no video) still leaves at
   assert.equal(e.DB.raw.prepare('SELECT COUNT(*) n FROM probes').get().n, spent);
 });
 
+test('audio: a CDN failing on the cluster\'s read keeps the tracks (Atmos then from the name only)', async () => {
+  const e = audioEnv();
+  torboxWith(mkvFilm());
+  const ranged = globalThis.fetch;
+  globalThis.fetch = async (url, init) => (String(url) === LINK && ranges >= 1
+    ? (ranges++, new Response('busy', { status: 503 })) : ranged(url, init));
+  const res = await audioOf(e);
+  assert.equal(res.status, 200);
+  assert.deepEqual((await res.json()).tracks.map((t) => t.slice(0, 3)), [['RU', 'DD+', 6], ['EN', 'TrueHD', 8],
+    ['UA', 'DTS', 6], ['EN', 'DD', 2]]);
+});
+
+test('sources: the worker\'s own MaxVol call failing keeps {} an hour, not asked on every opening', async () => {
+  const e = { ...streamsEnv, DB: d1() };
+  let calls = 0;
+  e.SELF = { fetch: async () => (calls++, new Response('Worker exceeded CPU', { status: 503 })) };
+  tmdbAnswers({ ...fifteen, '/v1/api/torrents/checkcached': { success: true, data: [] } });
+  await streams('movie/tt1?lang=RU,UA', e);
+  assert.equal(e.DB.raw.prepare('SELECT tracks FROM maxvol').get().tracks, '{}');
+  tmdbAnswers({ ...fifteen, '/v1/api/torrents/checkcached': { success: true, data: [] } });
+  await streams('movie/tt1?lang=RU,UA', e);
+  assert.equal(calls, 1);
+});
+
 test('audio: TorBox failing right after our add: the add is still recorded for the night, not settled', async () => {
   const e = audioEnv();
   torbox({ ...fresh, 'mylist?id': undefined }); // createtorrent answers, then TorBox is down (500)
@@ -2073,6 +2097,19 @@ test('play: reads the played release\'s audio in the background with its own lin
   await Promise.all(pending);
   assert.equal(asked.filter((u) => u.includes('createtorrent')).length, 1);
   assert.equal(JSON.parse(e.DB.raw.prepare('SELECT tracks FROM audio WHERE hash = ?').get(H).tracks).length, 4);
+});
+
+test('play: with the worker\'s own binding its audio read runs in a call of its own (Play\'s CPU spared)', async () => {
+  const e = audioEnv();
+  const selfAsked = [];
+  e.SELF = { fetch: async (url, init) => (selfAsked.push([String(url), init.headers['X-Play-Token']]), new Response('{}')) };
+  torboxWith(mkvFilm());
+  const pending = [];
+  await worker.fetch(new Request(`https://w/play/${H}?file=1&name=Show.S01E02.mkv`, { headers: stick }), e,
+    { waitUntil: (p) => pending.push(p) });
+  await Promise.all(pending);
+  assert.deepEqual(selfAsked, [[`https://self/audio/${H}?file=1&name=Show.S01E02.mkv`, e.PLAY_TOKEN]]);
+  assert.equal(ranges, 0, 'Play itself reads no audio');
 });
 
 test('sources: a release read before carries its audio (row[9]); the others null', async () => {
