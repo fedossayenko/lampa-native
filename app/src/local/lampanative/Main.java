@@ -58,7 +58,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.TimeZone;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -67,7 +66,6 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
-import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -103,6 +101,7 @@ public class Main extends Activity {
         return th;
     });
     final Handler ui = new Handler(Looper.getMainLooper());
+    final History historyScreen = new History(this); // Continue browsing's History tile and the History page
     final Settings settingsScreen = new Settings(this); // the Settings tab, its sheets and the stats meter
     final SourcesScreen sourcesScreen = new SourcesScreen(this); // a film's or episode's source list
     final FilmPage filmPage = new FilmPage(this); // the film page, an actor's, marks and grades
@@ -124,10 +123,8 @@ public class Main extends Activity {
     Cub.Mine cub = Cub.Mine.NONE; // what /mine says: marks, grades, time left, Coming up, My list, follows, What's new
     TextView bellTab; // Home's "New 3"
     View firstCard; // the card Home focuses at start: still focused when /mine comes, it moves into your rows
-    static final String HISTORY = "history"; // the History tile's tag (Continue browsing's last)
-    View historyTile;
-    LinearLayout historyList; // the History page's, while open
-    List<Cub.Played> historyShown = List.of();
+ // the History tile's tag (Continue browsing's last)
+ // the History page's, while open
     // A card-sized stand-in while a picture isn't loaded (Pic draws it gray in its own shape): a 300×450 poster then
     // replaces a 300×450 drawable, so loading or dropping one doesn't make the ImageView request a layout pass (it
     // does from or to null).
@@ -444,14 +441,14 @@ public class Main extends Activity {
                 if (rate) card.setOnClickListener(v -> filmPage.rateBar(c, v, true));
                 line.addView(card);
             }
-            if (tiles) line.addView(historyTile = historyTile(title));
+            if (tiles) line.addView(historyScreen.historyTile = historyScreen.historyTile(title));
         }
         minePosters.addAll(posters.subList(before, posters.size()));
         List<Home.Card> tags = new ArrayList<>();
         for (ImageView p : minePosters) tags.add(Ui.cardOf(p).getTag() instanceof Home.Card c ? c : null);
         int at = Home.focusIndex(tags, was, old == null || old == firstCard);
         View target = at < 0 ? null : Ui.cardOf(minePosters.get(at));
-        if (HISTORY.equals(was)) target = historyTile;
+        if (History.HISTORY.equals(was)) target = historyScreen.historyTile;
         if (target == null && was != null && !posters.isEmpty()) target = Ui.cardOf(posters.get(0));
         if (page != null) {
             if (was != null) from = target; // Back lands there
@@ -796,158 +793,6 @@ public class Main extends Activity {
             if (first == null) first = r;
         }
         if (first != null) list.post(first::requestFocus);
-    }
-
-    // Continue browsing's last tile: History.
-    View historyTile(TextView rowTitle) {
-        int w = dp(195), h = dp(110);
-        TextView picture = ux.text("↺", 40, 0xff9a9a9a);
-        picture.setGravity(Gravity.CENTER);
-        picture.setBackground(ux.shape(12 * dp, 0x14ffffff, 0x26ffffff));
-        View card = ux.tile(picture, w, h, 12 * dp, "History", "Played here and in Lampa");
-        card.setTag(HISTORY);
-        card.setOnFocusChangeListener((v, focused) -> {
-            if (focused) scroll.scrollTo(0, rowTitle.getTop());
-        });
-        card.setOnClickListener(this::openHistory);
-        return card;
-    }
-
-    // History: what was played here and in Lampa, newest first, by day (the worker's
-    // /mine/history, asked each time it opens: ~16 KB). OK opens the film; ≡ marks it unwatched or removes it.
-    // ponytail: text rows, no posters (Coming up's look); add thumbnails if the rows read poorly
-    void openHistory(View from) {
-        openPage(from);
-        historyList = pushList("History");
-        historyList.addView(ux.text("Played here and in Lampa, newest first · ≡ marks one unwatched or removes it", 16,
-            0xff9a9a9a));
-        fillHistory(historyList, 0);
-    }
-
-    // History's rows (again after a change: focus on the row at that place).
-    void fillHistory(LinearLayout list, int focus) {
-        list.removeViews(2, list.getChildCount() - 2); // the title and its line stay
-        Cub.Account a = account();
-        TextView note = ux.text(a == null ? "Sign in to CUB in Settings: History comes from your CUB account." : "Loading…",
-            18, 0xffdddddd);
-        note.setPadding(0, dp(16), 0, 0);
-        list.addView(note);
-        if (a == null) return;
-        View level = Ui.levelOf(list);
-        int tz = TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 60000;
-        load(level, "history", () -> {
-            Answer r = send(withCub(open(Home.worker + "/mine/history?tz=" + tz, 20000), a), null, null);
-            if (r.code() != 200) throw new Status(r.code());
-            return Cub.history(r.body());
-        }, items -> showHistory(list, note, items, focus), () -> note.setText("Can't load History. Back, then open it again."));
-    }
-
-    void showHistory(LinearLayout list, TextView note, List<Cub.Played> items, int focus) {
-        historyShown = items;
-        if (items.isEmpty()) {
-            note.setText("Nothing played yet.");
-            return;
-        }
-        list.removeView(note);
-        LocalDate today = LocalDate.now();
-        ZoneId zone = ZoneId.systemDefault();
-        LinearLayout day = null;
-        String at = null;
-        List<View> rows = new ArrayList<>();
-        for (Cub.Played p : items) {
-            String[] d = Cub.played(LocalDateTime.ofInstant(Instant.ofEpochMilli(p.t()), zone), today);
-            if (!d[0].equals(at)) { // a group: its name on the left, its rows on the right (Coming up's layout)
-                at = d[0];
-                LinearLayout group = new LinearLayout(this);
-                TextView name = ux.text(d[0], 18, Color.WHITE);
-                name.setTypeface(medium);
-                name.setPadding(0, dp(10), 0, 0);
-                group.addView(name, dp(120), -2);
-                day = new LinearLayout(this);
-                day.setOrientation(LinearLayout.VERTICAL);
-                LinearLayout.LayoutParams right = new LinearLayout.LayoutParams(0, -2, 1);
-                right.setMarginStart(dp(20));
-                group.addView(day, right);
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
-                lp.topMargin = dp(14);
-                list.addView(group, lp);
-            }
-            SpannableStringBuilder end = new SpannableStringBuilder(d[1]);
-            end.setSpan(new Ui.Tint(0xff9a9a9a, 0xff4a4a4a), 0, end.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            LinearLayout r = ux.row(p.card().name(), historyLine(p), end, v -> filmPage.showFilm(p.card(), null));
-            r.setTag(p); // ≡ on it: historySheet
-            r.setPadding(dp(18), dp(8), dp(18), dp(8));
-            ((LinearLayout.LayoutParams) r.getLayoutParams()).bottomMargin = dp(4);
-            day.addView(r);
-            rows.add(r);
-        }
-        rows.get(Math.min(focus, rows.size() - 1)).requestFocus();
-    }
-
-    // A History row's gray line: "S1 E6 and E7 · Watched · ★ Good · in Lampa", "Film · 1h 5m left".
-    CharSequence historyLine(Cub.Played p) {
-        SpannableStringBuilder s = new SpannableStringBuilder(!p.what().isEmpty() ? p.what()
-            : p.card().type().equals("tv") ? "Series" : "Film");
-        String left = Timeline.posterLeft(String.valueOf(p.left()));
-        if (p.left() == 0) {
-            s.append(" · ");
-            int from = s.length();
-            s.append("Watched");
-            s.setSpan(new Ui.Tint(Home.GREEN, 0xff0a7d3e), from, s.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        } else if (left != null) {
-            s.append(" · ").append(left);
-        }
-        String[] g = Cub.posterGrade(cub.grades().get(Timeline.card(p.card())));
-        if (g != null) {
-            s.append(" · ");
-            int from = s.length();
-            s.append("★ ").append(g[1]);
-            s.setSpan(new Ui.Tint(Color.parseColor(g[2]), 0xff111111), from, s.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        }
-        if (p.lampa()) s.append(" · in Lampa");
-        return s;
-    }
-
-    // ≡ on a History row: its page, Mark unwatched (its points back to the start; Lampa takes them too), Remove (out
-    // of CUB's history, so Lampa's too). Both are CUB's: the worker writes them.
-    void historySheet(Cub.Played p) {
-        boolean series = p.card().type().equals("tv");
-        LinearLayout list = ux.sheet(p.card().name(), historyLine(p).toString(), null);
-        list.addView(ux.sheetRow(series ? "Series page" : "Film page", null, null, v -> {
-            closeOverlay();
-            filmPage.showFilm(p.card(), null);
-        }));
-        list.addView(ux.divider());
-        int at = historyShown.indexOf(p);
-        if (!p.hashes().isEmpty()) {
-            String body = new JSONArray(p.hashes()).toString();
-            list.addView(ux.sheetRow("Mark unwatched", (p.what().isEmpty() ? "Back to the start" : p.what() + " back to the "
-                + "start") + ", here and in Lampa", null, v -> historyChange("/mine/unwatch",
-                ("{\"hashes\":" + body + "}").getBytes(StandardCharsets.UTF_8), at, p.hashes())));
-        }
-        list.addView(ux.sheetRow("Remove from history", "Lampa's history loses it too", null,
-            v -> historyChange("/mine/unhistory/" + p.card().type() + "/" + p.card().id(), new byte[0], at, List.of())));
-    }
-
-    // A History change sent (204: CUB or the timeline took it), then the page and Home's rows again.
-    // unwatched: the keys of the points taken back to the start: the marks kept here (and DDD's answers of this
-    // session, which the worker's answers never overwrite) forget them, or the episodes would show Watched until the
-    // app is closed.
-    void historyChange(String path, byte[] body, int at, List<String> unwatched) {
-        Cub.Account a = account();
-        LinearLayout list = historyList;
-        Toast.makeText(this, "Saving…", Toast.LENGTH_SHORT).show();
-        load(null, "history change", () -> post(path, a, body, "application/json"), done -> {
-            if (done != 204) {
-                Toast.makeText(this, "CUB didn't take it. Try again.", Toast.LENGTH_LONG).show();
-                return;
-            }
-            closeOverlay();
-            Timeline.forget(marks, played, unwatched);
-            filmPage.remark();
-            if (list != null && alive(Ui.levelOf(list))) fillHistory(list, Math.max(0, at));
-            loadMine(); // Continue browsing, the posters' badges
-        }, () -> { });
     }
 
     // An out episode's "Out" → "⚡ Cached" once TorBox has a release of it in your audio languages (the design's):
@@ -1594,7 +1439,7 @@ public class Main extends Activity {
             if (event.getRepeatCount() == 0 && overlay == null && !asking) {
                 View on = page == null ? scroll.findFocus() : page.findFocus(); // ≡ on a Home poster: its own sheet
                 if (page == null && on != null && on.getTag() instanceof Home.Card c) quick(c, on);
-                else if (on != null && on.getTag() instanceof Cub.Played p) historySheet(p); // on a History row
+                else if (on != null && on.getTag() instanceof Cub.Played p) historyScreen.historySheet(p); // on a History row
                 else if (settingsList == null || !settingsList.isAttachedToWindow()) settingsScreen.showSettings(); // not on its tab
             }
             return true;
