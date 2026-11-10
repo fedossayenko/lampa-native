@@ -145,6 +145,11 @@ final class FilmPage extends Main.Part {
         line.setPadding(0, m.dp(8), 0, 0);
         line.setMaxWidth(textW);
         info.addView(line, Ui.wrap());
+        // how comfortably you'd watch it in English (the learn extension's estimate; Learn fills it in)
+        TextView english = m.ux.text("", 18, 0xffdddddd);
+        english.setPadding(0, m.dp(4), 0, 0);
+        english.setVisibility(View.GONE);
+        info.addView(english, Ui.wrap());
         for (List<Film.Score> scores : List.of(f.scores(), f.seasons())) {
             if (scores.isEmpty()) continue;
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
@@ -183,7 +188,7 @@ final class FilmPage extends Main.Part {
         }
         // the page's top (alive() knows it), not column: given column, the status's answer was always dropped
         if (loaded && m.cub.learnBound() && !series && !f.imdb().isEmpty()) {
-            learnButton(f, c, buttons, Ui.levelOf(column));
+            learnButton(f, c, buttons, Ui.levelOf(column), english);
         }
         // Story so far: a series with episodes watched before the one Continue goes on with. Its tag shows it
         // once the marks are known (remark), as Continue's
@@ -477,12 +482,19 @@ final class FilmPage extends Main.Part {
 
     // Learn: asks the worker's /ext/learn extension (a service the user runs beside it) for the film's status once when
     // the page opens, and shows the button only when it answers. OK asks for it, or looks again while it is waiting.
-    void learnButton(Film f, Home.Card c, LinearLayout buttons, View level) {
+    // english: the line under the film's info line for the estimate ("English: Good · 175 words to Comfortable"),
+    // as the button's row has no room for it beside a long Continue
+    void learnButton(Film f, Home.Card c, LinearLayout buttons, View level, TextView english) {
         Learn.State[] state = {null};
         boolean[] busy = {false}; // a request is out (disabling the button would drop its focus)
         TextView b = m.ux.button("Learn", null);
         b.setVisibility(View.GONE);
-        Runnable draw = () -> b.setText(Learn.label(state[0]));
+        Runnable draw = () -> {
+            b.setText(Learn.label(state[0]));
+            Learn.Estimate e = state[0] == null ? null : state[0].estimate();
+            if (e != null) english.setText("English: " + Learn.estimateText(e));
+            english.setVisibility(e == null ? View.GONE : View.VISIBLE);
+        };
         b.setOnClickListener(v -> {
             boolean start = state[0] == null || state[0].askable();
             if (busy[0]) return;
