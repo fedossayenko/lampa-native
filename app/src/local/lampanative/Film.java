@@ -74,7 +74,8 @@ record Film(String name, String original, String line, String overview, List<Sco
 
     // An episode not out yet: "Airs tomorrow", "Airs Tuesday, 10 Nov"; "" once out or undated.
     static String airs(String date, LocalDate today) {
-        if (date.isEmpty() || !LocalDate.parse(date).isAfter(today)) return "";
+        LocalDate at = Cub.date(date);
+        if (at == null || !at.isAfter(today)) return ""; // none, out already, or a date in a shape we can't read
         String[] d = Cub.day(date, today);
         return d[0].equals("Tomorrow") ? "Airs tomorrow" : "Airs " + d[0] + ", " + d[1];
     }

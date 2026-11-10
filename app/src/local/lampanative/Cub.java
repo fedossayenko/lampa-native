@@ -3,6 +3,7 @@ package local.lampanative;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.time.format.TextStyle;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -121,8 +122,10 @@ final class Cub {
     }
 
     // "S3 E5 · up next" → {3, 5} (≡ on a series opens its episodes there); null: none.
+    private static final java.util.regex.Pattern EPISODE = java.util.regex.Pattern.compile("^S(\\d+) E(\\d+)");
+
     static int[] episode(String next) {
-        java.util.regex.Matcher m = next == null ? null : java.util.regex.Pattern.compile("^S(\\d+) E(\\d+)").matcher(next);
+        java.util.regex.Matcher m = next == null ? null : EPISODE.matcher(next);
         return m != null && m.find() ? new int[] {Integer.parseInt(m.group(1)), Integer.parseInt(m.group(2))} : null;
     }
 
@@ -147,11 +150,21 @@ final class Cub {
         return out;
     }
 
+    // A day as the worker sends TMDB's ("2026-11-10"); null for "" and for anything else ("2026-11", text): a date TMDB
+    // gave in another shape is no date yet, not an exception on the UI thread.
+    static LocalDate date(String text) {
+        try {
+            return LocalDate.parse(text);
+        } catch (DateTimeParseException e) {
+            return null;
+        }
+    }
+
     // A Coming up date as its group's two lines: ["Today", "Mon 2 Nov"], ["Tomorrow", "Tue 3 Nov"], ["Thursday",
     // "5 Nov"], ["Later", "no date yet"] ("": no date, or past four weeks).
     static String[] day(String date, LocalDate today) {
-        if (date.isEmpty()) return new String[] {"Later", "no date yet"};
-        LocalDate d = LocalDate.parse(date);
+        LocalDate d = date(date);
+        if (d == null) return new String[] {"Later", "no date yet"};
         String named = d.format(DateTimeFormatter.ofPattern("d MMM", Locale.ENGLISH));
         String weekday = d.getDayOfWeek().getDisplayName(TextStyle.FULL, Locale.ENGLISH);
         if (!d.isAfter(today)) return new String[] {"Today", weekday.substring(0, 3) + " " + named};

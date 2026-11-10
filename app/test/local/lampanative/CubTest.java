@@ -143,4 +143,15 @@ class CubTest {
         assert g.apply("2026-10-26T22:00").equals("October | 26 Oct");
         assert g.apply("2025-05-01T12:00").equals("May 2025 | 1 May");
     }
+
+    // TMDB's date in another shape ("2026-11", text) is no date yet, never an exception on the UI thread.
+    void testDatesOfAnotherShape() {
+        java.time.LocalDate today = java.time.LocalDate.of(2026, 11, 2);
+        for (String odd : new String[] {"2026-11", "soon", "11/10/2026"}) {
+            assert Cub.date(odd) == null : odd;
+            assert Cub.day(odd, today)[0].equals("Later") : odd;
+        }
+        assert Cub.date("2026-11-10").equals(java.time.LocalDate.of(2026, 11, 10));
+        assert Cub.date("") == null;
+    }
 }

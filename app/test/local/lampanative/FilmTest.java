@@ -126,4 +126,10 @@ class FilmTest {
         assert o.getJSONArray("episodes").getJSONArray(0).getString(2).equals("Badger is arrested.") : b;
         assert o.getString("language").equals("Russian") : b;
     }
+
+    // A date in a shape we can't read says nothing, as none does.
+    void testAirsOfAnotherShape() {
+        java.time.LocalDate today = java.time.LocalDate.of(2026, 11, 2);
+        assert Film.airs("2026-11", today).isEmpty() && Film.airs("soon", today).isEmpty() && Film.airs("", today).isEmpty();
+    }
 }
