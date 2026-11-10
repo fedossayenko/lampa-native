@@ -251,4 +251,23 @@ class TimelineTest {
         assert Timeline.segments(403, "{\"error\":\"Forbidden.\"}").isEmpty();
         assert Timeline.segments(502, "<html>").isEmpty();
     }
+
+    // The receiver's decision: only the address playing, or one of its playlist, is a report about it.
+    void testReports() {
+        Timeline.Playing p = new Timeline.Playing("k1", "tv_1", 1, 1, 0, List.of(new Timeline.Episode(1, 1, "k1", "a", "https://w/s/1"),
+            new Timeline.Episode(1, 2, "k2", "b", "https://w/s/2")));
+        assert p.reports("https://w/s/1", "https://w/s/1") && p.reports("https://w/s/2", "https://w/s/1");
+        assert !p.reports("https://w/s/3", "https://w/s/1") && !p.reports(null, "https://w/s/1") && !p.reports("", "x");
+        Timeline.Playing film = new Timeline.Playing("k", "movie_1", 0, 0, 0);
+        assert film.reports("https://w/f", "https://w/f") && !film.reports("https://w/g", "https://w/f");
+    }
+
+    // A saved playback that is damaged is none (the receiver runs with the app killed).
+    void testPlayingOfDamaged() {
+        assert Timeline.Playing.of(null) == null && Timeline.Playing.of(new String[0]) == null;
+        assert Timeline.Playing.of(new String[] {"k", "movie_1", "0"}) == null;
+        assert Timeline.Playing.of(new String[] {"k", "movie_1", "x", "0", "0"}) == null;
+        assert Timeline.Playing.of(new String[] {"k", "movie_1", "0", "0", "0", "1", "two", "k", "n", "u"}) == null;
+        assert Timeline.Playing.of(new String[] {"k", "movie_1", "0", "0", "0"}).card().equals("movie_1");
+    }
 }

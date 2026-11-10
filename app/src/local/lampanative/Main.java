@@ -2102,6 +2102,9 @@ public class Main extends Activity {
     protected void onActivityResult(int request, int result, Intent data) {
         Timeline.Playing started = playing;
         playing = null;
+        // Its answer carries the final position: the reports of Progress end with the playback (else its address
+        // would stay good for any later broadcast that knew it)
+        if (request == PLAY) getSharedPreferences("playing", MODE_PRIVATE).edit().clear().apply();
         if (request != PLAY || started == null || result != RESULT_OK || data == null) return;
         String at = data.getData() == null ? null : data.getData().toString();
         Timeline.Playing p = started.at(at);
@@ -2166,8 +2169,7 @@ public class Main extends Activity {
             // Only about the address playing: the worker signs it, so another app can't know it
             String at = data.getDataString();
             SharedPreferences now = context.getSharedPreferences("playing", MODE_PRIVATE);
-            if (started == null || at == null || !at.equals(now.getString("url", ""))
-                && started.playlist().stream().noneMatch(e -> e.url().equals(at))) return;
+            if (started == null || !started.reports(at, now.getString("url", ""))) return;
             server(context);
             Timeline.Playing p = started.at(at);
             long[] t = p.saved(data.getLongExtra("position", 0), data.getLongExtra("duration", 0), false);
