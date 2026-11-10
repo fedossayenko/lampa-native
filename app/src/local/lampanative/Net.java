@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.MalformedURLException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -28,7 +29,10 @@ final class Net {
         }
     }
     // The worker's routes that read CUB take the app's sign-in (it checks it with CUB and keeps nothing).
+    // A redirect would send the headers on to wherever it points (the platform keeps a request's headers when it
+    // follows one): no route of ours redirects, so the calls that carry a token never follow one.
     static HttpURLConnection withCub(HttpURLConnection c, Cub.Account a) {
+        c.setInstanceFollowRedirects(false);
         c.setRequestProperty("X-Cub-Token", a.token());
         c.setRequestProperty("X-Cub-Profile", String.valueOf(a.profile()));
         return c;
@@ -36,11 +40,17 @@ final class Net {
     // CUB's API: the sign-in's form posts (as Lampa sends them), or a read with the account's token.
     static Answer cub(String path, String form, String token) throws IOException {
         HttpURLConnection c = open(Cub.API + path, 20000);
-        if (token != null) c.setRequestProperty("token", token);
+        if (token != null) {
+            c.setRequestProperty("token", token);
+            c.setInstanceFollowRedirects(false); // see withCub
+        }
         return send(c, form == null ? null : form.getBytes(StandardCharsets.UTF_8), "application/x-www-form-urlencoded");
     }
-    // A signed-in POST to the worker: its status, 0 when it didn't answer.
+    // A signed-in POST to the worker: its status, 0 when it didn't answer, or when nobody is signed in (a button drawn
+    // while signed in can be pressed after signing out from the Settings sheet; a null account would end the pool
+    // thread's task with a NullPointerException, which ends the app).
     static int post(String path, Cub.Account a, byte[] body, String type) {
+        if (a == null) return 0;
         try {
             return send(withCub(open(Home.worker + path, 20000), a), body, type).code();
         } catch (IOException e) {
@@ -111,11 +121,19 @@ final class Net {
         if (!url.startsWith("https://") && !url.startsWith("http://")) {
             throw new FileNotFoundException(Home.worker.isEmpty() ? "No worker set" : "Not an http(s) address: " + url);
         }
-        HttpURLConnection c = (HttpURLConnection) URI.create(url).toURL().openConnection();
+        HttpURLConnection c;
+        try {
+            c = (HttpURLConnection) URI.create(url).toURL().openConnection();
+        } catch (IllegalArgumentException e) { // a space or a bar in a language code: an IOException like the rest
+            throw new MalformedURLException("Not an address: " + url);
+        }
         c.setConnectTimeout(10000);
         c.setReadTimeout(readTimeout);
         String t = token;
-        if (t != null && !Home.worker.isEmpty() && url.startsWith(Home.worker + "/")) c.setRequestProperty("X-Play-Token", t);
+        if (t != null && !Home.worker.isEmpty() && url.startsWith(Home.worker + "/")) {
+            c.setRequestProperty("X-Play-Token", t);
+            c.setInstanceFollowRedirects(false); // see withCub
+        }
         return c;
     }
 }

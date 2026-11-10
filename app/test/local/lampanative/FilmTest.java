@@ -126,4 +126,30 @@ class FilmTest {
         assert o.getJSONArray("episodes").getJSONArray(0).getString(2).equals("Badger is arrested.") : b;
         assert o.getString("language").equals("Russian") : b;
     }
+
+    // A date in a shape we can't read says nothing, as none does.
+    void testAirsOfAnotherShape() {
+        java.time.LocalDate today = java.time.LocalDate.of(2026, 11, 2);
+        assert Film.airs("2026-11", today).isEmpty() && Film.airs("soon", today).isEmpty() && Film.airs("", today).isEmpty();
+    }
+
+    // Something to watch: an IMDb id, and for a series an episode out (Episodes opens the first season).
+    void testWatchable() {
+        Film none = Film.of(new Home.Card(1, "tv", "Soon", "2027", "", 0, ""));
+        assert !none.watchable(true) && !none.watchable(false);
+        Film noEpisodes = new Film("Soon", "", "", "", List.of(), List.of(), "tt1", List.of(), "", List.of(), "", List.of());
+        assert !noEpisodes.watchable(true) && noEpisodes.watchable(false);
+        Film out = new Film("Now", "", "", "", List.of(), List.of(), "tt1", List.of(new Film.Season(1, 8)), "", List.of(), "", List.of());
+        assert out.watchable(true);
+        assert out.heading(0, 0).equals("Now") && out.heading(3, 5).equals("Now · S3 E5");
+    }
+
+    // The trailer is a YouTube id and nothing that could add to the address.
+    void testTrailerUrl() {
+        assert Film.trailerUrl("dQw4w9WgXcQ").equals("https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+        for (String bad : new String[] {"", "abc", "x&list=PL1234567", "a#b1234567", "a b1234567", "../../x1234567"}) {
+            assert Film.trailerUrl(bad) == null : bad;
+        }
+        assert Film.trailerUrl(null) == null;
+    }
 }

@@ -63,4 +63,12 @@ class VoiceTest {
         String t = Voice.homeToken("abc");
         assert t.equals("a8689663e13cc261576ae1f0508c46a7f6ee6832b4f86d606be214ec050a5a64") : t;
     }
+
+    // Only a JSON object from the home server goes on to /voice/find; anything else is "didn't answer".
+    void testUnderstoodIsAnObject() throws Exception {
+        assert Voice.understood("{\"intent\":\"find\"}").equals("{\"intent\":\"find\"}");
+        assert Voice.understood("<html>login</html>") == null && Voice.understood("") == null;
+        assert Voice.understood("[1]") == null;
+        Voice.findBody("dune", Voice.understood("sorry, try later")); // null: no "understood" key, no exception
+    }
 }

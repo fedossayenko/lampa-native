@@ -7,12 +7,10 @@ import android.util.Log;
 import android.view.View;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 import java.io.IOException;
 import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.util.List;
-import java.util.Optional;
 import org.json.JSONException;
 
 // CUB's device sign-in, as Lampa's: a code to confirm on a phone at the site shown, asked about every few seconds
@@ -25,6 +23,7 @@ final class SignIn extends Main.Part {
     View level;
     Cub.Code c;
     long until;
+    volatile String approved; // the token once the code is confirmed, until the profiles are in
 
     SignIn(Main m, Runnable done) {
         super(m);
@@ -48,7 +47,7 @@ final class SignIn extends Main.Part {
     }
 
     void newCode() {
-        m.pool.execute(() -> {
+        m.async(() -> {
             try {
                 Answer a = cub("device/code", "client=lampa", null);
                 if (a.code() != 200) throw new IOException("HTTP " + a.code());
@@ -84,13 +83,21 @@ final class SignIn extends Main.Part {
             return;
         }
         Cub.Code asked = c;
-        m.pool.execute(() -> {
+        m.async(() -> {
             try {
-                Answer a = cub("device/token", "device_code=" + URLEncoder.encode(asked.device(), "UTF-8"), null);
-                String token = a.code() == 200 ? Cub.token(a.body()) : null;
+                // approved already: only the profiles are asked again (the code is used up once it is confirmed, so
+                // asking device/token again would answer a refusal and send the user to their phone for a new code)
+                String token = approved;
+                Answer a = null;
+                if (token == null) {
+                    a = cub("device/token", "device_code=" + URLEncoder.encode(asked.device(), "UTF-8"), null);
+                    token = a.code() == 200 ? Cub.token(a.body()) : null;
+                }
                 if (token != null) {
+                    approved = token;
                     List<Cub.Profile> all = Cub.profiles(cub("profiles/all", null, token).body());
-                    m.ui.post(() -> pick(token, all));
+                    String approvedToken = token;
+                    m.ui.post(() -> pick(approvedToken, all));
                 } else if (a.code() != 200 && Cub.newCode(a.body())) {
                     m.ui.post(() -> {
                         if (m.alive(level)) newCode();
@@ -126,13 +133,13 @@ final class SignIn extends Main.Part {
     void save(String token, Cub.Profile p) {
         Cub.Account a = new Cub.Account(token, p.id(), p.name());
         try {
-            Files.write(m.cubFile().toPath(), a.save().getBytes(StandardCharsets.UTF_8)); // private to the app
+            m.saveAccount(a);
         } catch (IOException e) {
             Log.w(Main.TAG, "CUB account not saved", e);
-            status.setText("Couldn't save the sign-in: " + e.getMessage());
+            // a toast: with profiles to pick from the status line is gone from the list (pick() cleared it)
+            Toast.makeText(m, "Couldn't save the sign-in: " + e.getMessage(), Toast.LENGTH_LONG).show();
             return;
         }
-        m.cubAccount = Optional.of(a);
         if (m.pageTop == level) m.back(); // the level below, or Home when it was opened over Home
         done.run();
     }

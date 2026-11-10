@@ -58,6 +58,19 @@ final class Home {
             m.optString(6));
     }
 
+    // Which of your rows' cards (the tags of the cards, null where one has none) Home focuses when /mine is drawn
+    // again: the film that had focus (was: its card; it may have moved), else the first when nothing had focus, or
+    // the card Home focused at start (atStart), or anything else of yours did (was: a tile's tag, History); -1 none.
+    static int focusIndex(List<Card> cards, Object was, boolean atStart) {
+        if (was instanceof Card w) {
+            for (int i = 0; i < cards.size(); i++) {
+                Card c = cards.get(i);
+                if (c != null && c.id() == w.id() && c.type().equals(w.type())) return i;
+            }
+        }
+        return !cards.isEmpty() && (was != null || atStart) ? 0 : -1;
+    }
+
     // Lampa's score colors: green from 70, orange from 50, red below.
     static int scoreColor(int score) {
         return score >= 70 ? GREEN : score >= 50 ? ORANGE : RED;

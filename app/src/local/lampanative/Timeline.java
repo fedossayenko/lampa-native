@@ -272,13 +272,25 @@ final class Timeline {
             return a.toArray(new String[0]);
         }
 
+        // null: none, or what isn't one (too short, a number that isn't): the receiver runs with the app killed, where
+        // an exception is a crash report for a broadcast that only asked to be ignored.
         static Playing of(String[] a) {
-            if (a == null) return null;
-            List<Episode> list = new ArrayList<>();
-            for (int i = 5; i + 4 < a.length; i += 5) {
-                list.add(new Episode(Integer.parseInt(a[i]), Integer.parseInt(a[i + 1]), a[i + 2], a[i + 3], a[i + 4]));
+            if (a == null || a.length < 5) return null;
+            try {
+                List<Episode> list = new ArrayList<>();
+                for (int i = 5; i + 4 < a.length; i += 5) {
+                    list.add(new Episode(Integer.parseInt(a[i]), Integer.parseInt(a[i + 1]), a[i + 2], a[i + 3], a[i + 4]));
+                }
+                return new Playing(a[0], a[1], Integer.parseInt(a[2]), Integer.parseInt(a[3]), Long.parseLong(a[4]), list);
+            } catch (NumberFormatException e) {
+                return null;
             }
-            return new Playing(a[0], a[1], Integer.parseInt(a[2]), Integer.parseInt(a[3]), Long.parseLong(a[4]), list);
+        }
+
+        // Whether a report of DDD's (the address it plays) is about this playback: the address started, or one of the
+        // playlist's. Only the worker's signature makes one, so another app can't send a report that passes.
+        boolean reports(String address, String started) {
+            return address != null && (address.equals(started) || playlist.stream().anyMatch(e -> e.url().equals(address)));
         }
 
         // The episode DDD stopped on (its address; null or not in the list: this one), started from its beginning

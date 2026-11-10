@@ -55,7 +55,7 @@ final class Search {
 
     // The last searches as lines (newest first, each once, at most 8), with q added.
     static String remember(String saved, String q) {
-        String query = q.trim();
+        String query = q.trim().replaceAll("\\s+", " "); // one line: a heard request may hold a line break
         if (query.isEmpty()) return saved;
         List<String> all = new ArrayList<>(recent(saved));
         all.remove(query);

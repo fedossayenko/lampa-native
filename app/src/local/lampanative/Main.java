@@ -236,6 +236,21 @@ public class Main extends Activity {
         }
     }
 
+    // Every task of the pool goes through here. A task that throws more than the IOException it catches (a decoder's
+    // RuntimeException, an out-of-memory) would end its pool thread with an uncaught exception, which ends the app: it
+    // is logged and the screen keeps what it has. After onDestroy (the pool is shut down) a running task's late post
+    // can still reach a loader (loadMine after a grade saved): nothing is asked then.
+    void async(Runnable task) {
+        if (pool.isShutdown()) return;
+        pool.execute(() -> {
+            try {
+                task.run();
+            } catch (Throwable t) { // NOPMD: the point
+                Log.w(TAG, "task failed", t);
+            }
+        });
+    }
+
     // dp to whole pixels: (int) (v * dp)
     int dp(float v) {
         return (int) (v * dp);
@@ -351,7 +366,7 @@ public class Main extends Activity {
 
     void loadHome() {
         boolean signedIn = account() != null;
-        pool.execute(() -> {
+        async(() -> {
             try {
                 // From the disk even past its hour (≤ a day; measured: first poster 370-410 ms after start instead
                 // of 580-700), then a fresh one into the disk for the next start. Your rows as last seen, with it.
@@ -380,7 +395,7 @@ public class Main extends Activity {
     void loadMine() {
         Cub.Account a = account();
         if (a == null) return;
-        pool.execute(() -> {
+        async(() -> {
             try {
                 // lang: Coming up's "out" is out in these audio languages (the app English, the audio
                 // Russian)
@@ -388,7 +403,9 @@ public class Main extends Activity {
                 if (r.code() != 200) throw new Status(r.code());
                 ui.post(() -> {
                     if (account() != a) return; // signed out (or in again) meanwhile
+                    boolean changed = !r.body().equals(mineShown);
                     showMine(r.body());
+                    if (!changed || !r.body().equals(mineShown)) return; // the same, or not drawn (not valid): not kept
                     try {
                         Files.write(mineFile().toPath(), r.body().getBytes(StandardCharsets.UTF_8)); // ~2 KB
                     } catch (IOException e) {
@@ -455,16 +472,10 @@ public class Main extends Activity {
             if (tiles) line.addView(historyTile = historyTile(title));
         }
         minePosters.addAll(posters.subList(before, posters.size()));
-        View target = null;
-        for (ImageView p : minePosters) {
-            View card = cardOf(p);
-            if (target == null && (was != null || old == null || old == firstCard)) target = card; // the first
-            if (was instanceof Home.Card w && card.getTag() instanceof Home.Card c && c.id() == w.id()
-                && c.type().equals(w.type())) {
-                target = card;
-                break;
-            }
-        }
+        List<Home.Card> tags = new ArrayList<>();
+        for (ImageView p : minePosters) tags.add(cardOf(p).getTag() instanceof Home.Card c ? c : null);
+        int at = Home.focusIndex(tags, was, old == null || old == firstCard);
+        View target = at < 0 ? null : cardOf(minePosters.get(at));
         if (HISTORY.equals(was)) target = historyTile;
         if (target == null && was != null && !posters.isEmpty()) target = cardOf(posters.get(0));
         if (page != null) {
@@ -499,7 +510,7 @@ public class Main extends Activity {
     void addHistory(Home.Card c) {
         Cub.Account a = account();
         if (a == null) return;
-        pool.execute(() -> {
+        async(() -> {
             int code = post("/mine/history/" + c.type() + "/" + c.id(), a, new byte[0], "text/plain");
             if (code != 204) Log.w(TAG, "history: HTTP " + code); // ponytail: lost; Lampa's history misses this one
         });
@@ -649,7 +660,9 @@ public class Main extends Activity {
 
     // A film page's Trailer: the worker's YouTube video in SmartTube when installed, else whatever opens YouTube links.
     void playTrailer(String video) {
-        Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/watch?v=" + video));
+        String address = Film.trailerUrl(video);
+        if (address == null) return;
+        Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(address));
         try {
             startActivity(new Intent(i).setPackage("org.smarttube.stable"));
         } catch (ActivityNotFoundException e) {
@@ -820,7 +833,7 @@ public class Main extends Activity {
         pushLevel(sv, c.backdrop(), pics, sources == null);
         restoring = sources != null;
 
-        pool.execute(() -> {
+        async(() -> {
             try {
                 Film f = Film.parse(new String(read(Film.url(c)), StandardCharsets.UTF_8));
                 ui.post(() -> {
@@ -861,7 +874,7 @@ public class Main extends Activity {
         String path = pageBackdropPath;
         if (path.isEmpty()) return;
         int sw = getResources().getDisplayMetrics().widthPixels, sh = getResources().getDisplayMetrics().heightPixels;
-        pool.execute(() -> {
+        async(() -> {
             try {
                 // Dimmed, and faded to the ground on the left and at the bottom, in one pass when it loads (a few
                 // ms on the pool; per frame: nothing). Software: at the screen's size; GPU: at its own (the GPU
@@ -876,7 +889,10 @@ public class Main extends Activity {
                 }
                 Bitmap done = b;
                 ui.post(() -> {
-                    if (stopped || pageTop != top) return; // left meanwhile
+                    if (stopped || pageTop != top) { // left meanwhile
+                        done.recycle(); // 4 MB of pixels (native) that no one will see
+                        return;
+                    }
                     pageBackdrop.setImageBitmap(done);
                     Log.i(TAG, "film backdrop " + (System.currentTimeMillis() - t) + " ms after OK");
                 });
@@ -911,7 +927,7 @@ public class Main extends Activity {
             info.addView(scoreRow(scores), lp);
         }
         LinearLayout buttons = line();
-        boolean watchable = !f.imdb().isEmpty() && (!series || !f.episodes().isEmpty()); // a series with no episodes yet: none
+        boolean watchable = f.watchable(series); // a series with no episodes yet: none
         // Settings → Play picks: Best cached: a film's ▶ Play starts the release picked
         // for it (pickSource, under the buttons), Sources lists them all
         boolean picks = !series && picks();
@@ -1104,7 +1120,7 @@ public class Main extends Activity {
         content.addView(info, getResources().getDisplayMetrics().widthPixels * 2 / 3, -2);
         column.addView(content);
         pushLevel(sv, "", pics, false);
-        pool.execute(() -> {
+        async(() -> {
             try {
                 Person p = Person.parse(new String(read(url), StandardCharsets.UTF_8));
                 ui.post(() -> {
@@ -1132,7 +1148,7 @@ public class Main extends Activity {
             boolean on = !cubFollows.contains(a.id());
             Cub.Account acc = account();
             b.setText(on ? "Following…" : "Unfollowing…");
-            pool.execute(() -> {
+            async(() -> {
                 int done = post("/mine/" + (on ? "follow/" : "unfollow/") + a.id(), acc, new byte[0], "text/plain");
                 ui.post(() -> {
                     if (done == 204) {
@@ -1274,9 +1290,13 @@ public class Main extends Activity {
     }
 
     // How far in: two rects along the bottom, a dark track and the white part watched.
+    // The bar's paint, one a thread (the UI thread draws with it, two pool threads may bake at once): a tile with a
+    // bar made a Paint on every frame it was drawn.
+    private static final ThreadLocal<Paint> BAR = ThreadLocal.withInitial(Paint::new);
+
     static void bar(Canvas c, int w, int h, int percent, float dp) {
         if (percent <= 0) return;
-        Paint p = new Paint();
+        Paint p = BAR.get();
         p.setColor(0x80000000);
         c.drawRect(0, h - 4 * dp, w, h, p);
         p.setColor(Color.WHITE);
@@ -1314,7 +1334,7 @@ public class Main extends Activity {
     void pickSource(Film f, Sources.Source[] best, TextView plays, View level) {
         String url = Sources.url(f.imdb(), 0, 0, langs(), 0);
         Future<?> before = preload;
-        pool.execute(() -> {
+        async(() -> {
             Sources.Source s = null;
             boolean read = false;
             try {
@@ -1394,12 +1414,7 @@ public class Main extends Activity {
     // "Plays [4K] [DV] [REMUX] · RU · 74.3 GB · ⚡ Cached": the picture's badges as the source rows' chips.
     CharSequence playsLine(Sources.Source s) {
         SpannableStringBuilder line = new SpannableStringBuilder("Plays  ");
-        for (String b : Sources.picture(s)) {
-            int start = line.length();
-            line.append(b);
-            line.setSpan(new Chip(b, Sources.badgeColor(b)), start, line.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            line.append("  ");
-        }
+        for (String b : Sources.picture(s)) chip(line, b);
         line.append(Sources.tracks(s.languages(), langs())).append(" · ").append(s.size()).append(" · ");
         int start = line.length();
         line.append(Sources.BOLT + " Cached");
@@ -1610,7 +1625,7 @@ public class Main extends Activity {
         View panel = overlay;
         Toast.makeText(this, "Saving…", Toast.LENGTH_SHORT).show();
         byte[] body = Cub.gradeBody(c, original, g, System.currentTimeMillis()).getBytes(StandardCharsets.UTF_8);
-        pool.execute(() -> {
+        async(() -> {
             int done = post("/grades", a, body, "application/json");
             ui.post(() -> {
                 if (done != 200) {
@@ -1642,7 +1657,7 @@ public class Main extends Activity {
         Cub.Account a = account();
         View panel = overlay;
         Toast.makeText(this, "Saving…", Toast.LENGTH_SHORT).show();
-        pool.execute(() -> {
+        async(() -> {
             int done = post("/mine/" + list + "/" + c.type() + "/" + c.id(), a, new byte[0], "text/plain");
             ui.post(() -> {
                 if (done != 204) {
@@ -1665,7 +1680,7 @@ public class Main extends Activity {
     // ponytail: each remark() hashes every episode's key again (~3000 on a 1000-episode series, a few ms, only when
     // marks come); keep the keys per film if that shows up
     void loadMarks(Film f) {
-        pool.execute(() -> {
+        async(() -> {
             try {
                 Answer a = ask("/timeline?hash=" + Timeline.keys(f), null); // up to 1000 keys: off the UI thread
                 if (a.code() != 200) throw new IOException("HTTP " + a.code());
@@ -1711,7 +1726,7 @@ public class Main extends Activity {
     // release has this episode too (a season's torrent), it plays at once, no OK.
     void showSources(Film f, Home.Card c, int season, int episode, String prefer, boolean autoplay) {
         long t = System.currentTimeMillis();
-        String title = title(f, season, episode);
+        String title = f.heading(season, episode);
         // The head: "Sources", what for and how many under it, the audio languages on a
         // button at the right (Up from the first source)
         LinearLayout list = pushList("Sources");
@@ -1748,10 +1763,6 @@ public class Main extends Activity {
         loadSources(req, 0, before);
     }
 
-    static String title(Film f, int season, int episode) {
-        return season > 0 ? f.name() + " · S" + season + " E" + episode : f.name();
-    }
-
     // One source list being filled: what it lists, where, the rows not built yet, and when Watch was pressed.
     // audioReads[0]: how many more rows may ask the worker for their audio (rows are built on the UI thread).
     record SourceList(Film f, Home.Card c, int season, int episode, String title, String langs, LinearLayout list,
@@ -1761,7 +1772,7 @@ public class Main extends Activity {
     // Torrentio refusing the worker (its 502: 429 from Cloudflare's shared IPs) sends this and the next 10 minutes'
     // pages through the stick.
     void loadSources(SourceList req, int from, Future<?> before) {
-        pool.execute(() -> {
+        async(() -> {
             try {
                 if (before != null) before.get();
             } catch (Exception e) {
@@ -1800,7 +1811,8 @@ public class Main extends Activity {
                 Log.w(TAG, "sources " + imdb, e);
                 ui.post(() -> {
                     if (req.status().getParent() == null) req.list().addView(req.status()); // under the first 6
-                    req.status().setText("Can't load the sources. Press Back and try again.");
+                    req.status().setText(from > 0 ? "The rest of the sources didn't load. Press Back and try again."
+                        : "Can't load the sources. Press Back and try again.");
                 });
                 return;
             }
@@ -1977,7 +1989,7 @@ public class Main extends Activity {
         // their own threads: the link's task below waits for them, and the pool's three may all be busy
         if (skipsAsked != null) new Thread(skipsAsked, "segments").start();
         if (stillsAsked != null) new Thread(stillsAsked, "stills").start();
-        pool.execute(() -> {
+        async(() -> {
             String message;
             try {
                 Answer a = ask(path, null);
@@ -2016,9 +2028,9 @@ public class Main extends Activity {
                         getSharedPreferences("last", MODE_PRIVATE).edit().putString(Timeline.card(c),
                             new Timeline.Last(season, episode, hash, fileIdx, name).save()).apply();
                         addHistory(c);
-                        String[] titles = l.playlist().stream().map(e -> title(f, e.season(), e.episode()))
+                        String[] titles = l.playlist().stream().map(e -> f.heading(e.season(), e.episode()))
                             .toArray(String[]::new);
-                        startPlayer(l.url(), title(f, season, episode), Sources.audio(langs()),
+                        startPlayer(l.url(), f.heading(season, episode), Sources.audio(langs()),
                             new Timeline.Playing(key, Timeline.card(c), season, episode, l.startMs(), l.playlist()),
                             titles, stills, overviews, skip);
                     });
@@ -2087,6 +2099,9 @@ public class Main extends Activity {
     protected void onActivityResult(int request, int result, Intent data) {
         Timeline.Playing started = playing;
         playing = null;
+        // Its answer carries the final position: the reports of Progress end with the playback (else its address
+        // would stay good for any later broadcast that knew it)
+        if (request == PLAY) getSharedPreferences("playing", MODE_PRIVATE).edit().clear().apply();
         if (request != PLAY || started == null || result != RESULT_OK || data == null) return;
         String at = data.getData() == null ? null : data.getData().toString();
         Timeline.Playing p = started.at(at);
@@ -2121,7 +2136,7 @@ public class Main extends Activity {
             askGrade();
         }
         String json = p.body(t);
-        pool.execute(() -> {
+        async(() -> {
             try {
                 int code = ask("/timeline", json.getBytes(StandardCharsets.UTF_8)).code();
                 if (code != 204) Log.w(TAG, "timeline: HTTP " + code);
@@ -2151,8 +2166,7 @@ public class Main extends Activity {
             // Only about the address playing: the worker signs it, so another app can't know it
             String at = data.getDataString();
             SharedPreferences now = context.getSharedPreferences("playing", MODE_PRIVATE);
-            if (started == null || at == null || !at.equals(now.getString("url", ""))
-                && started.playlist().stream().noneMatch(e -> e.url().equals(at))) return;
+            if (started == null || !started.reports(at, now.getString("url", ""))) return;
             server(context);
             Timeline.Playing p = started.at(at);
             long[] t = p.saved(data.getLongExtra("position", 0), data.getLongExtra("duration", 0), false);
@@ -2223,8 +2237,8 @@ public class Main extends Activity {
     }
 
     Answer ask(String path, byte[] body, String type) throws IOException {
+        token(); // read again after a refusal, or a missing one is told here (open() sends it)
         HttpURLConnection c = open(Home.worker + path, 30000); // TorBox can take a while
-        c.setRequestProperty("X-Play-Token", token());
         Answer a = send(c, body, type);
         if (a.code() == 401 || a.code() == 403) Net.token = null; // set up again: read the file next time
         return a;
@@ -2322,7 +2336,7 @@ public class Main extends Activity {
         if (a == null) return;
         View level = (View) list.getParent();
         int tz = TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 60000;
-        pool.execute(() -> {
+        async(() -> {
             try {
                 Answer r = send(withCub(open(Home.worker + "/mine/history?tz=" + tz, 20000), a), null, null);
                 if (r.code() != 200) throw new Status(r.code());
@@ -2418,18 +2432,21 @@ public class Main extends Activity {
             String body = new JSONArray(p.hashes()).toString();
             list.addView(sheetRow("Mark unwatched", (p.what().isEmpty() ? "Back to the start" : p.what() + " back to the "
                 + "start") + ", here and in Lampa", null, v -> historyChange("/mine/unwatch",
-                ("{\"hashes\":" + body + "}").getBytes(StandardCharsets.UTF_8), at)));
+                ("{\"hashes\":" + body + "}").getBytes(StandardCharsets.UTF_8), at, p.hashes())));
         }
         list.addView(sheetRow("Remove from history", "Lampa's history loses it too", null,
-            v -> historyChange("/mine/unhistory/" + p.card().type() + "/" + p.card().id(), new byte[0], at)));
+            v -> historyChange("/mine/unhistory/" + p.card().type() + "/" + p.card().id(), new byte[0], at, List.of())));
     }
 
     // A History change sent (204: CUB or the timeline took it), then the page and Home's rows again.
-    void historyChange(String path, byte[] body, int at) {
+    // unwatched: the keys of the points taken back to the start: the marks kept here (and DDD's answers of this
+    // session, which the worker's answers never overwrite) forget them, or the episodes would show Watched until the
+    // app is closed.
+    void historyChange(String path, byte[] body, int at, List<String> unwatched) {
         Cub.Account a = account();
         LinearLayout list = historyList;
         Toast.makeText(this, "Saving…", Toast.LENGTH_SHORT).show();
-        pool.execute(() -> {
+        async(() -> {
             int done = post(path, a, body, "application/json");
             ui.post(() -> {
                 if (done != 204) {
@@ -2437,6 +2454,9 @@ public class Main extends Activity {
                     return;
                 }
                 closeOverlay();
+                marks.keySet().removeAll(unwatched);
+                played.removeAll(unwatched);
+                remark();
                 if (list != null && alive((View) list.getParent())) fillHistory(list, Math.max(0, at));
                 loadMine(); // Continue browsing, the posters' badges
             });
@@ -2447,7 +2467,7 @@ public class Main extends Activity {
     // the same first sources page as ▶ Play's pick.
     void cachedLabel(Cub.Coming x, TextView label) {
         String langs = langs();
-        pool.execute(() -> {
+        async(() -> {
             try {
                 Film film = Film.parse(new String(read(Film.url(x.card())), StandardCharsets.UTF_8));
                 if (film.imdb().isEmpty()) return;
@@ -2547,7 +2567,7 @@ public class Main extends Activity {
             return;
         }
         s.thinking("Hearing…");
-        pool.execute(() -> {
+        async(() -> {
             String text = null;
             Voice.Answer found = null;
             try {
@@ -2587,7 +2607,7 @@ public class Main extends Activity {
             c.setConnectTimeout(3000);
             c.setRequestProperty("X-Play-Token", Voice.homeToken(token()));
             Answer a = send(c, Voice.understandBody(text).getBytes(StandardCharsets.UTF_8), "application/json");
-            if (a.code() == 200) return a.body();
+            if (a.code() == 200) return Voice.understood(a.body());
             Log.w(TAG, "voice: Claude Code answered " + a.code());
         } catch (IOException | JSONException e) {
             Log.w(TAG, "voice: no Claude Code", e);
@@ -2634,6 +2654,10 @@ public class Main extends Activity {
             String next = cubNext.get(key);
             list.addView(sheetRow("▶  Episodes", next, null, v -> {
                 if (film[0] == null) return;
+                if (!film[0].watchable(true)) { // no season to open: Episodes shows the first
+                    Toast.makeText(this, "No episodes out yet.", Toast.LENGTH_SHORT).show();
+                    return;
+                }
                 closeOverlay();
                 openPage(card);
                 loadMarks(film[0]);
@@ -2690,7 +2714,7 @@ public class Main extends Activity {
         View panel = overlay;
         TextView playing = playLine, listing = sourcesLine;
         boolean picks = picks();
-        pool.execute(() -> {
+        async(() -> {
             try {
                 Film f = Film.parse(new String(read(Film.url(c)), StandardCharsets.UTF_8));
                 String ends = Film.endsAt(f.runtime(), LocalTime.now());
@@ -2824,7 +2848,7 @@ public class Main extends Activity {
         long now = SystemClock.elapsedRealtime();
         if (now - torboxAt < 60_000) return; // the tab's rows drawn again after a sub-sheet: no new request, no "…"
         torboxAt = now;
-        pool.execute(() -> { // TorBox's plan and torrents (~0.5 s)
+        async(() -> { // TorBox's plan and torrents (~0.5 s)
             String line;
             try {
                 Answer t = ask("/torbox", null);
@@ -2872,7 +2896,7 @@ public class Main extends Activity {
         wait.setPadding(dp(12), 0, 0, 0);
         list.addView(wait);
         View panel = overlay;
-        pool.execute(() -> {
+        async(() -> {
             try {
                 List<Cub.Profile> all = Cub.profiles(cub("profiles/all", null, a.token()).body());
                 ui.post(() -> {
@@ -2880,14 +2904,12 @@ public class Main extends Activity {
                     list.removeView(wait);
                     for (Cub.Profile p : all) {
                         list.addView(sheetRow(p.name(), p.main() ? "Main profile" : null, check(p.id() == a.profile()), v -> {
-                            Cub.Account now = new Cub.Account(a.token(), p.id(), p.name());
                             try {
-                                Files.write(cubFile().toPath(), now.save().getBytes(StandardCharsets.UTF_8));
+                                saveAccount(new Cub.Account(a.token(), p.id(), p.name()));
                             } catch (IOException e) {
                                 Toast.makeText(this, "Couldn't save it: " + e.getMessage(), Toast.LENGTH_LONG).show();
                                 return;
                             }
-                            cubAccount = Optional.of(now);
                             closeOverlay();
                             loadMine(); // that profile's rows
                         }));
@@ -2911,6 +2933,12 @@ public class Main extends Activity {
             }
         }
         return cubAccount.orElse(null);
+    }
+
+    // The account signed in or switched to a profile: in files/cub (private to the app) and in memory.
+    void saveAccount(Cub.Account a) throws IOException {
+        Files.write(cubFile().toPath(), a.save().getBytes(StandardCharsets.UTF_8));
+        cubAccount = Optional.of(a);
     }
 
     File cubFile() {
@@ -2996,13 +3024,6 @@ public class Main extends Activity {
 
     String langs() {
         return settings().getString("langs", ""); // "": all languages
-    }
-
-    // Story so far's language (in the language heard): the first audio language, "RU"; null: English
-    // (English among them, or any)
-    String storyLang() {
-        List<String> codes = Sources.codes(langs());
-        return codes.isEmpty() || codes.contains("EN") ? null : codes.get(0);
     }
 
     // The audio languages by name, "Russian or Ukrainian" (Coming up); null: any language, or English among them
@@ -3151,8 +3172,10 @@ public class Main extends Activity {
         summary.setMaxLines(60);
         if (!homeServer.isEmpty()) list.addView(claude); // Claude's recap: only with a home server
         list.addView(section("Last time"));
-        String lang = storyLang();
-        pool.execute(() -> {
+        String lang = Sources.storyLang(langs());
+        // its own thread, as play()'s: the recap may wait 150 s on the home server, and one of the pool's three would
+        // sit there while posters and pages queue behind it
+        new Thread(() -> {
             // the seasons of the last three, and the one before the last's (Claude's overviews)
             Set<Integer> numbers = new java.util.TreeSet<>();
             for (int[] e : last) numbers.add(e[0]);
@@ -3205,7 +3228,7 @@ public class Main extends Activity {
             }
             String shown = text != null ? text : "Claude isn't answering (the home server): the episodes below.";
             ui.post(() -> summary.setText(shown));
-        });
+        }, "story").start();
     }
 
     // A side sheet (⋯, Settings, Audio languages): 392 dp on the right, its title, an optional gray line, then its
@@ -3645,7 +3668,7 @@ public class Main extends Activity {
         int level = shown, w = soft ? p.getWidth() : 0, h = soft ? p.getHeight() : 0;
         boolean shaded = page != null && !pageBackdropPath.isEmpty() // a film's pictures, over its backdrop
             || p instanceof Pic pic && pic.onRow;
-        pool.execute(() -> {
+        async(() -> {
             Bitmap b = null;
             try {
                 if (level == shown) { // else its level went away
@@ -3668,7 +3691,10 @@ public class Main extends Activity {
                 loading.remove(p);
                 // A view not shown (Home under a page, a level under another) can't tell if it's near; showing it
                 // again reloads what is.
-                if (stopped || !p.isAttachedToWindow() || !near(p)) return;
+                if (stopped || !p.isAttachedToWindow() || !near(p)) {
+                    if (done != null) done.recycle(); // never shown: its pixels (native) go now, not at some later GC
+                    return;
+                }
                 if (done == null) {
                     if (level != shown) load(p); // skipped, but its level is back: Back came before this ran
                     return;

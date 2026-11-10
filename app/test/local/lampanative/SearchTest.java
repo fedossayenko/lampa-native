@@ -47,4 +47,10 @@ class SearchTest {
         assert Search.remember("dark", "  ").equals("dark") : "nothing typed: nothing kept";
         assert Search.recent("inter\ndark").equals(List.of("inter", "dark")) && Search.recent("").isEmpty();
     }
+
+    // A heard request with a line break is one line: the saved list is split on them.
+    void testRememberOneLine() {
+        assert Search.remember("", "dark\n knight  ").equals("dark knight");
+        assert Search.recent(Search.remember("a", "b\nc")).equals(java.util.List.of("b c", "a"));
+    }
 }

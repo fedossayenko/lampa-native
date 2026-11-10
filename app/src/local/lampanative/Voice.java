@@ -60,6 +60,17 @@ final class Voice {
         return new JSONObject().put("text", text).toString();
     }
 
+    // The home server's answer as it came when it is a JSON object, else null: a captive page or a proxy's text on
+    // a 200 would make findBody throw, and the worker's own understanding (what null asks for) would never be tried.
+    static String understood(String body) {
+        try {
+            new JSONObject(body); // parses, or throws
+            return body;
+        } catch (JSONException e) {
+            return null;
+        }
+    }
+
     // understood: Claude Code's answer as it came, null when it didn't answer (the worker's own model reads text).
     static String findBody(String text, String understood) throws JSONException {
         JSONObject o = new JSONObject().put("text", text);

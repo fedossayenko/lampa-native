@@ -189,4 +189,10 @@ class SourcesTest {
         assert Sources.audioPath(spaced).equals("/audio/h?file=2&name=%D0%94%D1%8E%D0%BD%D0%B0+2+%5B4K%5D.mkv")
             : Sources.audioPath(spaced);
     }
+
+    // Story so far goes in the first audio language picked; English or any language: English.
+    void testStoryLang() {
+        assert Sources.storyLang("RU,UA").equals("RU") && Sources.storyLang("UA").equals("UA");
+        assert Sources.storyLang("") == null && Sources.storyLang("RU,EN") == null;
+    }
 }
