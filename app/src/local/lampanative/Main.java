@@ -863,6 +863,12 @@ public class Main extends Activity {
         // ponytail: a restore whose /card fails stays without its backdrop; Back and in again shows it
     }
 
+    // The level a content column is on, which is what alive() and the loaders take: the scroll view that pushList,
+    // showFilm, rowsPage and tabPage put it in. The one place that knows that.
+    static View levelOf(View content) {
+        return (View) content.getParent();
+    }
+
     // Whether this level is still on the page (on top or under it): loaders check it before drawing.
     boolean alive(View level) {
         return level == pageTop || levels.stream().anyMatch(l -> l.view() == level);
@@ -931,7 +937,7 @@ public class Main extends Activity {
             Sources.Source[] best = new Sources.Source[1]; // ▶ Play's release, once the first sources are read
             TextView watch = button(picks ? "▶  Play" : "▶  Watch", v -> {
                 if (series) new Episodes(this, f, c, Timeline.resume(f.episodes(), (s, e) -> marks.get(Timeline.key(f, s, e)))).show();
-                else if (best[0] != null) play(f, c, 0, 0, best[0].hash(), best[0].fileIdx(), best[0].title(), (View) column.getParent());
+                else if (best[0] != null) play(f, c, 0, 0, best[0].hash(), best[0].fileIdx(), best[0].title(), levelOf(column));
                 else showSources(f, c, 0, 0, null, false); // none cached, or not read yet
             });
             watch.setOnFocusChangeListener((v, focused) -> { // up from the rows: the whole top again
@@ -944,7 +950,7 @@ public class Main extends Activity {
             buttons.addView(watch);
             if (picks) buttons.addView(button("Sources", v -> showSources(f, c, 0, 0, null, false)), spaced());
             (cont.getVisibility() == View.VISIBLE ? cont : watch).requestFocus(); // marks known: Continue
-            if (picks && loaded) pickSource(f, best, plays, (View) column.getParent());
+            if (picks && loaded) pickSource(f, best, plays, levelOf(column));
         }
         // each film's trailer on its page, not a row of trailers
         if (!f.trailer().isEmpty()) {
@@ -953,7 +959,7 @@ public class Main extends Activity {
         }
         // the page's top (alive() knows it), not column: given column, the status's answer was always dropped
         if (loaded && cub.learnBound() && !series && !f.imdb().isEmpty()) {
-            learnButton(f, c, buttons, (View) column.getParent());
+            learnButton(f, c, buttons, levelOf(column));
         }
         // Story so far: a series with episodes watched before the one Continue goes on with. Its tag shows it
         // once the marks are known (remark), as Continue's
@@ -1406,7 +1412,7 @@ public class Main extends Activity {
             int[] to = Timeline.continueTo(series, f, marks::get, last);
             if (to == null) return; // hidden meanwhile
             if (Timeline.replays(last, to)) {
-                play(f, c, to[0], to[1], last.hash(), last.fileIdx(), last.name(), (View) column.getParent());
+                play(f, c, to[0], to[1], last.hash(), last.fileIdx(), last.name(), levelOf(column));
             } else {
                 reopen(f, c, to[0], to[1], last != null ? last.hash() : null, true);
             }
@@ -1720,7 +1726,7 @@ public class Main extends Activity {
         preload = null;
         SourceList req = new SourceList(f, c, season, episode, title, langs(), list, status, sub, audio,
             new ArrayDeque<>(), t, prefer, autoplay, new int[] {AUDIO_READS});
-        ((View) list.getParent()).setTag(req); // onSaveInstanceState: the list to open again after process death
+        levelOf(list).setTag(req); // onSaveInstanceState: the list to open again after process death
         loadSources(req, 0, before);
     }
 
@@ -1728,13 +1734,17 @@ public class Main extends Activity {
     // audioReads[0]: how many more rows may ask the worker for their audio (rows are built on the UI thread).
     record SourceList(Film f, Home.Card c, int season, int episode, String title, String langs, LinearLayout list,
                       TextView status, TextView sub, TextView audio, ArrayDeque<Sources.Source> pending, long t,
-                      String prefer, boolean autoplay, int[] audioReads) {}
+                      String prefer, boolean autoplay, int[] audioReads) {
+        View level() {
+            return levelOf(list);
+        }
+    }
 
     // Torrentio refusing the worker (its 502: 429 from Cloudflare's shared IPs) sends this and the next 10 minutes'
     // pages through the stick.
     void loadSources(SourceList req, int from, Future<?> before) {
         String imdb = req.f().imdb();
-        load((View) req.list().getParent(), "sources " + imdb, () -> {
+        load(req.level(), "sources " + imdb, () -> {
             try {
                 if (before != null) before.get();
             } catch (Exception e) {
@@ -1770,7 +1780,7 @@ public class Main extends Activity {
             for (Sources.Source s : p.streams()) { // each release once in all the pages: it plays once
                 if (req.autoplay() && s.hash().equals(req.prefer())) {
                     play(req.f(), req.c(), req.season(), req.episode(), s.hash(), s.fileIdx(), s.title(),
-                        (View) req.list().getParent());
+                        req.level());
                 }
             }
             req.pending().addAll(p.streams());
@@ -1783,7 +1793,7 @@ public class Main extends Activity {
             String shown = req.langs().isEmpty() ? "all languages" : req.langs().replace(",", ", ");
             req.sub().setText(req.title() + " · " + p.total() + " found, biggest first");
             req.audio().setOnClickListener(v -> showLanguages(p.languages(), () -> {
-                if (pageTop != req.list().getParent()) return; // left meanwhile
+                if (pageTop != req.level()) return; // left meanwhile
                 popLevel(false); // no backdrop: the new list goes straight on top
                 showSources(req.f(), req.c(), req.season(), req.episode(), null, false);
             }));
@@ -1825,11 +1835,11 @@ public class Main extends Activity {
         cached.setSpan(s.cached() == 1 ? new Tint(Home.GREEN, 0xff0a7d3e) : new Tint(0xff8a8a8a, 0xff4a4a4a), 0,
             cached.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         LinearLayout r = row(s.title(), sourceLine(s, req.langs()), cached, v -> play(req.f(), req.c(), req.season(),
-            req.episode(), s.hash(), s.fileIdx(), s.title(), (View) req.list().getParent()));
+            req.episode(), s.hash(), s.fileIdx(), s.title(), req.level()));
         if (Sources.readsAudio(s, req.autoplay(), req.prefer(), req.audioReads()[0])) {
             req.audioReads()[0]--;
             TextView detail = r.findViewWithTag(DETAIL);
-            View level = (View) req.list().getParent();
+            View level = req.level();
             audioReads.execute(() -> {
                 // left before its turn (or covered by a page: read on the next Watch, Back doesn't rebuild the row),
                 // or DDD plays: no TorBox add for a row nobody sees (alive() is the UI thread's; a level off screen is
@@ -2274,7 +2284,7 @@ public class Main extends Activity {
         note.setPadding(0, dp(16), 0, 0);
         list.addView(note);
         if (a == null) return;
-        View level = (View) list.getParent();
+        View level = levelOf(list);
         int tz = TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 60000;
         load(level, "history", () -> {
             Answer r = send(withCub(open(Home.worker + "/mine/history?tz=" + tz, 20000), a), null, null);
@@ -2386,7 +2396,7 @@ public class Main extends Activity {
             closeOverlay();
             Timeline.forget(marks, played, unwatched);
             remark();
-            if (list != null && alive((View) list.getParent())) fillHistory(list, Math.max(0, at));
+            if (list != null && alive(levelOf(list))) fillHistory(list, Math.max(0, at));
             loadMine(); // Continue browsing, the posters' badges
         }, () -> { });
     }
