@@ -39,10 +39,8 @@ class LearnTest {
         assert Learn.estimateText(new Learn.Estimate("Weak", 6)).equals("Weak · 6 words to Good");
         assert Learn.estimateText(new Learn.Estimate("Hard", 1)).equals("Hard · 1 word to Weak");
         assert Learn.estimateText(new Learn.Estimate("Comfortable", 0)).equals("Comfortable");
-        assert Learn.label(none).equals("Good · 175 words to Comfortable");
-        assert Learn.label(new Learn.State("none", "", new Learn.Estimate("Comfortable", 0))).equals("Comfortable");
-        assert Learn.label(building).equals("Learn · building · Good · 175");
-        assert Learn.label(new Learn.State("ready", "", new Learn.Estimate("Comfortable", 0))).equals("Learn · ready · Comfortable");
+        assert Learn.label(none).equals("Learn") : "the estimate is on the info line";
+        assert Learn.label(building).equals("Learn · building");
         assert Learn.label(new Learn.State("failed", "x", e)).equals("Learn · failed, try again") : "kept short";
     }
 

@@ -80,23 +80,15 @@ final class Learn {
         return e.band() + " · " + e.toNext() + (e.toNext() == 1 ? " word to " : " words to ") + next;
     }
 
-    // Beside a status the text is short: the button shares a row with Play, Sources and Trailer.
-    static String shortEstimate(Estimate e) {
-        return e.toNext() == 0 ? e.band() : e.band() + " · " + e.toNext();
-    }
-
-    // The button's text: the estimate where the request is none (the click learns it); the status first once it is
-    // queued, building or ready, with the short estimate after; failed says so alone (the longest text otherwise).
+    // The button's text: where the request is (the estimate itself is on the film's info line).
     static String label(State s) {
         if (s == null) return "Learn";
-        Estimate e = s.estimate();
-        String also = e == null ? "" : " · " + shortEstimate(e);
         return switch (s.status()) {
-            case "queued" -> "Learn · queued" + also;
-            case "processing" -> "Learn · building" + also;
-            case "ready" -> "Learn · ready" + also;
+            case "queued" -> "Learn · queued";
+            case "processing" -> "Learn · building";
+            case "ready" -> "Learn · ready";
             case "failed" -> "Learn · failed, try again";
-            default -> e == null ? "Learn" : estimateText(e);
+            default -> "Learn";
         };
     }
 }
