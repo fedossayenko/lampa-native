@@ -889,7 +889,10 @@ public class Main extends Activity {
                 }
                 Bitmap done = b;
                 ui.post(() -> {
-                    if (stopped || pageTop != top) return; // left meanwhile
+                    if (stopped || pageTop != top) { // left meanwhile
+                        done.recycle(); // 4 MB of pixels (native) that no one will see
+                        return;
+                    }
                     pageBackdrop.setImageBitmap(done);
                     Log.i(TAG, "film backdrop " + (System.currentTimeMillis() - t) + " ms after OK");
                 });
@@ -1287,9 +1290,13 @@ public class Main extends Activity {
     }
 
     // How far in: two rects along the bottom, a dark track and the white part watched.
+    // The bar's paint, one a thread (the UI thread draws with it, two pool threads may bake at once): a tile with a
+    // bar made a Paint on every frame it was drawn.
+    private static final ThreadLocal<Paint> BAR = ThreadLocal.withInitial(Paint::new);
+
     static void bar(Canvas c, int w, int h, int percent, float dp) {
         if (percent <= 0) return;
-        Paint p = new Paint();
+        Paint p = BAR.get();
         p.setColor(0x80000000);
         c.drawRect(0, h - 4 * dp, w, h, p);
         p.setColor(Color.WHITE);
@@ -3686,7 +3693,10 @@ public class Main extends Activity {
                 loading.remove(p);
                 // A view not shown (Home under a page, a level under another) can't tell if it's near; showing it
                 // again reloads what is.
-                if (stopped || !p.isAttachedToWindow() || !near(p)) return;
+                if (stopped || !p.isAttachedToWindow() || !near(p)) {
+                    if (done != null) done.recycle(); // never shown: its pixels (native) go now, not at some later GC
+                    return;
+                }
                 if (done == null) {
                     if (level != shown) load(p); // skipped, but its level is back: Back came before this ran
                     return;
