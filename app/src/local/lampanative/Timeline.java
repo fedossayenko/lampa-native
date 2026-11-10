@@ -143,6 +143,14 @@ final class Timeline {
         });
     }
 
+    // Points taken back to the start (History > Mark unwatched): the marks kept here, and the keys DDD answered about
+    // this session (which merge() never lets the worker overwrite), forget them: else the episodes would show Watched
+    // until the app is closed.
+    static void forget(Map<String, Point> marks, java.util.Set<String> played, List<String> keys) {
+        marks.keySet().removeAll(keys);
+        played.removeAll(keys);
+    }
+
     // Continue's {season, episode}: a series' resume(); a film {0, 0} while it's being watched and its source is
     // kept here (else Watch does the same); null: no Continue. mark: a key's point.
     static int[] continueTo(boolean series, Film f, Function<String, Point> mark, Last last) {

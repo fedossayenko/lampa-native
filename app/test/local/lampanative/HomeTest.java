@@ -76,4 +76,11 @@ class HomeTest {
     }
 
     private static final String HISTORY_TAG = "history";
+
+    // /mine on disk: only an answer that changed and was drawn.
+    void testKeepMine() {
+        assert Home.keepMine("old", "new", "new");
+        assert !Home.keepMine("same", "same", "same") : "unchanged";
+        assert !Home.keepMine("old", "garbage", "old") : "not valid: not drawn, the good one stays on disk";
+    }
 }

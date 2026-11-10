@@ -71,6 +71,12 @@ final class Home {
         return !cards.isEmpty() && (was != null || atStart) ? 0 : -1;
     }
 
+    // Whether a /mine answer is kept on the stick for the next start: only one that differs from what was shown and
+    // was drawn after (showMine drops one that isn't valid, which must not replace a good one on disk).
+    static boolean keepMine(String shownBefore, String body, String shownAfter) {
+        return !body.equals(shownBefore) && body.equals(shownAfter);
+    }
+
     // Lampa's score colors: green from 70, orange from 50, red below.
     static int scoreColor(int score) {
         return score >= 70 ? GREEN : score >= 50 ? ORANGE : RED;

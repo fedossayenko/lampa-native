@@ -251,6 +251,18 @@ public class Main extends Activity {
         });
     }
 
+    // A thread of our own, with async()'s guard: what its body throws is logged, not an uncaught exception, which ends
+    // the app.
+    static void thread(String name, Runnable body) {
+        new Thread(() -> {
+            try {
+                body.run();
+            } catch (Throwable t) { // NOPMD: the point
+                Log.w(TAG, name + " failed", t);
+            }
+        }, name).start();
+    }
+
     // dp to whole pixels: (int) (v * dp)
     int dp(float v) {
         return (int) (v * dp);
@@ -403,9 +415,9 @@ public class Main extends Activity {
                 if (r.code() != 200) throw new Status(r.code());
                 ui.post(() -> {
                     if (account() != a) return; // signed out (or in again) meanwhile
-                    boolean changed = !r.body().equals(mineShown);
+                    String before = mineShown;
                     showMine(r.body());
-                    if (!changed || !r.body().equals(mineShown)) return; // the same, or not drawn (not valid): not kept
+                    if (!Home.keepMine(before, r.body(), mineShown)) return; // the same, or not drawn (not valid)
                     try {
                         Files.write(mineFile().toPath(), r.body().getBytes(StandardCharsets.UTF_8)); // ~2 KB
                     } catch (IOException e) {
@@ -1987,8 +1999,8 @@ public class Main extends Activity {
         FutureTask<List<Film.Episode>> stillsAsked = season < 1 ? null : new FutureTask<>(() -> Film.season(
             new String(read(Film.seasonUrl(c, season)), StandardCharsets.UTF_8)));
         // their own threads: the link's task below waits for them, and the pool's three may all be busy
-        if (skipsAsked != null) new Thread(skipsAsked, "segments").start();
-        if (stillsAsked != null) new Thread(stillsAsked, "stills").start();
+        if (skipsAsked != null) thread("segments", skipsAsked);
+        if (stillsAsked != null) thread("stills", stillsAsked);
         async(() -> {
             String message;
             try {
@@ -2454,8 +2466,7 @@ public class Main extends Activity {
                     return;
                 }
                 closeOverlay();
-                marks.keySet().removeAll(unwatched);
-                played.removeAll(unwatched);
+                Timeline.forget(marks, played, unwatched);
                 remark();
                 if (list != null && alive((View) list.getParent())) fillHistory(list, Math.max(0, at));
                 loadMine(); // Continue browsing, the posters' badges
@@ -3178,7 +3189,7 @@ public class Main extends Activity {
         String lang = Sources.storyLang(langs());
         // its own thread, as play()'s: the recap may wait 150 s on the home server, and one of the pool's three would
         // sit there while posters and pages queue behind it
-        new Thread(() -> {
+        thread("story", () -> {
             // the seasons of the last three, and the one before the last's (Claude's overviews)
             Set<Integer> numbers = new java.util.TreeSet<>();
             for (int[] e : last) numbers.add(e[0]);
@@ -3233,7 +3244,7 @@ public class Main extends Activity {
             }
             String shown = text != null ? text : "Claude isn't answering (the home server): the episodes below.";
             ui.post(() -> summary.setText(shown));
-        }, "story").start();
+        });
     }
 
     // A side sheet (⋯, Settings, Audio languages): 392 dp on the right, its title, an optional gray line, then its

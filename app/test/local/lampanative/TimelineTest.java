@@ -270,4 +270,16 @@ class TimelineTest {
         assert Timeline.Playing.of(new String[] {"k", "movie_1", "0", "0", "0", "1", "two", "k", "n", "u"}) == null;
         assert Timeline.Playing.of(new String[] {"k", "movie_1", "0", "0", "0"}).card().equals("movie_1");
     }
+
+    // Mark unwatched: the points are gone from the marks and from the keys DDD answered, so the worker's next answer
+    // (which merge() keeps out of those keys) can tell the truth.
+    void testForget() {
+        java.util.Map<String, Timeline.Point> marks = new java.util.HashMap<>(java.util.Map.of("a", new Timeline.Point(10, 100, 95),
+            "b", new Timeline.Point(5, 100, 5)));
+        java.util.Set<String> played = new java.util.HashSet<>(java.util.Set.of("a", "b"));
+        Timeline.forget(marks, played, List.of("a", "gone"));
+        assert marks.keySet().equals(java.util.Set.of("b")) && played.equals(java.util.Set.of("b"));
+        Timeline.merge(marks, java.util.Map.of("a", new Timeline.Point(0, 0, 0)), played);
+        assert marks.get("a").percent() == 0 : "the worker's answer lands now";
+    }
 }
