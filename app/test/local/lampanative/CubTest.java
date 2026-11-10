@@ -33,10 +33,8 @@ class CubTest {
         assert Cub.Account.of(null) == null && Cub.Account.of("") == null && Cub.Account.of("{\"token\":\"\"}") == null;
     }
 
-    void testLearned() {
-        assert Cub.learned("{\"rows\":[],\"learned\":{\"movie_603\":93}}").equals(java.util.Map.of("movie_603", "93"));
-        assert Cub.learned("{\"rows\":[]}").isEmpty() && Cub.learned("").isEmpty();
-        assert Cub.learnBound("{\"learned\":{}}") && Cub.learnBound("{\"learned\":{\"movie_1\":5}}");
+    void testLearnBound() {
+        assert Cub.learnBound("{\"learned\":{}}") && Cub.learnBound("{\"learned\":{\"movie_1\":\"Good\"}}");
         assert !Cub.learnBound("{\"rows\":[]}") && !Cub.learnBound("");
     }
 

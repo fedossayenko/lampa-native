@@ -150,8 +150,8 @@ public class Main extends Activity {
     Map<String, String> cubMarks = Map.of(); // the films' marks, from /mine
     Map<String, String> cubGrades = Map.of(); // and their grades
     Map<String, String> cubLeft = Map.of(); // started films' seconds left, started series' "26 ep"
-    Map<String, String> cubLearned = Map.of(); // films' learned percent (the Learn button)
     boolean learnBound; // /mine says the learn extension is there
+    volatile boolean noEstimateRoute; // the extension answered 404/405 to /learn/estimate: ask the status only
     Map<String, String> cubPercent = Map.of(); // started films' percent watched: a Continue tile's bar
     Map<String, String> cubNew = Map.of(); // series with a new episode out: "S3 E5"
     Map<String, String> cubNext = Map.of(); // started series' episode to go on with: "S3 E5 · up next"
@@ -452,7 +452,6 @@ public class Main extends Activity {
         comingTab.setText(comingLabel(out));
         cubLeft = Cub.left(body);
         cubPercent = Cub.percent(body);
-        cubLearned = Cub.learned(body);
         learnBound = Cub.learnBound(body);
         cubList = Cub.listed(body);
         cubSeen = Cub.seen(body);
@@ -1377,10 +1376,9 @@ public class Main extends Activity {
     void learnButton(Film f, Home.Card c, LinearLayout buttons, View level) {
         Learn.State[] state = {null};
         boolean[] busy = {false}; // a request is out (disabling the button would drop its focus)
-        String key = Timeline.card(c);
         TextView b = button("Learn", null);
         b.setVisibility(View.GONE);
-        Runnable draw = () -> b.setText(Learn.label(state[0], cubLearned.get(key)));
+        Runnable draw = () -> b.setText(Learn.label(state[0]));
         b.setOnClickListener(v -> {
             boolean start = state[0] == null || state[0].askable();
             if (busy[0]) return;
@@ -1399,7 +1397,7 @@ public class Main extends Activity {
                 ui.post(() -> {
                     busy[0] = false;
                     if (!alive(level)) return;
-                    if (now != null) state[0] = now;
+                    if (now != null) state[0] = now.keeping(state[0]);
                     draw.run();
                 });
             });
@@ -1408,7 +1406,21 @@ public class Main extends Activity {
         pool.execute(() -> {
             Learn.State got = null;
             try {
-                Answer a = ask("/ext/learn/status?imdb=" + f.imdb(), null);
+                // the page asks for the film's estimate (once for this page, no polling; OK looks again); it answers
+                // like the status. Any other answer (an extension without the route, an error, a timeout): the plain
+                // status, so the button never depends on the estimate. The extension never 404s a film, so a 404 or
+                // 405 means the route is missing: later pages go straight to the status.
+                Answer a = null;
+                if (!noEstimateRoute) {
+                    try {
+                        a = ask("/ext/learn/estimate", Learn.queueBody(f.imdb(), c.id(), f.name())
+                            .getBytes(StandardCharsets.UTF_8));
+                    } catch (IOException e) {
+                        Log.w(TAG, "learn estimate", e);
+                    }
+                }
+                if (a != null && (a.code() == 404 || a.code() == 405)) noEstimateRoute = true;
+                if (a == null || a.code() != 200) a = ask("/ext/learn/status?imdb=" + f.imdb(), null);
                 if (a.code() == 200) got = Learn.parse(a.body());
             } catch (IOException e) {
                 Log.w(TAG, "learn status", e);
@@ -1417,7 +1429,7 @@ public class Main extends Activity {
             if (now == null) return; // no extension, or it is down: no button
             ui.post(() -> {
                 if (!alive(level)) return;
-                state[0] = now;
+                state[0] = now.keeping(state[0]);
                 draw.run();
                 b.setVisibility(View.VISIBLE);
             });

@@ -97,7 +97,9 @@ app opens YouTube links for trailers.
    - Extensions: another worker of yours, bound as `EXT_<NAME>` in `wrangler.toml` (`[[services]]`, see
      `wrangler.example.toml`), is reached at `/ext/<name>/…` for the TV only, so the TV holds no token for it. With
      `EXT_LEARN` the film page gets a Learn button (the extension's `/learn/status` and `/learn/queue`) and `/mine`
-     carries `learned` from its `/learn/progress`. No extension, no button.
+     carries `learned` from its `/learn/progress`. The button also shows the extension's estimate of how comfortably you'd watch the film
+     (`estimate: {band, to_next}` in `/learn/status`: Hard, Weak, Good or Comfortable and the words to the next band; the
+     page asks for one with `POST /learn/estimate`, which answers like the status). No extension, no button.
    - Skip times: `worker/set-theintrodb-key.sh` (TheIntroDB, more requests a day).
    - A home server: `worker/home-server/` has Claude Code for voice search and Story so far (`voice-claude.py`) and
      an intro finder by sound (`intro-detect.py`), for a Mac at home; the plists say where the files go (the play

@@ -102,11 +102,6 @@ final class Cub {
         return strings(json, "percent");
     }
 
-    // /mine's "learned": the percent of a film understood, "movie_603" → "93" (its page's Learn button says it).
-    static Map<String, String> learned(String json) {
-        return strings(json, "learned");
-    }
-
     // Whether /mine says the learn extension is there (it sends "learned", even empty): only then the film page asks it.
     static boolean learnBound(String json) {
         try {

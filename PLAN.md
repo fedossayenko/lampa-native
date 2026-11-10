@@ -501,6 +501,13 @@ shaping; custom-drawn rows would only save Java heap, which is 3 MB. Re-checked 
     (`{"movie_603": 93}`, 1.5 s at most; no `learned` key when it is missing or down, and the app asks the extension only when the key is there). App: a film's page asks
     `/ext/learn/status?imdb=` once when it opens and shows **Learn** only when it answers; OK queues it (or looks
     again while it waits): "Learn · queued / building / ready", "Learned 93%" once /mine has a percent. Nothing polls.
+    Estimate (2026-11-10): the status may carry `estimate: {band, to_next}`: how comfortably you'd watch the film, by
+    the share of its words you know (Hard < 90%, Weak 90-95, Good 95-98, Comfortable 98+; words only, from its English
+    subtitle or pack) and the words to the next band. A page opening asks `POST /ext/learn/estimate` instead of the
+    status (one request; it answers like the status and queues the estimate once; an extension without the route gets
+    the plain status); OK looks again. The label reads "Good · 175 words to Comfortable" (or "Comfortable"); beside a
+    queued/building/ready status it is short ("Learn · building · Good · 175"): the button shares a row with Play,
+    Sources and Trailer. No percent is shown; /mine's `learned` only tells that the extension is there.
 
 ## Needs from you
 

@@ -2192,7 +2192,7 @@ function bookmarkCard(b) {
 // reached at /ext/<name>/<path> as /<name>/<path>, for the stick only (X-Play-Token). The worker adds the secret
 // EXT_<NAME>_TOKEN as X-Ext-Token when set; nothing else of the request goes along but the method, the path and a body
 // of at most 16 KB. The answers: the extension's status (a 401 or 403 of its own becomes 502, so the stick keeps its
-// token) and JSON, never cached. GET /mine also asks EXT_LEARN's /learn/progress for "learned" (a film's percent;
+// token) and JSON, never cached. GET /mine also asks EXT_LEARN's /learn/progress for "learned" (a film's comfort band;
 // present, even {}, only while the extension answers: the stick shows Learn only then).
 const EXT_BODY_MAX = 16384;
 const EXT_MS = 15000; // a pass-through call waits this long at most
@@ -2224,7 +2224,7 @@ async function extension(request, env, name, rest) {
   }
 }
 
-// null: no extension, or it didn't answer well (the stick then shows no Learn button); else {"movie_603": 93, …}
+// null: no extension, or it didn't answer well (the stick then shows no Learn button); else {"movie_603": "Good", …}
 async function extLearned(env) {
   try {
     const res = await extFetch(env, 'learn', '/progress', {}, EXT_MINE_MS);
