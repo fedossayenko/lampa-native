@@ -1755,81 +1755,72 @@ public class Main extends Activity {
     // Torrentio refusing the worker (its 502: 429 from Cloudflare's shared IPs) sends this and the next 10 minutes'
     // pages through the stick.
     void loadSources(SourceList req, int from, Future<?> before) {
-        async(() -> {
+        String imdb = req.f().imdb();
+        load((View) req.list().getParent(), "sources " + imdb, () -> {
             try {
                 if (before != null) before.get();
             } catch (Exception e) {
                 // the preload failed: asked again below
             }
-            Sources.Page p;
-            String imdb = req.f().imdb();
             String json = null;
-            try {
-                if (!Sources.refusedLately(refusedAt, System.currentTimeMillis())) {
-                    try {
-                        json = new String(read(Sources.url(imdb, req.season(), req.episode(), req.langs(), from)),
-                            StandardCharsets.UTF_8);
-                    } catch (Status e) {
-                        if (!Sources.fallsBack(e.code)) throw e;
-                        Log.w(TAG, "sources: the addon refused the worker (429), asked from here for 10 minutes");
-                        refusedAt = System.currentTimeMillis();
-                    }
+            if (!Sources.refusedLately(refusedAt, System.currentTimeMillis())) {
+                try {
+                    json = new String(read(Sources.url(imdb, req.season(), req.episode(), req.langs(), from)),
+                        StandardCharsets.UTF_8);
+                } catch (Status e) {
+                    if (!Sources.fallsBack(e.code)) throw e;
+                    Log.w(TAG, "sources: the addon refused the worker (429), asked from here for 10 minutes");
+                    refusedAt = System.currentTimeMillis();
                 }
-                if (json == null) { // the addon answers the stick's own IP: its list (~40-300 KB; its max-age keeps
-                    // it on the disk for the next page) to the worker to filter and check with TorBox
-                    if (addon == null) {
-                        Answer at = ask("/addon", null);
-                        if (at.code() != 200) throw new IOException("addon: HTTP " + at.code());
-                        addon = at.body().trim();
-                    }
-                    // ponytail: each page posts the whole list again (and the preload's 502 isn't counted); have
-                    // the worker keep a posted list ~10 min if refusals last
-                    Answer a = ask(Sources.path(imdb, req.season(), req.episode(), req.langs(), from),
-                        read(Sources.addon(addon, imdb, req.season(), req.episode())));
-                    if (a.code() != 200) throw new IOException("sources: HTTP " + a.code());
-                    json = a.body();
+            }
+            if (json == null) { // the addon answers the stick's own IP: its list (~40-300 KB; its max-age keeps
+                // it on the disk for the next page) to the worker to filter and check with TorBox
+                if (addon == null) {
+                    Answer at = ask("/addon", null);
+                    if (at.code() != 200) throw new IOException("addon: HTTP " + at.code());
+                    addon = at.body().trim();
                 }
-                p = Sources.parse(json);
-            } catch (Exception e) {
-                Log.w(TAG, "sources " + imdb, e);
-                ui.post(() -> {
-                    if (req.status().getParent() == null) req.list().addView(req.status()); // under the first 6
-                    req.status().setText(from > 0 ? "The rest of the sources didn't load. Press Back and try again."
-                        : "Can't load the sources. Press Back and try again.");
-                });
+                // ponytail: each page posts the whole list again (and the preload's 502 isn't counted); have
+                // the worker keep a posted list ~10 min if refusals last
+                Answer a = ask(Sources.path(imdb, req.season(), req.episode(), req.langs(), from),
+                    read(Sources.addon(addon, imdb, req.season(), req.episode())));
+                if (a.code() != 200) throw new IOException("sources: HTTP " + a.code());
+                json = a.body();
+            }
+            return Sources.parse(json);
+        }, p -> { // alive: not left
+            for (Sources.Source s : p.streams()) { // each release once in all the pages: it plays once
+                if (req.autoplay() && s.hash().equals(req.prefer())) {
+                    play(req.f(), req.c(), req.season(), req.episode(), s.hash(), s.fileIdx(), s.title(),
+                        (View) req.list().getParent());
+                }
+            }
+            req.pending().addAll(p.streams());
+            Supplier<View> next = () -> req.pending().isEmpty() ? null : sourceRow(req.pending().poll(), req);
+            if (from > 0) {
+                addRows(req.list(), next, 5); // the others as focus gets near them
                 return;
             }
-            ui.post(() -> {
-                if (!alive((View) req.list().getParent())) return; // left
-                for (Sources.Source s : p.streams()) { // each release once in all the pages: it plays once
-                    if (req.autoplay() && s.hash().equals(req.prefer())) {
-                        play(req.f(), req.c(), req.season(), req.episode(), s.hash(), s.fileIdx(), s.title(),
-                            (View) req.list().getParent());
-                    }
-                }
-                req.pending().addAll(p.streams());
-                Supplier<View> next = () -> req.pending().isEmpty() ? null : sourceRow(req.pending().poll(), req);
-                if (from > 0) {
-                    addRows(req.list(), next, 5); // the others as focus gets near them
-                    return;
-                }
-                req.list().removeView(req.status());
-                String shown = req.langs().isEmpty() ? "all languages" : req.langs().replace(",", ", ");
-                req.sub().setText(req.title() + " · " + p.total() + " found, biggest first");
-                req.audio().setOnClickListener(v -> showLanguages(p.languages(), () -> {
-                    if (pageTop != req.list().getParent()) return; // left meanwhile
-                    popLevel(false); // no backdrop: the new list goes straight on top
-                    showSources(req.f(), req.c(), req.season(), req.episode(), null, false);
-                }));
-                if (p.total() == 0) req.list().addView(text("Nothing in " + shown + ".", 16, 0xff9a9a9a));
-                addRows(req.list(), next, p.streams().size());
-                // the first source, under the head (Continue: the release last played, when among them); nothing
-                // found: OK goes straight to the languages
-                int at = 1 + Sources.focus(p.streams(), req.prefer());
-                (p.streams().isEmpty() ? req.audio() : req.list().getChildAt(at)).requestFocus();
-                Log.i(TAG, "sources " + (System.currentTimeMillis() - req.t()) + " ms after Watch");
-                if (p.next() > 0) loadSources(req, p.next(), null);
-            });
+            req.list().removeView(req.status());
+            String shown = req.langs().isEmpty() ? "all languages" : req.langs().replace(",", ", ");
+            req.sub().setText(req.title() + " · " + p.total() + " found, biggest first");
+            req.audio().setOnClickListener(v -> showLanguages(p.languages(), () -> {
+                if (pageTop != req.list().getParent()) return; // left meanwhile
+                popLevel(false); // no backdrop: the new list goes straight on top
+                showSources(req.f(), req.c(), req.season(), req.episode(), null, false);
+            }));
+            if (p.total() == 0) req.list().addView(text("Nothing in " + shown + ".", 16, 0xff9a9a9a));
+            addRows(req.list(), next, p.streams().size());
+            // the first source, under the head (Continue: the release last played, when among them); nothing
+            // found: OK goes straight to the languages
+            int at = 1 + Sources.focus(p.streams(), req.prefer());
+            (p.streams().isEmpty() ? req.audio() : req.list().getChildAt(at)).requestFocus();
+            Log.i(TAG, "sources " + (System.currentTimeMillis() - req.t()) + " ms after Watch");
+            if (p.next() > 0) loadSources(req, p.next(), null);
+        }, () -> {
+            if (req.status().getParent() == null) req.list().addView(req.status()); // under the first 6
+            req.status().setText(from > 0 ? "The rest of the sources didn't load. Press Back and try again."
+                : "Can't load the sources. Press Back and try again.");
         });
     }
 
