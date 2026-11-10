@@ -179,6 +179,8 @@ shaping; custom-drawn rows would only save Java heap, which is 3–6 MB (log row
    the ≤ 40 MB budget** (GPU context kept until Android trims; 33 MB after the trim in step 1). Fix to try before
    step 5: software rendering A/B (no GPU context at all: 24 MB): the code's default since 2026-11-01 (the user's own stick runs GPU since: log row 52). Done on the stick too: Russian
    audio picked, `am kill` during playback → Back lands on the sources (log).
+   With GPU drawing and a film page open, the app ends its own process 5 s after DDD covers it (`Timeline.endsBehindPlayer`;
+   Progress and DDD's answer need no activity, Back restores the page): to be confirmed on the stick (the background's PSS).
 4b. **Settings** (user, 2026-10-31: choose the drawing and test it). Home's Settings button (up from the first
    row) or ≡ anywhere. Drawing: Software (the code's default since 2026-11-01; the user's own stick is set to GPU) or GPU; the manifest draws in software and Main switches the
    GPU on (Android can switch a window's GPU on, never off); a switch restarts the process, because the GPU's

@@ -76,6 +76,17 @@ final class Timeline {
         return m;
     }
 
+    // GPU drawing keeps ~20 MB of GL context while the app waits behind DDD (51-63 MB, the budget is 40): after this long
+    // behind it the app ends its own process. Progress reports and the answer need no activity; Back from DDD restores
+    // the film page and its sources from onSaveInstanceState (log: 146 ms and 44 ms after an `am kill`).
+    static final long END_BEHIND_PLAYER_MS = 5000;
+
+    // Whether to end the process behind DDD: only with GPU drawing (software is within the budget), only for a playback
+    // of ours, and only with a film page to restore (from Home, a restore would lose Home's place).
+    static boolean endsBehindPlayer(boolean gpu, boolean playing, boolean pageOpen) {
+        return gpu && playing && pageOpen;
+    }
+
     // A started film's poster: "1h 7m left", "25m left" (the worker's "left", seconds; rounded, never 0); a series':
     // "26 ep left" (the worker's "26 ep": aired after your furthest watched episode); null: none.
     static String posterLeft(String seconds) {

@@ -19,6 +19,7 @@ import android.net.http.HttpResponseCache;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.Process;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.util.Log;
@@ -138,6 +139,10 @@ public class Main extends Activity {
     Runnable overlayClosed;
     Runnable overlayBack; // Back on a sheet opened from another (Settings → Profile): that one again
     Runnable prefetch;
+    // The process ends behind DDD (onStop): the state is saved, the "playing" file is on disk
+    final Runnable endBehindPlayer = () -> {
+        if (this.stopped && this.playing != null) Process.killProcess(Process.myPid());
+    };
     Runnable prefetchBackdrop; // 1.5 s of rest on the same card
     String prefetched; // the film (its /card URL) whose page was last preloaded or opened
     volatile boolean stopped; // audioReads' thread reads it too
@@ -304,6 +309,7 @@ public class Main extends Activity {
         super.onStart();
         boolean back = stopped; // false the first time: the page (a restored one too) loads its own backdrop
         stopped = false;
+        ui.removeCallbacks(endBehindPlayer); // back before it (DDD closed, or Home key): stay
         if (settings().getBoolean("stats", false)) settingsScreen.showMeter(true);
         if (back && playing == null) loadMine(); // Lampa may have played something meanwhile; DDD's: its answer
         pix.updateWindow();
@@ -324,6 +330,9 @@ public class Main extends Activity {
         for (Level l : levels) for (ImageView p : l.pictures()) p.setImageDrawable(empty); // a film under a list
         if (page != null) pageBackdrop.setImageDrawable(null);
         pix.collectSoon();
+        if (Timeline.endsBehindPlayer(!soft, playing != null, pageTop != null)) {
+            ui.postDelayed(endBehindPlayer, Timeline.END_BEHIND_PLAYER_MS);
+        }
         super.onStop();
     }
 

@@ -294,4 +294,12 @@ class TimelineTest {
             assert Timeline.Playing.fromJson(bad) == null : bad;
         }
     }
+
+    // The process ends behind DDD only for GPU drawing, our own playback, and a film page to come back to.
+    void testEndsBehindPlayer() {
+        assert Timeline.endsBehindPlayer(true, true, true);
+        assert !Timeline.endsBehindPlayer(false, true, true) : "software is within the budget";
+        assert !Timeline.endsBehindPlayer(true, false, true) : "the Home key is no playback";
+        assert !Timeline.endsBehindPlayer(true, true, false) : "from Home a restore loses its place";
+    }
 }
