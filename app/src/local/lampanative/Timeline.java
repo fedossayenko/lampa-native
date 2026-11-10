@@ -295,6 +295,24 @@ final class Timeline {
             }
         }
 
+        // The saved playback as one JSON array of strings, in the app's private "playing" file: what the Progress
+        // receiver reads with the app killed, and what an activity restored after it was killed takes up again.
+        String toJson() {
+            return new JSONArray(List.of(save())).toString();
+        }
+
+        // null: none, or damaged
+        static Playing fromJson(String json) {
+            try {
+                JSONArray a = new JSONArray(json);
+                String[] s = new String[a.length()];
+                for (int i = 0; i < s.length; i++) s[i] = a.getString(i);
+                return of(s);
+            } catch (JSONException e) {
+                return null;
+            }
+        }
+
         // Whether a report of DDD's (the address it plays) is about this playback: the address started, or one of the
         // playlist's. Only the worker's signature makes one, so another app can't send a report that passes.
         boolean reports(String address, String started) {

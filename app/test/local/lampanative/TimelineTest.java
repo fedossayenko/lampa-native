@@ -282,4 +282,16 @@ class TimelineTest {
         Timeline.merge(marks, java.util.Map.of("a", new Timeline.Point(0, 0, 0)), played);
         assert marks.get("a").percent() == 0 : "the worker's answer lands now";
     }
+
+    // The one saved copy (the "playing" file): what goes in comes out, a damaged one is none.
+    void testPlayingJson() {
+        Timeline.Playing p = new Timeline.Playing("k1", "tv_1", 1, 2, 5000, List.of(new Timeline.Episode(1, 2, "k1", "a \"b\"\n", "https://w/s/1"),
+            new Timeline.Episode(1, 3, "k2", "c", "https://w/s/2")));
+        assert Timeline.Playing.fromJson(p.toJson()).equals(p);
+        Timeline.Playing film = new Timeline.Playing("k", "movie_1", 0, 0, 0);
+        assert Timeline.Playing.fromJson(film.toJson()).equals(film);
+        for (String bad : new String[] {"", "[]", "{}", "not json", "[\"k\",\"movie_1\"]", "[\"k\",\"c\",\"x\",\"0\",\"0\"]"}) {
+            assert Timeline.Playing.fromJson(bad) == null : bad;
+        }
+    }
 }

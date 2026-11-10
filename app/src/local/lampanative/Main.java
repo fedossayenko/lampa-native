@@ -302,7 +302,10 @@ public class Main extends Activity {
         } catch (PackageManager.NameNotFoundException e) {
             homeServer = "";
         }
-        playing = saved == null ? null : Timeline.Playing.of(saved.getStringArray("playing")); // killed while DDD played
+        // killed while DDD played: its answer comes to this restored one (the file is the one Progress reads; it is
+        // cleared when the answer is in, so a fresh start never finds a playback that ended some other way)
+        playing = saved == null ? null
+            : Timeline.Playing.fromJson(getSharedPreferences("playing", MODE_PRIVATE).getString("now", ""));
         startedAt = System.currentTimeMillis();
         try {
             HttpResponseCache.install(new File(getCacheDir(), "http"), 50L << 20);
@@ -2031,11 +2034,12 @@ public class Main extends Activity {
         i.putExtra("return_progress", true); // our DDD fork: the position while it plays too (Progress)
         playing = p;
         getSharedPreferences("playing", MODE_PRIVATE).edit()
-            .putString("now", new JSONArray(List.of(p.save())).toString()).putString("url", url).apply();
+            .putString("now", p.toJson()).putString("url", url).apply();
         try {
             startActivityForResult(i, PLAY);
         } catch (ActivityNotFoundException e) {
             playing = null;
+            getSharedPreferences("playing", MODE_PRIVATE).edit().clear().apply(); // nothing is playing
             Toast.makeText(this, "DDD player isn't installed.", Toast.LENGTH_LONG).show();
         }
     }
@@ -2098,15 +2102,8 @@ public class Main extends Activity {
     public static class Progress extends BroadcastReceiver {
         @Override
         public void onReceive(Context context, Intent data) {
-            Timeline.Playing started;
-            try {
-                JSONArray a = new JSONArray(context.getSharedPreferences("playing", MODE_PRIVATE).getString("now", "[]"));
-                String[] s = new String[a.length()];
-                for (int i = 0; i < s.length; i++) s[i] = a.getString(i);
-                started = s.length == 0 ? null : Timeline.Playing.of(s);
-            } catch (JSONException e) {
-                started = null;
-            }
+            Timeline.Playing started = Timeline.Playing.fromJson(
+                context.getSharedPreferences("playing", MODE_PRIVATE).getString("now", ""));
             // Only about the address playing: the worker signs it, so another app can't know it
             String at = data.getDataString();
             SharedPreferences now = context.getSharedPreferences("playing", MODE_PRIVATE);
@@ -2135,7 +2132,6 @@ public class Main extends Activity {
     @Override
     protected void onSaveInstanceState(Bundle out) {
         super.onSaveInstanceState(out);
-        if (playing != null) out.putStringArray("playing", playing.save());
         // Where the page is: the top film, and its source list when that is above it (levels: top first)
         if (pageTop != null && where(pageTop, out)) return;
         for (Level l : levels) if (where(l.view(), out)) return;
