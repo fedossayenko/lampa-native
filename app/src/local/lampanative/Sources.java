@@ -142,7 +142,8 @@ final class Sources {
     // Whether a row asks the worker to read its file's audio (GET /audio): cached, not read yet, while the list's
     // reads last (reads: the ones left), and not the release autoplay plays (Play reads that one itself).
     static boolean readsAudio(Source s, boolean autoplay, String prefer, int reads) {
-        return s.cached() == 1 && s.audio() == null && !(autoplay && s.hash().equals(prefer)) && reads > 0;
+        return s.cached() == 1 && s.audio() == null && !s.badges().contains("Disc") // no MKV or MP4 to read
+            && !(autoplay && s.hash().equals(prefer)) && reads > 0;
     }
 
     // "RU DD+ 7.1", "EN TrueHD Atmos": per language, the picked ones in their order then English (the original),

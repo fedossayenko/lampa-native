@@ -180,6 +180,9 @@ class SourcesTest {
         assert Sources.readsAudio(s, false, null, 1) && !Sources.readsAudio(s, false, null, 0) : "while reads last";
         assert !Sources.readsAudio(s, true, "h", 1) && Sources.readsAudio(s, true, "x", 1) : "autoplay's: Play reads it";
         assert !Sources.readsAudio(s.withAudio(List.of()), false, null, 1) : "read before";
+        Sources.Source disc = new Sources.Source("d", 0, "Film.ISO", List.of("4K", "Disc"), "60 GB", 9, "Rutracker",
+            List.of("EN"), 1, null, null);
+        assert !Sources.readsAudio(disc, false, null, 1) : "a disc has no MKV or MP4 to read";
         assert !Sources.readsAudio(new Sources.Source("h", 0, "", List.of(), "", 0, "", List.of(), 0, null, null), false,
             null, 1) : "cached only";
         Sources.Source spaced = new Sources.Source("h", 2, "Дюна 2 [4K].mkv", List.of(), "", 0, "", List.of(), 1, null, null);

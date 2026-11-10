@@ -629,6 +629,7 @@ async function torboxDrop(request, env, hash) {
         body: JSON.stringify({ torrent_id: t.id, operation: 'delete' }) });
       if (r?.success !== true) throw new Error('refused');
     }
+    await env.DB?.prepare('DELETE FROM added WHERE hash = ?').bind(hash).run(); // the night has nothing left to do
     return new Response(JSON.stringify({ deleted: Boolean(t) }), {
       headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...corsHeaders(request) } });
   } catch {
@@ -941,11 +942,12 @@ async function sources(request, env, ctx, kind, imdb, season, episode) {
   const from = Number(params.get('from')) || 0;
   const batch = shown.slice(from, from ? MAX : FIRST).map(({ row }) => row);
   const hashes = batch.map(([hash]) => hash);
-  // MaxVol: up to 1.5 s (~0.7-2 s the first time a day, then D1's), the rest kept for the next list
+  // MaxVol: D1's answer (a few ms) when it has one; a first ask of the day (~0.7-2 s) isn't waited for past 300 ms,
+  // it goes on (waitUntil) and the next list carries it
   const mv = env.DB ? maxvolOf(env, imdb).catch(() => ({})) : Promise.resolve({});
   if (ctx) ctx.waitUntil(mv);
   const [cached, audioOf, maxvol] = await Promise.all([cachedOnTorBox(env, hashes), audioKnown(env, hashes),
-    Promise.race([mv, new Promise((done) => setTimeout(() => done({}), 1500))])]);
+    Promise.race([mv, new Promise((done) => setTimeout(() => done({}), 300))])]);
   for (const row of batch) row.push(cached ? Number(cached.has(row[0])) : -1);
   for (const row of batch) row.push(audioOf.get(row[0]) ?? null, maxvol[row[0]] ?? null);
   return new Response(JSON.stringify({
@@ -1015,16 +1017,16 @@ async function torboxLink(env, hash, fileIdx, name, mine) {
   }
   if (id === undefined) return { error: answer?.detail || answer?.error || 'TorBox refused it.', status: 502 };
   const t = (await torboxApi(env, `mylist?id=${id}&bypass_cache=true`))?.data;
-  if (!t) return { error: 'TorBox lost it.', status: 502 };
+  if (!t) return { id, error: 'TorBox lost it.', status: 502 }; // id: an add of ours still leaves at night
   if (!t.download_present) return { id, progress: Math.round((t.progress || 0) * 100) };
   const files = t.files || [];
   const file = (name && files.find((f) => f.short_name === name || String(f.name).split('/').pop() === name))
     || files.find((f) => f.id === fileIdx && VIDEO.test(f.name))
     || files.filter((f) => VIDEO.test(f.name)).sort((a, b) => b.size - a.size)[0];
-  if (!file) return { error: 'No video in it.', status: 404 };
+  if (!file) return { id, error: 'No video in it.', status: 404 };
   // requestdl takes the key as a parameter (it is built for browser redirects); server to server only
   const dl = await torboxApi(env, `requestdl?token=${encodeURIComponent(env.TORBOX_API_KEY)}&torrent_id=${id}&file_id=${file.id}`);
-  if (typeof dl?.data !== 'string') return { error: dl?.detail || 'No link.', status: 502 };
+  if (typeof dl?.data !== 'string') return { id, error: dl?.detail || 'No link.', status: 502 };
   return { id, files, file, link: dl.data };
 }
 
@@ -1065,7 +1067,7 @@ async function play(request, env, ctx, hash) {
 const PROBES_MINUTE = 4;
 const PROBES_HOUR = 20;
 // and at most what the night's runs take out of the account again (3 runs x DROPS), so adds never pile up there
-const PROBES_DAY = () => 3 * DROPS;
+const PROBES_DAY = () => 3 * (DROPS - 1);
 
 async function audio(request, env, hash) {
   if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
@@ -1103,6 +1105,9 @@ async function audio(request, env, hash) {
     await env.DB.prepare('INSERT OR REPLACE INTO added (hash, id, t) VALUES (?, ?, ?)').bind(hash, got.id, now).run();
   }
   const tracks = got.link ? await rememberAudio(env, hash, got.link) : null;
+  if (got.error) { // no video in it (a disc), lost, no link: unreadable, not asked again for a day (settled)
+    await env.DB.prepare("INSERT OR REPLACE INTO audio (hash, tracks, t) VALUES (?, 'null', ?)").bind(hash, now).run();
+  }
   if (!got.link) return corsError(request, got.error || 'Not on TorBox yet.', 502);
   return tracks ? json({ tracks }) : corsError(request, 'Couldn\'t read its audio.', 502);
 }
@@ -1121,9 +1126,13 @@ async function dropProbeAdds(env, now) {
   await env.DB.prepare('DELETE FROM added WHERE EXISTS (SELECT 1 FROM plays p WHERE p.hash = added.hash AND '
     + 'p.t >= added.t)').run(); // played since: the user's now
   await env.DB.prepare('DELETE FROM plays WHERE t < ?').bind(now - 7 * 86_400_000).run();
-  const { results } = await env.DB.prepare(`SELECT hash, id FROM added WHERE t < ? ORDER BY t LIMIT ${DROPS}`)
+  const { results } = await env.DB.prepare(`SELECT hash, id FROM added WHERE t < ? ORDER BY t LIMIT ${DROPS - 1}`)
     .bind(now - 3_600_000).all();
-  const done = await Promise.all(results.map(({ id }) => torboxApi(env, 'controltorrent', {
+  if (!results.length) return;
+  // one subrequest for the account's list: a row whose torrent already left it (deleted by hand, /torbox/drop, expired)
+  // is done, so it never blocks the queue (DROPS - 1 deletes beside it)
+  const have = new Set(((await torboxApi(env, 'mylist?bypass_cache=true'))?.data || []).map((t) => t.id));
+  const done = await Promise.all(results.map(({ id }) => !have.has(id) || torboxApi(env, 'controltorrent', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ torrent_id: id, operation: 'delete' }),
   }).then((a) => a?.success === true, () => false)));

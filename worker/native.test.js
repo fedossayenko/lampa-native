@@ -1801,7 +1801,10 @@ test('torbox/drop: the torrent with that hash leaves the account, for the stick 
     headers: h }), e);
   torbox({ mylist: { success: true, data: [{ id: 5, hash: 'cd'.repeat(20) }, { id: 7, hash: 'AB'.repeat(20) }] },
     controltorrent: { success: true } });
+  e.DB = d1();
+  e.DB.raw.prepare('INSERT INTO added (hash, id, t) VALUES (?, 7, 1)').run('ab'.repeat(20));
   assert.deepEqual(await (await drop({ 'X-Play-Token': 'stick-token' })).json(), { deleted: true });
+  assert.deepEqual(e.DB.raw.prepare('SELECT id FROM added').all(), [], 'the night has nothing left to drop');
   assert.deepEqual(JSON.parse(asked.at(-1)), { torrent_id: 7, operation: 'delete' });
   assert.deepEqual(await (await drop({ 'X-Play-Token': 'stick-token' }, 'ef'.repeat(20))).json(), { deleted: false });
   assert.equal((await drop({})).status, 403);
@@ -2007,6 +2010,18 @@ test('audio: only the stick; a TorBox add budget for unread releases (4 a minute
   assert.notEqual((await audioOf(e, '12'.repeat(20))).status, 429);
 });
 
+test('audio: a probe add with nothing to read (a disc: no video) still leaves at night, and is not asked again today', async () => {
+  const e = audioEnv();
+  const disc = { ...pack, files: [{ id: 0, name: 'Film/BDMV/index.bdmv', short_name: 'index.bdmv', size: 1e3 }] };
+  torbox({ ...fresh, 'mylist?id': { success: true, data: disc } });
+  assert.equal((await audioOf(e)).status, 502);
+  assert.equal(e.DB.raw.prepare('SELECT id FROM added WHERE hash = ?').get(H).id, 11);
+  assert.equal(e.DB.raw.prepare('SELECT tracks FROM audio WHERE hash = ?').get(H).tracks, 'null');
+  asked = [];
+  await audioOf(e);
+  assert.deepEqual(asked, [], 'settled for a day: TorBox not asked');
+});
+
 test('pass-through: the Lampa plugin starting a play (requestdl) keeps a torrent a probe added', async () => {
   const e = { ...audioEnv(), PASS_THROUGH: '1' };
   e.DB.raw.prepare('INSERT INTO added (hash, id, t) VALUES (?, 11, 1), (?, 12, 1)').run('ab'.repeat(20), 'cd'.repeat(20));
@@ -2131,12 +2146,13 @@ test('audio: our adds leave the account at night (01-03 UTC, an hour old); playe
   assert.equal(asked.filter((u) => u.includes('createtorrent')).length, 0);
   assert.equal(spent(), before); // no add: none of the budget
   const run = (hour) => worker.scheduled({ cron: '23 * * * *', scheduledTime: at(hour) }, e);
-  torbox({ controltorrent: { success: false, error: 'DATABASE_ERROR' } }); // refused: the row stays for the next run
+  const inAccount = { mylist: { success: true, data: [{ id: 11, hash: H }] } };
+  torbox({ ...inAccount, controltorrent: { success: false, error: 'DATABASE_ERROR' } }); // refused: stays for the next run
   e.DB.raw.prepare('UPDATE added SET t = t - 3_600_000').run();
   await run(2);
   assert.equal(e.DB.raw.prepare('SELECT COUNT(*) n FROM added').get().n, 1);
   e.DB.raw.prepare('UPDATE added SET t = t + 3_600_000').run();
-  torbox({ controltorrent: { success: true } });
+  torbox({ ...inAccount, controltorrent: { success: true } });
   await run(2); // not an hour old
   e.DB.raw.prepare('UPDATE added SET t = t - 3_600_000').run();
   await run(12); // daytime
@@ -2144,6 +2160,11 @@ test('audio: our adds leave the account at night (01-03 UTC, an hour old); playe
   await run(2);
   assert.deepEqual(deletes(), [11]);
   assert.deepEqual(e.DB.raw.prepare('SELECT hash FROM added').all(), []); // the played one is the user's now
+  // one that already left the account (deleted by hand, /torbox/drop): done, no delete asked, never blocks the queue
+  e.DB.raw.prepare('INSERT INTO added (hash, id, t) VALUES (?, 99, ?)').run('34'.repeat(20), at(2) - 7_200_000);
+  torbox({ mylist: { success: true, data: [] } });
+  await run(2);
+  assert.deepEqual([e.DB.raw.prepare('SELECT COUNT(*) n FROM added').get().n, deletes()], [0, []]);
 });
 
 test('sources: MaxVol\'s tracks of its releases (row[10]) beside the read ones; asked once a day; MaxVol down: null', async () => {
