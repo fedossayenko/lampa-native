@@ -141,10 +141,13 @@ public class Main extends Activity {
     Runnable overlayBack; // Back on a sheet opened from another (Settings → Profile): that one again
     Runnable prefetch;
     // The process ends behind DDD (onStop): the state is saved, the "playing" file is on disk
-    // (Progress's report of a pause or onStop still being sent: 1 s later, so the position isn't lost with it)
+    // (Progress's report of a pause or onStop still being sent, or a broadcast for it maybe queued behind this on the
+    // main thread: 1 s later, so the position isn't lost with the process)
     final Runnable endBehindPlayer = () -> {
         if (!this.stopped || this.playing == null) return;
-        if (Timeline.waitsForReport(Progress.SENDING.get())) this.ui.postDelayed(this.endBehindPlayer, 1000);
+        if (Timeline.waitsForReport(Progress.SENDING.get(), this.ui.getLooper().getQueue().isIdle())) {
+            this.ui.postDelayed(this.endBehindPlayer, 1000);
+        }
         else Process.killProcess(Process.myPid());
     };
     Runnable prefetchBackdrop; // 1.5 s of rest on the same card
@@ -334,9 +337,11 @@ public class Main extends Activity {
         for (Level l : levels) for (ImageView p : l.pictures()) p.setImageDrawable(empty); // a film under a list
         if (page != null) pageBackdrop.setImageDrawable(null);
         pix.collectSoon();
-        ui.removeCallbacks(prefetch); // a card rested on just before Play or Home: its preloads not started yet stay
-        ui.removeCallbacks(prefetchBackdrop); // unstarted (one already downloading finishes); the card preloads again
-        prefetched = null;                    // when rested on after the way back
+        // A card rested on just before Play or Home: its preloads not started yet stay unstarted (one already
+        // downloading finishes); a backdrop cancelled so is preloaded when the card is rested on after the way back
+        if (ui.hasCallbacks(prefetchBackdrop)) prefetched = null;
+        ui.removeCallbacks(prefetch);
+        ui.removeCallbacks(prefetchBackdrop);
         if (Timeline.endsBehindPlayer(!soft, playing != null, pageTop != null)) {
             ui.postDelayed(endBehindPlayer, Timeline.END_BEHIND_PLAYER_MS);
         }

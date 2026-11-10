@@ -87,9 +87,10 @@ final class Timeline {
         return gpu && playing && pageOpen;
     }
 
-    // Not yet while a position report (Progress) is still being sent: it would be lost with the process
-    static boolean waitsForReport(int sending) {
-        return sending > 0;
+    // Not yet while a position report (Progress) is still being sent, or the main thread has work queued (DDD's pause
+    // broadcast may be in it): either would be lost with the process
+    static boolean waitsForReport(int sending, boolean mainIdle) {
+        return sending > 0 || !mainIdle;
     }
 
     // A started film's poster: "1h 7m left", "25m left" (the worker's "left", seconds; rounded, never 0); a series':
