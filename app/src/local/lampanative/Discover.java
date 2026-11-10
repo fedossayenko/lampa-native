@@ -131,7 +131,7 @@ final class Discover extends Main.Part {
         grid.removeAllViews();
         pics.clear();
         last = null;
-        m.collectSoon();
+        m.pix.collectSoon();
         more();
     }
 

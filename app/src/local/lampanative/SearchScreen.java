@@ -152,7 +152,7 @@ final class SearchScreen extends Main.Part {
         pics.clear(); // garbage now, collected below
         m.shown++;
         shownFor = null;
-        m.collectSoon();
+        m.pix.collectSoon();
     }
 
     // The results for `asked`, 3 cards a row; null: nothing typed, the last searches. Focus that was on the old
@@ -184,7 +184,7 @@ final class SearchScreen extends Main.Part {
                 row.setPadding(0, 0, 0, m.gap);
             }
             Home.Card c = found.get(i);
-            View card = m.cardView(c, m.picture(Main.POSTER + c.poster(), pics, 10 * m.dp), sure.get(Timeline.card(c)));
+            View card = m.cardView(c, m.pix.picture(Main.POSTER + c.poster(), pics, 10 * m.dp), sure.get(Timeline.card(c)));
             card.setOnFocusChangeListener((v, on) -> m.prefetch(c, on)); // OK shows it all at once
             card.setOnClickListener(v -> {
                 m.ui.removeCallbacks(soon); // a search still pending would rebuild these under the film

@@ -119,7 +119,7 @@ final class Episodes extends Main.Part {
         row.setSelected(true); // lit while focus is in its episodes
         shown = s;
         Main.remarkView(sub);
-        m.trim(stills, true);
+        m.pix.trim(stills, true);
         stills.clear();
         about = List.of();
         episodes.removeAllViews();
@@ -130,7 +130,7 @@ final class Episodes extends Main.Part {
                 if (shown != s) return;
                 about = got;
                 Main.remarkView(episodes);
-                m.updateWindow();
+                m.pix.updateWindow();
             }, () -> { });
         PrimitiveIterator.OfInt e = IntStream.rangeClosed(1, s.episodes()).iterator();
         next = () -> e.hasNext() ? episodeRow(s, e.nextInt()) : null;
@@ -142,7 +142,7 @@ final class Episodes extends Main.Part {
     private LinearLayout episodeRow(Film.Season s, int episode) {
         LinearLayout r = m.ux.row("", "", "", v -> m.showSources(f, c, s.number(), episode, null, false));
         r.removeViewAt(1); // no end label: the still goes first instead
-        Main.Pic still = (Main.Pic) m.picture(null, stills, 10 * m.dp);
+        Posters.Pic still = (Posters.Pic) m.pix.picture(null, stills, 10 * m.dp);
         still.onRow = true; // dark corners on the white focused row else (software drawing)
         LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(m.dp(150), m.dp(84));
         sp.setMarginEnd(m.dp(16));
@@ -182,7 +182,7 @@ final class Episodes extends Main.Part {
                 // software drawing baked the old bar into the picture: load it again (a 300 px still)
                 if (m.soft && still.getDrawable() != m.empty) still.setImageDrawable(m.empty);
                 still.invalidate();
-                if (m.soft) m.ui.post(m::updateWindow);
+                if (m.soft) m.ui.post(m.pix::updateWindow);
             }
         };
         set.run();
