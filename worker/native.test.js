@@ -1795,6 +1795,20 @@ test('torbox: the account\'s plan and torrents, for the stick only; TorBox down 
   assert.equal((await get({ 'X-Play-Token': 'stick-token' })).status, 502);
 });
 
+test('torbox/drop: the torrent with that hash leaves the account, for the stick only; not there → deleted false', async () => {
+  const e = { ...env, TORBOX_API_KEY: 'k', PLAY_TOKEN: 'stick-token' };
+  const drop = (h, hash = 'ab'.repeat(20)) => worker.fetch(new Request(`https://w/torbox/drop/${hash}`, { method: 'POST',
+    headers: h }), e);
+  torbox({ mylist: { success: true, data: [{ id: 5, hash: 'cd'.repeat(20) }, { id: 7, hash: 'AB'.repeat(20) }] },
+    controltorrent: { success: true } });
+  assert.deepEqual(await (await drop({ 'X-Play-Token': 'stick-token' })).json(), { deleted: true });
+  assert.deepEqual(JSON.parse(asked.at(-1)), { torrent_id: 7, operation: 'delete' });
+  assert.deepEqual(await (await drop({ 'X-Play-Token': 'stick-token' }, 'ef'.repeat(20))).json(), { deleted: false });
+  assert.equal((await drop({})).status, 403);
+  torbox({ mylist: { success: true, data: [{ id: 7, hash: 'ab'.repeat(20) }] }, controltorrent: { success: false } });
+  assert.equal((await drop({ 'X-Play-Token': 'stick-token' })).status, 502, 'TorBox refused: not reported as done');
+});
+
 test('streams addon: none set → 503 (no fallback in the app); /addon gives its address to the stick only', async () => {
   assert.equal((await worker.fetch(new Request('https://w/streams/movie/tt1'), streamsEnv)).status, 403, 'no token');
   const none = await worker.fetch(new Request('https://w/streams/movie/tt1', { headers: tv }), { ...streamsEnv, STREAM_ADDON: '' });

@@ -605,6 +605,26 @@ async function torboxAccount(request, env) {
   }
 }
 
+// POST /torbox/drop/<info hash> (the stick's token): the torrent with that hash leaves the TorBox account, for a tool
+// that added one it no longer needs (a release it picked and then passed over). -> {deleted: true|false} (false: not
+// in the account); TorBox refusing or down -> 502.
+async function torboxDrop(request, env, hash) {
+  if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
+  try {
+    const list = await torboxApi(env, 'mylist?bypass_cache=true');
+    const t = (list.data || []).find((x) => String(x.hash).toLowerCase() === hash);
+    if (t) {
+      const r = await torboxApi(env, 'controltorrent', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ torrent_id: t.id, operation: 'delete' }) });
+      if (r?.success !== true) throw new Error('refused');
+    }
+    return new Response(JSON.stringify({ deleted: Boolean(t) }), {
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...corsHeaders(request) } });
+  } catch {
+    return corsError(request, 'TorBox unavailable.', 502);
+  }
+}
+
 // GET /find/<IMDb id> -> {card: Home card | null}: the film or series with that IMDb id (TMDB's find), for
 // importing IMDb's ratings export (imdb-import.py) into the grades. A day in the edge cache.
 async function findImdb(request, env, imdb) {
@@ -2626,6 +2646,8 @@ export default {
       return extension(request, env, ext[1], ext[2] + new URL(request.url).search);
     }
     if (new URL(request.url).pathname === '/torbox' && request.method === 'GET') return torboxAccount(request, env);
+    const drop = new URL(request.url).pathname.match(/^\/torbox\/drop\/([0-9a-f]{40})$/);
+    if (drop && request.method === 'POST') return torboxDrop(request, env, drop[1]);
     const mv = new URL(request.url).pathname.match(/^\/maxvol\/(tt\d+)$/);
     if (mv && request.method === 'GET') {
       if (!sameSecret(request.headers.get('X-Play-Token'), env.PLAY_TOKEN)) return corsError(request, 'Forbidden.', 403);
