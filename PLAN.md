@@ -497,7 +497,7 @@ shaping; custom-drawn rows would only save Java heap, which is 3 MB. Re-checked 
 11. **Extensions: a Learn button** (2026-11-10, branch `learn`, not deployed). Worker: `/ext/<name>/<path>` over a service
     binding `EXT_<NAME>` (stick only; the secret `EXT_<NAME>_TOKEN` goes along as `X-Ext-Token`; 16 KB body, an
     extension's 401/403 becomes 502 so the stick keeps its token), and `/mine` asks `EXT_LEARN` for `learned`
-    (`{"movie_603": 93}`, 2.5 s at most, `{}` and no key when it is missing or down). App: a film's page asks
+    (`{"movie_603": 93}`, 1.5 s at most; no `learned` key when it is missing or down, and the app asks the extension only when the key is there). App: a film's page asks
     `/ext/learn/status?imdb=` once when it opens and shows **Learn** only when it answers; OK queues it (or looks
     again while it waits): "Learn · queued / building / ready", "Learned 93%" once /mine has a percent. Nothing polls.
 

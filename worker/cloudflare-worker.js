@@ -1409,30 +1409,6 @@ function bookmarkCard(b) {
   }
 }
 
-// GET /mine with the app's CUB sign-in (X-Cub-Token, X-Cub-Profile; accounts in CUB_ACCOUNTS only, as /grades) ->
-// {"rows": [...] as /home, "marks": {"tv_93740": "scheduled", ...}, "grades": {"movie_603": 2, ...}, "new":
-// {"tv_93740": "S3 E5", ...}}: the rows of Lampa's CUB home that are yours, for the top of lampa-native's Home,
-// every film's mark and grade (the film page's ⋯ and ★ show them; grades: KV GRADES as /grades, "skip" = Didn't
-// watch / not mine), the series with a new episode out (nextNew, freshOut): first in Continue browsing, and "mylist":
-// ["movie_603", ...], what My list holds (the film page's ⋯ adds or removes), "left": {"movie_603": 4000, ...}, the
-// seconds left of each film started (3 min in, under 90 %, not graded), for its poster, and "tv_1399": "26 ep", a
-// series' aired episodes after your furthest watched one (none when caught up), "percent": {"movie_603": 43, ...},
-// how far in each of those films is (a Continue tile's bar), and "seen": ["movie_603", ...],
-// the films in the history played to 90 % (graded or not): a genre page hides them with the graded and marked ones,
-// "next": {"tv_1399": "S3 E5 · up next", ...}, a series' episode to go on with (Continue browsing's tiles), and
-// "coming": [[date, card, what, state], ...], the app's Coming up.
-// A graded film is watched: out of My list, Finish later and Continue browsing; a graded series may be
-// watched on, so only "not mine" (skip) takes it out.
-// Rows: Continue browsing, For you, New in 4K (both made by the hourly cron), My list, Finish later, Rate what you watched.
-// Continue browsing: Lampa's (favorite.js continues): the series in the history, newest first, 19 at most; here
-// also the films being watched (3 min in, under 90 %: the timeline; shorter is a try of a release, ~2 min of its
-// sound and picture; their film page still resumes from 10 s), which Lampa's main screen leaves out. Out of it:
-// Viewed, Thrown and Scheduled, and series whose last aired episode is watched. Finish later: the Scheduled ones.
-// Rate what you watched (grades-patch.js's row): the history played past 70 % (a series: any episode), no grade yet.
-// Never cached: it changes with every film played.
-// CUB's dump (2026-10-31): {bookmarks: [{id, type, card_id, card_type: movie|tv, time (ms), data: Lampa's card as
-// JSON text, …}]}, oldest first: ~320 KB for 365 history entries. Only the newest 100 history cards are parsed (the
-// free plan's 10 ms of CPU a request; Lampa keeps 100 in its own history).
 // Extensions: a private worker (or any service) bound in wrangler.toml as EXT_<NAME> (a [[services]] binding) is
 // reached at /ext/<name>/<path> as /<name>/<path>, for the stick only (X-Play-Token). The worker adds the secret
 // EXT_<NAME>_TOKEN as X-Ext-Token when set; nothing else of the request goes along but the method, the path and a body
@@ -1480,6 +1456,30 @@ async function extLearned(env) {
   }
 }
 
+// GET /mine with the app's CUB sign-in (X-Cub-Token, X-Cub-Profile; accounts in CUB_ACCOUNTS only, as /grades) ->
+// {"rows": [...] as /home, "marks": {"tv_93740": "scheduled", ...}, "grades": {"movie_603": 2, ...}, "new":
+// {"tv_93740": "S3 E5", ...}}: the rows of Lampa's CUB home that are yours, for the top of lampa-native's Home,
+// every film's mark and grade (the film page's ⋯ and ★ show them; grades: KV GRADES as /grades, "skip" = Didn't
+// watch / not mine), the series with a new episode out (nextNew, freshOut): first in Continue browsing, and "mylist":
+// ["movie_603", ...], what My list holds (the film page's ⋯ adds or removes), "left": {"movie_603": 4000, ...}, the
+// seconds left of each film started (3 min in, under 90 %, not graded), for its poster, and "tv_1399": "26 ep", a
+// series' aired episodes after your furthest watched one (none when caught up), "percent": {"movie_603": 43, ...},
+// how far in each of those films is (a Continue tile's bar), and "seen": ["movie_603", ...],
+// the films in the history played to 90 % (graded or not): a genre page hides them with the graded and marked ones,
+// "next": {"tv_1399": "S3 E5 · up next", ...}, a series' episode to go on with (Continue browsing's tiles), and
+// "coming": [[date, card, what, state], ...], the app's Coming up.
+// A graded film is watched: out of My list, Finish later and Continue browsing; a graded series may be
+// watched on, so only "not mine" (skip) takes it out.
+// Rows: Continue browsing, For you, New in 4K (both made by the hourly cron), My list, Finish later, Rate what you watched.
+// Continue browsing: Lampa's (favorite.js continues): the series in the history, newest first, 19 at most; here
+// also the films being watched (3 min in, under 90 %: the timeline; shorter is a try of a release, ~2 min of its
+// sound and picture; their film page still resumes from 10 s), which Lampa's main screen leaves out. Out of it:
+// Viewed, Thrown and Scheduled, and series whose last aired episode is watched. Finish later: the Scheduled ones.
+// Rate what you watched (grades-patch.js's row): the history played past 70 % (a series: any episode), no grade yet.
+// Never cached: it changes with every film played.
+// CUB's dump (2026-10-31): {bookmarks: [{id, type, card_id, card_type: movie|tv, time (ms), data: Lampa's card as
+// JSON text, …}]}, oldest first: ~320 KB for 365 history entries. Only the newest 100 history cards are parsed (the
+// free plan's 10 ms of CPU a request; Lampa keeps 100 in its own history).
 async function mine(request, env) {
   const who = await cubUser(request, env);
   if (!who) return corsError(request, 'CUB sign-in required.', 401);
