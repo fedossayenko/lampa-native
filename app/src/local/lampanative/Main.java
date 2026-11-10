@@ -3,7 +3,6 @@ package local.lampanative;
 import static local.lampanative.Net.*;
 
 import android.Manifest;
-import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
@@ -15,9 +14,7 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.PixelFormat;
 import android.graphics.Typeface;
-import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
-import android.icu.util.ULocale;
 import android.media.AudioFormat;
 import android.media.AudioRecord;
 import android.media.MediaRecorder;
@@ -26,7 +23,6 @@ import android.net.http.HttpResponseCache;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.Process;
 import android.os.SystemClock;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
@@ -58,7 +54,6 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -108,6 +103,7 @@ public class Main extends Activity {
         return th;
     });
     final Handler ui = new Handler(Looper.getMainLooper());
+    final Settings settingsScreen = new Settings(this); // the Settings tab, its sheets and the stats meter
     final SourcesScreen sourcesScreen = new SourcesScreen(this); // a film's or episode's source list
     final FilmPage filmPage = new FilmPage(this); // the film page, an actor's, marks and grades
     final Playback playback = new Playback(this); // OK on a source: the link, DDD, its answer
@@ -153,21 +149,20 @@ public class Main extends Activity {
     int overlayWas;
     Runnable overlayClosed;
     Runnable overlayBack; // Back on a sheet opened from another (Settings → Profile): that one again
-    String settingsAt; // the row showSettings focuses (back from its sub-sheet), else its first
+ // the row showSettings focuses (back from its sub-sheet), else its first
     Runnable prefetch;
  // collectSoon()
     String prefetched; // the film (its /card URL) whose page was last preloaded or opened
     volatile boolean stopped; // audioReads' thread reads it too
     Timeline.Playing playing; // the playback DDD will answer about
-    MeterView meter; // Settings → Stats overlay, while shown
+ // Settings → Stats overlay, while shown
     boolean soft; // Settings → Drawing: Software (pictures made their shown size: fit)
  // the backdrop's darkening (MULTIPLY)
     TextView comingTab; // "Coming up 2": episodes out with your audio (told in the app, no Telegram)
     final Map<String, TextView> homeTabs = new HashMap<>(); // Home's own: Back from a tab lands on its one
     LinearLayout settingsList; // the Settings tab's rows: drawn again when a sheet or a level over them goes
-    TextView settingsHelp; // beside them: what the focused one does
-    String torboxLine = "…"; // Settings' TorBox line as last read: drawn again with the rows, asked again after a minute
-    long torboxAt;
+ // beside them: what the focused one does
+ // Settings' TorBox line as last read: drawn again with the rows, asked again after a minute
     View settingsButton; // Back from Search opened by the voice button lands here when nothing on Home had focus
     boolean asking; // a /play under way (UI thread)
     volatile boolean recording; // the voice button held: what is said goes to the recorder thread (listen())
@@ -328,7 +323,7 @@ public class Main extends Activity {
         super.onStart();
         boolean back = stopped; // false the first time: the page (a restored one too) loads its own backdrop
         stopped = false;
-        if (settings().getBoolean("stats", false)) showMeter(true);
+        if (settings().getBoolean("stats", false)) settingsScreen.showMeter(true);
         if (back && playing == null) loadMine(); // Lampa may have played something meanwhile; DDD's: its answer
         pix.updateWindow();
         if (back && page != null) filmPage.showBackdrop(System.currentTimeMillis());
@@ -341,7 +336,7 @@ public class Main extends Activity {
     protected void onStop() {
         stopped = true;
         recording = false;
-        showMeter(false); // back at onStart: no sampling behind DDD
+        settingsScreen.showMeter(false); // back at onStart: no sampling behind DDD
         for (ImageView p : posters) p.setImageDrawable(empty);
         for (ImageView p : pictures) p.setImageDrawable(empty);
         for (Level l : levels) for (ImageView p : l.pictures()) p.setImageDrawable(empty); // a film under a list
@@ -1178,7 +1173,7 @@ public class Main extends Activity {
         }
         list.addView(ux.divider());
         list.addView(ux.sheetRow("⚙  Settings", null, null, v -> {
-            showSettings();
+            settingsScreen.showSettings();
             overlayBack = () -> quick(c, card);
         }));
         View panel = overlay;
@@ -1214,175 +1209,6 @@ public class Main extends Activity {
         });
     }
 
-    // ≡ or Home's Settings: a side sheet over whatever is shown: each setting's name and
-    // value, what the focused one does at the sheet's foot. OK flips or picks. Drawing restarts the app: a window's
-    // GPU is chosen before it is shown, and the GPU's context and driver pools stay with the process once made.
-    void showSettings() {
-        showSettings(null);
-    }
-
-    void showSettings(String at) {
-        settingsAt = at;
-        LinearLayout list = ux.sheet("Settings", null, null);
-        settingsRows(list, ux.footer(list), true);
-    }
-
-    // The Settings tab (a tab, not a sheet over Home): its rows on the left, what the focused one
-    // does on the right, as TV settings show it.
-    void openSettings(View from) {
-        openPage(from);
-        LinearLayout tab = tabPage("Settings");
-        LinearLayout cols = new LinearLayout(this);
-        settingsList = new LinearLayout(this);
-        settingsList.setOrientation(LinearLayout.VERTICAL);
-        cols.addView(settingsList, dp(560), -2);
-        settingsHelp = ux.text("", 18, 0xff9a9a9a);
-        LinearLayout.LayoutParams hp = new LinearLayout.LayoutParams(0, -2, 1);
-        hp.setMarginStart(dp(48));
-        hp.topMargin = dp(12);
-        cols.addView(settingsHelp, hp);
-        tab.addView(cols);
-        settingsAt = "Drawing"; // its first row, as Search's first key and Coming up's first day
-        settingsRows(settingsList, settingsHelp, false);
-    }
-
-    // The Settings tab shown again (a sheet over it closed, a level over it went): its values may have changed.
-    void settingsAgain() {
-        if (settingsList == null || !settingsList.isAttachedToWindow()) return;
-        settingsList.removeAllViews();
-        settingsRows(settingsList, settingsHelp, false); // focus on the row it had (settingsAt)
-    }
-
-    // sheet: ≡'s (Back from its sub-sheets opens it again), else the tab's (shown again by settingsAgain()).
-    void settingsRows(LinearLayout list, TextView help, boolean sheet) {
-        setting(list, help, "Drawing", drawing(), "GPU: smoothest scrolling. Software: about a third of the memory, "
-            + "~30 ms more per scroll step. OK switches and restarts the app.", v -> {
-                //noinspection ApplySharedPref: on disk now, this process ends below
-                settings().edit().putBoolean("software", !software()).commit();
-                startActivity(new Intent(this, Main.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
-                    | Intent.FLAG_ACTIVITY_CLEAR_TASK));
-                Process.killProcess(Process.myPid());
-            });
-        setting(list, help, "Stats overlay", stats(), "Memory, CPU and frames in the top right corner.", v -> {
-            boolean on = !settings().getBoolean("stats", false);
-            settings().edit().putBoolean("stats", on).apply();
-            ((TextView) ((LinearLayout) v).getChildAt(1)).setText(stats()); // the value, right
-            showMeter(on);
-        });
-        list.addView(ux.divider());
-        Cub.Account a = account();
-        setting(list, help, "CUB account", a == null ? "Sign in" : "Signed in", "Lampa's account: your history on Home "
-            + "and in Lampa, My list, marks and grades. OK " + (a == null ? "signs in with a code." : "signs out."), v -> {
-                Runnable done = this::loadMine; // signed in: your rows; signed out: nothing (signOut's showMine)
-                if (account() != null) {
-                    signOut(done);
-                    if (sheet) overlayBack = () -> showSettings("CUB account");
-                    return;
-                }
-                closeOverlay();
-                if (page == null) openPage(scroll.findFocus()); // the code needs the screen: a page over Home
-                new SignIn(this, done).show();
-            });
-        if (a != null) {
-            setting(list, help, "Profile", a.name().isEmpty() ? "Main" : a.name(), "Whose history, marks and grades: CUB "
-                + "keeps them per profile, as Lampa. OK picks another.", v -> {
-                    showProfiles();
-                    if (sheet) overlayBack = () -> showSettings("Profile");
-                });
-        }
-        LinearLayout torbox = setting(list, help, "TorBox", torboxLine, "The TorBox account the worker plays from: its plan "
-            + "and the torrents in it.", v -> { });
-        setting(list, help, "Worker", Home.worker.isEmpty() ? "Not set" : Uri.parse(Home.worker).getHost(), "The worker "
-            + "this app talks to, set once from a computer (README, Setup). To change it: adb shell pm clear "
-            + "local.lampanative, then set it up again.", v -> { });
-        LinearLayout about = setting(list, help, "About", "", "Lampa Native is unofficial: not made by or affiliated with "
-            + "Lampa or CUB. This application uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise "
-            + "approved by TMDB.", v -> { });
-        ((TextView) about.getChildAt(1)).setCompoundDrawablesRelativeWithIntrinsicBounds(drawable("tmdb"), null, null, null);
-        list.addView(ux.divider());
-        setting(list, help, "Play picks", picks() ? "Best cached" : "Ask each time", "Best cached: a film's ▶ Play "
-            + "starts the biggest release TorBox has cached in your audio languages. Ask each time: the sources list.", v -> {
-                settings().edit().putBoolean("picks", !picks()).apply();
-                ((TextView) ((LinearLayout) v).getChildAt(1)).setText(picks() ? "Best cached" : "Ask each time");
-            });
-        setting(list, help, "Audio languages", shownLangs().replace("all languages", "All"), "Sources in these "
-            + "languages first. OK picks them.", v -> {
-                // no source list here: the app's default ones and those chosen, no counts
-                Set<String> codes = new LinkedHashSet<>(List.of("RU", "UA", "EN"));
-                codes.addAll(Sources.codes(langs()));
-                List<Sources.Language> all = new ArrayList<>();
-                for (String code : codes) all.add(new Sources.Language(code, -1));
-                showLanguages(all, null);
-                if (sheet) overlayBack = () -> showSettings("Audio languages");
-            });
-        long now = SystemClock.elapsedRealtime();
-        if (now - torboxAt < 60_000) return; // the tab's rows drawn again after a sub-sheet: no new request, no "…"
-        torboxAt = now;
-        // TorBox's plan and torrents (~0.5 s)
-        load(null, "torbox", () -> {
-            Answer t = ask("/torbox", null);
-            JSONObject o = new JSONObject(t.body());
-            return t.code() == 200 ? o.getString("plan") + " · " + o.getInt("torrents") + " torrents" : "Not reachable";
-        }, shown -> {
-            torboxLine = shown;
-            if (torbox.isAttachedToWindow()) ((TextView) torbox.getChildAt(1)).setText(shown);
-            else settingsAgain(); // the tab's rows drawn again meanwhile
-        }, () -> {
-            torboxLine = "Not reachable";
-            if (torbox.isAttachedToWindow()) ((TextView) torbox.getChildAt(1)).setText(torboxLine);
-            else settingsAgain();
-        });
-    }
-
-    @SuppressLint("DiscouragedApi") // by name: build.sh makes no R class
-    Drawable drawable(String name) {
-        return getDrawable(getResources().getIdentifier(name, "drawable", getPackageName()));
-    }
-
-    // A setting's row: its name and value on one line; focused, what it does at the sheet's foot.
-    LinearLayout setting(LinearLayout list, TextView help, String title, String value, String does,
-                                 View.OnClickListener action) {
-        LinearLayout r = ux.sheetRow(title, null, value, action);
-        r.setPadding(dp(12), dp(10), dp(12), dp(10));
-        ((LinearLayout.LayoutParams) r.getLayoutParams()).bottomMargin = dp(2);
-        r.setOnFocusChangeListener((v, focused) -> {
-            if (!focused) return;
-            help.setText(does);
-            settingsAt = title; // the tab's rows drawn again keep it
-        });
-        list.addView(r);
-        if (title.equals(settingsAt)) r.requestFocus();
-        return r;
-    }
-
-    // Settings → Profile: the account's CUB profiles (Lampa's; history, marks and grades are each one's), the one used
-    // ✓. OK switches: Home's rows are that profile's.
-    void showProfiles() {
-        Cub.Account a = account();
-        LinearLayout list = ux.sheet("Profile", "Lampa uses the main one unless switched there", null);
-        TextView wait = ux.text("Asking CUB…", 16, 0xff9a9a9a);
-        wait.setPadding(dp(12), 0, 0, 0);
-        list.addView(wait);
-        View panel = overlay;
-        load(null, "profiles", () -> Cub.profiles(cub("profiles/all", null, a.token()).body()), all -> {
-            if (overlay != panel) return;
-            list.removeView(wait);
-            for (Cub.Profile p : all) {
-                list.addView(ux.sheetRow(p.name(), p.main() ? "Main profile" : null, Ui.check(p.id() == a.profile()), v -> {
-                    try {
-                        saveAccount(new Cub.Account(a.token(), p.id(), p.name()));
-                    } catch (IOException e) {
-                        Toast.makeText(this, "Couldn't save it: " + e.getMessage(), Toast.LENGTH_LONG).show();
-                        return;
-                    }
-                    closeOverlay();
-                    loadMine(); // that profile's rows
-                }));
-            }
-            panel.requestFocus();
-        }, () -> wait.setText("CUB doesn't answer. Try again later."));
-    }
-
     // The CUB account signed in (files/cub), or null. Read once; signing in or out sets it.
     Cub.Account account() {
         if (cubAccount == null) {
@@ -1406,81 +1232,12 @@ public class Main extends Activity {
         return new File(getFilesDir(), "cub");
     }
 
-    void signOut(Runnable done) {
-        LinearLayout list = ux.sheet("CUB account", account().name().isEmpty() ? null : account().name(), null);
-        list.addView(ux.sheetRow("Sign out", "History leaves Home; CUB keeps it, and Lampa stays signed in", null, v -> {
-            //noinspection ResultOfMethodCallIgnored: gone or never there, signed out either way
-            cubFile().delete();
-            //noinspection ResultOfMethodCallIgnored: the same
-            mineFile().delete();
-            cubAccount = Optional.empty();
-            closeOverlay();
-            showMine("");
-            done.run();
-        }));
-    }
-
-    String drawing() {
-        return software() ? "Software" : "GPU";
-    }
-
-    String stats() {
-        return settings().getBoolean("stats", false) ? "On" : "Off";
-    }
-
     boolean software() {
         return settings().getBoolean("software", true); // the lighter one
     }
 
     SharedPreferences settings() {
         return getSharedPreferences("settings", MODE_PRIVATE);
-    }
-
-    // The stats overlay goes on the window's decor, so it stays over Home and pages alike.
-    void showMeter(boolean on) {
-        if (on == (meter != null)) return;
-        ViewGroup decor = (ViewGroup) getWindow().getDecorView();
-        if (on) {
-            meter = new MeterView(this, getWindow(), !soft, background, ui); // not the poster threads
-            decor.addView(meter, new FrameLayout.LayoutParams(dp(330), dp(150),
-                Gravity.TOP | Gravity.END));
-            meter.start();
-        } else {
-            meter.stop();
-            decor.removeView(meter);
-            meter = null;
-        }
-    }
-
-    // A side sheet: OK on a language adds or removes it, All languages takes them all. Saved for next time; when it
-    // closes with the choice changed, reload runs (the source list asks again; null from Settings). releases < 0: not
-    // counted (from Settings).
-    void showLanguages(List<Sources.Language> all, Runnable reload) {
-        String before = langs();
-        LinearLayout list = ux.sheet("Audio languages", "OK adds or removes one.", () -> {
-            if (reload != null && !langs().equals(before)) reload.run();
-        });
-        list.addView(ux.sheetRow("All languages", null, null, v -> {
-            setLangs("");
-            closeOverlay();
-        }));
-        list.addView(ux.divider());
-        for (Sources.Language l : all) {
-            String code = l.code();
-            list.addView(ux.sheetRow(language(code), l.releases() < 0 ? code : code + " · " + l.releases() + " releases",
-                Ui.check(Sources.selected(langs(), code)), v -> {
-                    setLangs(Sources.toggle(langs(), code));
-                    ((TextView) ((LinearLayout) v).getChildAt(1)).setText(Ui.check(Sources.selected(langs(), code)));
-                }));
-        }
-    }
-
-    // A Torrentio flag's language, in English: its country's likely one, from the platform's own data (UA →
-    // Ukrainian, BR → Portuguese). EN is the worker's own (🇬🇧, or no flag).
-    static String language(String code) {
-        if (code.equals("EN")) return "English";
-        String name = ULocale.addLikelySubtags(new ULocale("und_" + code)).getDisplayLanguage(ULocale.ENGLISH);
-        return name.isEmpty() || name.startsWith("Unknown") || name.equalsIgnoreCase("und") ? code : name;
     }
 
     String langs() {
@@ -1491,7 +1248,7 @@ public class Main extends Activity {
     String audioNames() {
         List<String> codes = Sources.codes(langs());
         if (codes.isEmpty() || codes.contains("EN")) return null;
-        return codes.stream().map(Main::language).distinct().collect(java.util.stream.Collectors.joining(" or "));
+        return codes.stream().map(Settings::language).distinct().collect(java.util.stream.Collectors.joining(" or "));
     }
 
     // "RU, UA", "all languages"
@@ -1559,7 +1316,7 @@ public class Main extends Activity {
         // else its first row
         View focus = below.focus() != null ? below.focus() : below.view().findFocus();
         (focus != null ? focus : below.view()).requestFocus();
-        settingsAgain(); // back on the Settings tab from signing in
+        settingsScreen.settingsAgain(); // back on the Settings tab from signing in
         return true;
     }
 
@@ -1607,7 +1364,7 @@ public class Main extends Activity {
         Runnable r = overlayClosed;
         overlayClosed = null;
         if (r != null) r.run();
-        settingsAgain(); // a sub-sheet of the Settings tab: a value may have changed
+        settingsScreen.settingsAgain(); // a sub-sheet of the Settings tab: a value may have changed
         return true;
     }
 
@@ -1667,7 +1424,7 @@ public class Main extends Activity {
                 // the home network: no answer in 5 s = not there (a computer just woken or busy took over 1.5 s); the
                 // episodes are on the sheet meanwhile
                 h.setConnectTimeout(5000);
-                byte[] body = Film.recapBody(c, upto[0], upto[1], told, lang == null ? "English" : language(lang))
+                byte[] body = Film.recapBody(c, upto[0], upto[1], told, lang == null ? "English" : Settings.language(lang))
                     .getBytes(StandardCharsets.UTF_8);
                 String[] auth = Voice.homeAuth(token(), body, System.currentTimeMillis());
                 h.setRequestProperty("X-Home-Time", auth[0]);
@@ -1801,7 +1558,7 @@ public class Main extends Activity {
         switch (name) {
             case "Search" -> openSearch(at);
             case "Coming up" -> openComing(at);
-            case "Settings" -> openSettings(at);
+            case "Settings" -> settingsScreen.openSettings(at);
             default -> at.requestFocus();
         }
     }
@@ -1838,7 +1595,7 @@ public class Main extends Activity {
                 View on = page == null ? scroll.findFocus() : page.findFocus(); // ≡ on a Home poster: its own sheet
                 if (page == null && on != null && on.getTag() instanceof Home.Card c) quick(c, on);
                 else if (on != null && on.getTag() instanceof Cub.Played p) historySheet(p); // on a History row
-                else if (settingsList == null || !settingsList.isAttachedToWindow()) showSettings(); // not on its tab
+                else if (settingsList == null || !settingsList.isAttachedToWindow()) settingsScreen.showSettings(); // not on its tab
             }
             return true;
         }

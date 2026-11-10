@@ -135,7 +135,7 @@ final class SourcesScreen extends Main.Part {
             req.list().removeView(req.status());
             String shown = req.langs().isEmpty() ? "all languages" : req.langs().replace(",", ", ");
             req.sub().setText(req.title() + " · " + p.total() + " found, biggest first");
-            req.audio().setOnClickListener(v -> m.showLanguages(p.languages(), () -> {
+            req.audio().setOnClickListener(v -> m.settingsScreen.showLanguages(p.languages(), () -> {
                 if (m.pageTop != req.level()) return; // left meanwhile
                 m.popLevel(false); // no backdrop: the new list goes straight on top
                 showSources(req.f(), req.c(), req.season(), req.episode(), null, false);
