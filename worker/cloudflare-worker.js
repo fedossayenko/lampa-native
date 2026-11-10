@@ -139,7 +139,7 @@ async function mdblist(request, env, type, id, ctx) {
   return res;
 }
 
-// The Lampa plugin's film grades, shared by every Lampa signed in to the same CUB account + profile (KV GRADES).
+// The Lampa plugin's film grades, shared by every Lampa signed in to the same CUB account + profile (D1 grades).
 // The client sends its CUB sign-in (X-Cub-Token, X-Cub-Profile); we only ask CUB who it is, never store it.
 // Only accounts listed in the CUB_ACCOUNTS secret may use it, so this worker isn't free storage for others.
 const CUB_DOMAINS = ['cub.best', 'cub.black', 'cubnotrip.top'];
@@ -174,25 +174,49 @@ async function cubUser(request, env) {
 
 // POST /grades {"grades": {"movie_603": {g, t, card}, ...}} -> all grades of this account, merged:
 // per film the newer `t` wins; g null = grade removed (kept so the removal reaches other devices).
-const GRADES_BODY_MAX = 2e6; // a few thousand graded films with their cards; a KV value may hold 25 MB
+// A grade the plugin may send: a film or series key, a time, nothing else checked (its card is Lampa's).
+const gradeOk = ([k, v]) => /^(movie|tv)_\d+$/.test(k) && v && typeof v === 'object' && Number.isFinite(v.t);
+
+// Writes grades (the older `t` of a film never replaces the newer one: one statement, whatever the order devices post in).
+async function putGrades(env, who, entries) {
+  if (!entries.length) return;
+  await env.DB.prepare(`INSERT INTO grades (who, card, t, v) SELECT ?1, value->>'k', value->>'t', value->>'v' FROM json_each(?2)
+      WHERE true ON CONFLICT (who, card) DO UPDATE SET t = excluded.t, v = excluded.v WHERE excluded.t > grades.t`)
+    .bind(who, JSON.stringify(entries.map(([k, v]) => ({ k, t: v.t, v: JSON.stringify(v) })))).run();
+}
+
+// An account's grades: {"movie_603": {g, t, card}, ...}. An account with no rows yet and a KV value (the grades' old
+// home, binding GRADES) gets it copied in first: the move to D1 needs no step of its own.
+async function gradesOf(env, who) {
+  let rows = (await env.DB.prepare('SELECT card, v FROM grades WHERE who = ?').bind(who).all()).results;
+  if (!rows.length && env.GRADES) {
+    const old = await env.GRADES.get(who, 'json').catch(() => null);
+    const entries = old && typeof old === 'object' ? Object.entries(old).filter(gradeOk) : [];
+    if (entries.length) {
+      await putGrades(env, who, entries);
+      rows = entries.map(([card, v]) => ({ card, v: JSON.stringify(v) }));
+    }
+  }
+  return Object.fromEntries(rows.map((r) => [r.card, JSON.parse(r.v)]));
+}
+
+const GRADES_BODY_MAX = 2e6; // a few thousand graded films with their cards
+const GRADES_MAX = 5000;
 async function grades(request, env) {
   const who = await cubUser(request, env);
   if (!who) return corsError(request, 'CUB sign-in required.', 401);
+  if (!env.DB) return corsError(request, 'No database.', 502);
   if (Number(request.headers.get('Content-Length')) > GRADES_BODY_MAX) return corsError(request, 'Too large.', 413);
   let mine;
   try {
     mine = (await request.json()).grades;
   } catch {}
   if (!mine || typeof mine !== 'object' || Array.isArray(mine)) return corsError(request, 'Bad request: "grades" object expected.', 400);
-  const all = (await env.GRADES.get(who, 'json')) || {};
-  let changed = false;
-  for (const [k, v] of Object.entries(mine)) {
-    if (!/^(movie|tv)_\d+$/.test(k) || !v || typeof v.t !== 'number' || (all[k] && all[k].t >= v.t)) continue;
-    all[k] = v;
-    changed = true;
-  }
-  if (changed) await env.GRADES.put(who, JSON.stringify(all)); // KV free tier: 1,000 writes a day
-  return new Response(JSON.stringify(all), { headers: { 'Content-Type': 'application/json', ...corsHeaders(request) } });
+  const entries = Object.entries(mine).filter(gradeOk);
+  if (entries.length > GRADES_MAX) return corsError(request, 'Too many grades.', 413);
+  await gradesOf(env, who); // an account still in KV moves first: the new rows must not hide the old ones
+  await putGrades(env, who, entries);
+  return new Response(JSON.stringify(await gradesOf(env, who)), { headers: { 'Content-Type': 'application/json', ...corsHeaders(request) } });
 }
 
 // lampa-native: the TV's home screen in one small response; the TMDB key
@@ -2083,8 +2107,10 @@ const RECS_FETCH = 25;
 const WEIGHT = { 2: 2, 1: 1, '-1': -1 };
 async function refreshForYou(env) {
   const now = Date.now();
-  const whos = (await env.GRADES.list()).keys.map((k) => k.name);
-  const graded = await Promise.all(whos.map((w) => env.GRADES.get(w, 'json')));
+  // every account with grades; the ones still only in KV (the old home, binding GRADES) move to D1 as gradesOf reads them
+  const whos = [...new Set([...(await env.DB.prepare('SELECT DISTINCT who FROM grades').all()).results.map((r) => r.who),
+    ...(env.GRADES ? (await env.GRADES.list()).keys.map((k) => k.name) : [])])];
+  const graded = await Promise.all(whos.map((w) => gradesOf(env, w)));
   const seedsOf = (g) => Object.keys(g || {}).filter((k) => /^(movie|tv)_\d+$/.test(k) && WEIGHT[g[k]?.g]);
   const seeds = [...new Set(graded.flatMap(seedsOf))];
   const have = new Map((await env.DB.prepare('SELECT key, list, t FROM recs WHERE key IN (SELECT value FROM json_each(?))')
@@ -2198,7 +2224,7 @@ async function extLearned(env) {
 // GET /mine with the app's CUB sign-in (X-Cub-Token, X-Cub-Profile; accounts in CUB_ACCOUNTS only, as /grades) ->
 // {"rows": [...] as /home, "marks": {"tv_93740": "scheduled", ...}, "grades": {"movie_603": 2, ...}, "new":
 // {"tv_93740": "S3 E5", ...}}: the rows of Lampa's CUB home that are yours, for the top of lampa-native's Home,
-// every film's mark and grade (the film page's ⋯ and ★ show them; grades: KV GRADES as /grades, "skip" = Didn't
+// every film's mark and grade (the film page's ⋯ and ★ show them; grades: D1 grades as /grades, "skip" = Didn't
 // watch / not mine), the series with a new episode out (nextNew, freshOut): first in Continue browsing, and "mylist":
 // ["movie_603", ...], what My list holds (the film page's ⋯ adds or removes), "left": {"movie_603": 4000, ...}, the
 // seconds left of each film started (3 min in, under 90 %, not graded), for its poster, and "tv_1399": "26 ep", a
@@ -2224,7 +2250,7 @@ async function mine(request, env) {
   if (!who) return corsError(request, 'CUB sign-in required.', 401);
   const db = (sql, ...args) => (env.DB ? env.DB.prepare(sql).bind(...args).all().then((r) => r.results).catch(() => []) : []);
   const [dump, ours, graded, picks, uhd, follows, told, learned] = await Promise.all([cubApi(request, 'bookmarks/dump'),
-    db('SELECT card, mark FROM marks WHERE who = ?', who), env.GRADES ? env.GRADES.get(who, 'json').catch(() => null) : null,
+    db('SELECT card, mark FROM marks WHERE who = ?', who), env.DB ? gradesOf(env, who).catch(() => null) : null,
     db('SELECT cards FROM foryou WHERE who = ?', who), db('SELECT type, id, card FROM uhd WHERE card IS NOT NULL ORDER BY t DESC, pos LIMIT 100'),
     db('SELECT person, name, coming FROM follows WHERE who = ?', who),
     db('SELECT t, card, head, line FROM news WHERE who = ? AND t > ? ORDER BY t DESC LIMIT ?', who, Date.now() - NEWS_DAYS * 86400e3,
@@ -2694,7 +2720,7 @@ export default {
       }
       // follows beside For you (25 of the 50 subrequests), not beside New in 4K (up to 35); a failure stays theirs
       const night = [1, 2, 3].includes(new Date(event.scheduledTime).getUTCHours());
-      return Promise.all([env.GRADES && refreshForYou(env).catch((e) => console.log('for you', String(e))),
+      return Promise.all([refreshForYou(env).catch((e) => console.log('for you', String(e))),
         refreshFollows(env, event.scheduledTime).catch((e) => console.log('follows', e)),
         night && dropProbeAdds(env, event.scheduledTime).catch((e) => console.log('adds', e))]);
     }

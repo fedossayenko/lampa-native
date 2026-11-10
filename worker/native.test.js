@@ -589,6 +589,7 @@ function d1() {
   db.exec(readFileSync(new URL('./follows.sql', import.meta.url), 'utf8'));
   db.exec(readFileSync(new URL('./news.sql', import.meta.url), 'utf8'));
   db.exec(readFileSync(new URL('./audio.sql', import.meta.url), 'utf8'));
+  db.exec(readFileSync(new URL('./grades.sql', import.meta.url), 'utf8'));
   const stmt = (sql, args = []) => ({
     bind: (...a) => stmt(sql, a),
     all: async () => ({ results: db.prepare(sql).all(...args) }),
@@ -2484,4 +2485,44 @@ test('segments/jobs: a job taken goes to the back, so five the detector can\'t f
   const take = async () => (await (await worker.fetch(new Request('https://w/segments/jobs', { headers: stick }), e)).json()).jobs.map((j) => j.key.split('/')[2]);
   assert.deepEqual(await take(), ['1', '2', '3', '4', '5']);
   assert.deepEqual(await take(), ['6', '7', '1', '2', '3'], 'the two never taken come first');
+});
+
+// Grades are D1 rows (grades.sql), one a film: two devices posting at once can't overwrite each other, and the grades of
+// an install that kept them in KV move by themselves.
+test('grades: POST merges per film (the newer t wins, null = removed is kept); sign-in required; two posts together lose nothing', async () => {
+  const e = { ...env, DB: d1(), CUB_ACCOUNTS: '42' };
+  cub({ 'users/get': { user: { id: 42 } } });
+  const post = (grades, headers = lampa, init = {}) => worker.fetch(new Request('https://w/grades', { method: 'POST', headers,
+    body: JSON.stringify({ grades }), ...init }), e);
+  const first = await post({ movie_1: { g: 2, t: 10, card: { id: 1 } }, tv_2: { g: 1, t: 10 }, bad: { g: 1, t: 1 }, movie_3: { g: 1 } });
+  assert.deepEqual(await first.json(), { movie_1: { g: 2, t: 10, card: { id: 1 } }, tv_2: { g: 1, t: 10 } });
+  const second = await (await post({ movie_1: { g: 0, t: 5 }, tv_2: { g: null, t: 20 }, movie_4: { g: -1, t: 1 } })).json();
+  assert.deepEqual(second, { movie_1: { g: 2, t: 10, card: { id: 1 } }, tv_2: { g: null, t: 20 }, movie_4: { g: -1, t: 1 } },
+    'older t ignored, a removal kept, a new film added');
+  // two devices at once: each its own film, both stay
+  await Promise.all([post({ movie_5: { g: 1, t: 30 } }), post({ movie_6: { g: 2, t: 30 } })]);
+  assert.deepEqual(Object.keys(await (await post({})).json()).sort(), ['movie_1', 'movie_4', 'movie_5', 'movie_6', 'tv_2']);
+  assert.equal((await post({}, {})).status, 401, 'no sign-in');
+  assert.equal((await post([])).status, 400);
+  assert.equal((await post({}, lampa, { headers: { ...lampa, 'Content-Length': '9000000' } })).status, 413);
+  cub({ 'users/get': { user: { id: 9 } } });
+  assert.equal((await post({})).status, 401, 'not in CUB_ACCOUNTS');
+  assert.equal(e.DB.raw.prepare("SELECT count(*) n FROM grades WHERE who = '42:7'").get().n, 5);
+});
+
+test('grades: an account still in KV is copied to D1 on first use and then D1 rules; the hourly run moves the others', async () => {
+  const kv = { '42:7': { movie_1: { g: 2, t: 5 }, tv_2: { g: 'skip', t: 6 }, bad: { g: 1, t: 1 } }, '43:1': { movie_9: { g: 1, t: 1 } } };
+  const e = { ...env, DB: d1(), CUB_ACCOUNTS: '42', GRADES: { list: async () => ({ keys: Object.keys(kv).map((name) => ({ name })) }),
+    get: async (k) => kv[k] ?? null } };
+  cub({ 'users/get': { user: { id: 42 } } });
+  const res = await worker.fetch(new Request('https://w/grades', { method: 'POST', headers: lampa,
+    body: JSON.stringify({ grades: { movie_1: { g: 0, t: 4 } } }) }), e);
+  assert.deepEqual(await res.json(), { movie_1: { g: 2, t: 5 }, tv_2: { g: 'skip', t: 6 } }, 'KV\'s kept, the older post ignored');
+  kv['42:7'] = { movie_77: { g: 1, t: 99 } }; // KV changes after the move: not read again
+  const again = await (await worker.fetch(new Request('https://w/grades', { method: 'POST', headers: lampa, body: '{"grades":{}}' }), e)).json();
+  assert.deepEqual(Object.keys(again).sort(), ['movie_1', 'tv_2']);
+  e.DB.raw.prepare("INSERT INTO uhd (type, id, t, pos, card) VALUES ('movie', 99, 1, 0, null)").run();
+  tmdbAnswers({});
+  await worker.scheduled({ cron: '23 * * * *', scheduledTime: Date.UTC(2026, 9, 31, 5, 23) }, e);
+  assert.equal(e.DB.raw.prepare("SELECT count(*) n FROM grades WHERE who = '43:1'").get().n, 1, 'the cron moved the other account');
 });

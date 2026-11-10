@@ -262,7 +262,7 @@ shaping; custom-drawn rows would only save Java heap, which is 3 MB. Re-checked 
      30: 45 were outside them), but Not interested and Finish later; TMDB asked again on the next air date, a month
      after it ended, every 3 days while it waits for a date (`shows.status`, `next_air`).
    - **6b** built 2026-10-31, stick test pending: **★** beside ⋯ on the film page, in the grade's color
-     (Loved/Good/OK/Bad/Didn't watch → `/grades`, KV, Lampa's plugin's format, so Lampa shows it on its next sync);
+     (Loved/Good/OK/Bad/Didn't watch → `/grades`, D1 `grades` (one row a film; it was one KV value an account, so two devices posting together overwrote each other), Lampa's plugin's format, so Lampa shows it on its next sync);
      `/mine` brings the grades and **Rate what you watched** (the newest 100 history films past 70 % on the
      timeline, a series by any episode, no grade yet: 11 on 2026-10-31); a graded film leaves it.
    - **6c** built 2026-10-31: **For you**, made by the worker's hourly cron (TMDB recommendations of 240+ graded
