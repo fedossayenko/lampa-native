@@ -940,7 +940,10 @@ public class Main extends Activity {
             buttons.addView(button("Trailer", v -> playTrailer(f.trailer())),
                 buttons.getChildCount() > 0 ? spaced() : new LinearLayout.LayoutParams(-2, -2));
         }
-        if (loaded && learnBound && !series && !f.imdb().isEmpty()) learnButton(f, c, buttons, column);
+        // the page's top (alive() knows it), not column: given column, the status's answer was always dropped
+        if (loaded && learnBound && !series && !f.imdb().isEmpty()) {
+            learnButton(f, c, buttons, (View) column.getParent());
+        }
         // Story so far: a series with episodes watched before the one Continue goes on with. Its tag shows it
         // once the marks are known (remark), as Continue's
         if (series && loaded && watchable) {
