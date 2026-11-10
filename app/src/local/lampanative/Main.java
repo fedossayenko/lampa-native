@@ -2429,14 +2429,17 @@ public class Main extends Activity {
             String body = new JSONArray(p.hashes()).toString();
             list.addView(sheetRow("Mark unwatched", (p.what().isEmpty() ? "Back to the start" : p.what() + " back to the "
                 + "start") + ", here and in Lampa", null, v -> historyChange("/mine/unwatch",
-                ("{\"hashes\":" + body + "}").getBytes(StandardCharsets.UTF_8), at)));
+                ("{\"hashes\":" + body + "}").getBytes(StandardCharsets.UTF_8), at, p.hashes())));
         }
         list.addView(sheetRow("Remove from history", "Lampa's history loses it too", null,
-            v -> historyChange("/mine/unhistory/" + p.card().type() + "/" + p.card().id(), new byte[0], at)));
+            v -> historyChange("/mine/unhistory/" + p.card().type() + "/" + p.card().id(), new byte[0], at, List.of())));
     }
 
     // A History change sent (204: CUB or the timeline took it), then the page and Home's rows again.
-    void historyChange(String path, byte[] body, int at) {
+    // unwatched: the keys of the points taken back to the start: the marks kept here (and DDD's answers of this
+    // session, which the worker's answers never overwrite) forget them, or the episodes would show Watched until the
+    // app is closed.
+    void historyChange(String path, byte[] body, int at, List<String> unwatched) {
         Cub.Account a = account();
         LinearLayout list = historyList;
         Toast.makeText(this, "Saving…", Toast.LENGTH_SHORT).show();
@@ -2448,6 +2451,9 @@ public class Main extends Activity {
                     return;
                 }
                 closeOverlay();
+                marks.keySet().removeAll(unwatched);
+                played.removeAll(unwatched);
+                remark();
                 if (list != null && alive((View) list.getParent())) fillHistory(list, Math.max(0, at));
                 loadMine(); // Continue browsing, the posters' badges
             });
