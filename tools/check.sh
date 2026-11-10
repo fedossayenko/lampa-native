@@ -1,5 +1,6 @@
 #!/bin/bash
-# Every commit (.githooks/pre-commit): shell lint, every javac lint as an error, the host unit tests and the worker's.
+# Every commit (.githooks/pre-commit): shell lint, Python syntax, every javac lint as an error, the host unit tests and
+# the worker's.
 # Pushes add the APK build and Android Lint (.githooks/pre-push). Runs in a few seconds.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -10,7 +11,10 @@ JAR="$SDK/platforms/android-36/android.jar"
 JSON=tools/lib/json-20260814.jar
 JSON_SHA256=7dd2de1533e766e2b6c07d8194da85145ad313a167a4760050f5c9b6839604fe
 
-shellcheck tools/*.sh .githooks/* app/build.sh worker/*.sh
+shellcheck tools/*.sh tools/stick/*.sh .githooks/* app/build.sh worker/*.sh
+# The home-server scripts and the importer have no tests; at least they parse (-B: no __pycache__ written)
+python3 -B -c 'import ast, sys; [ast.parse(open(f, encoding="utf-8").read(), f) for f in sys.argv[1:]]' \
+    worker/*.py worker/home-server/*.py
 
 # No `trap … EXIT` cleanup: in macOS's bash 3.2 an unset-variable error then exits with status 0 and the
 # hook would pass a broken check. A fixed scratch dir, wiped at the start, needs no trap.
@@ -20,7 +24,10 @@ javac --release 21 -Xlint:all -Werror -encoding UTF-8 -cp "$JAR" -d "$out/app" a
 
 if [ ! -f "$JSON" ]; then
     mkdir -p tools/lib
-    curl -sfL -o "$JSON" "https://repo1.maven.org/maven2/org/json/json/20260814/json-20260814.jar"
+    # to a side file: a cut-off download left at $JSON would fail the checksum on every run, never fetched again
+    curl -sfL --retry 3 -o "$JSON.part" "https://repo1.maven.org/maven2/org/json/json/20260814/json-20260814.jar"
+    echo "$JSON_SHA256  $JSON.part" | shasum -a 256 -c --quiet
+    mv "$JSON.part" "$JSON"
 fi
 echo "$JSON_SHA256  $JSON" | shasum -a 256 -c --quiet
 
@@ -31,5 +38,5 @@ javac --release 21 -Xlint:all -Werror -encoding UTF-8 -cp "$JSON" -d "$out/test"
     ${pure[@]+"${pure[@]}"} app/test/local/lampanative/*.java tools/TestRunner.java
 java -ea -cp "$out/test:$JSON" TestRunner "$out/test"
 
-# The worker's routes (Node 22+, no dependencies: fetch is mocked)
-node --test --test-reporter=dot worker/native.test.js
+# The worker's routes (Node 22.8+, no dependencies: fetch is mocked); 95 % of its lines are run, 90 is the floor
+node --test --test-reporter=dot --experimental-test-coverage --test-coverage-lines=90 worker/native.test.js
