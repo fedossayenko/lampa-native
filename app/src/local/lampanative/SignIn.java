@@ -47,28 +47,20 @@ final class SignIn extends Main.Part {
     }
 
     void newCode() {
-        m.async(() -> {
-            try {
-                Answer a = cub("device/code", "client=lampa", null);
-                if (a.code() != 200) throw new IOException("HTTP " + a.code());
-                Cub.Code got = Cub.code(a.body());
-                m.ui.post(() -> {
-                    if (!m.alive(level)) return;
-                    c = got;
-                    until = System.currentTimeMillis() + got.expires() * 1000L;
-                    site.setText(got.site());
-                    code.setText(got.user());
-                    status.setText("and enter this code. Waiting for it…");
-                    later(got.interval());
-                });
-            } catch (IOException | JSONException e) {
-                Log.w(Main.TAG, "CUB code", e);
-                m.ui.post(() -> {
-                    if (!m.alive(level)) return;
-                    status.setText("CUB doesn't answer. Trying again…");
-                    m.ui.postDelayed(this::newCode, 10000);
-                });
-            }
+        m.load(level, "CUB code", () -> {
+            Answer a = cub("device/code", "client=lampa", null);
+            if (a.code() != 200) throw new IOException("HTTP " + a.code());
+            return Cub.code(a.body());
+        }, got -> {
+            c = got;
+            until = System.currentTimeMillis() + got.expires() * 1000L;
+            site.setText(got.site());
+            code.setText(got.user());
+            status.setText("and enter this code. Waiting for it…");
+            later(got.interval());
+        }, () -> {
+            status.setText("CUB doesn't answer. Trying again…");
+            m.ui.postDelayed(this::newCode, 10000);
         });
     }
 

@@ -89,6 +89,7 @@ import java.util.Optional;
 import java.util.PrimitiveIterator;
 import java.util.Set;
 import java.util.TimeZone;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -251,6 +252,28 @@ public class Main extends Activity {
         });
     }
 
+    // Work off the UI thread and its answer on it, for a screen: work runs on the pool; what it returns goes to ok on the
+    // UI thread, while the level that asked (a page's top, a sheet's panel's screen) is still on the page; null: always.
+    // If work throws, `what` and the exception are logged and fail runs, under the same check. Every loader wrote this
+    // try, post and alive() again.
+    <T> void load(View level, String what, Callable<T> work, Consumer<T> ok, Runnable fail) {
+        async(() -> {
+            T got;
+            try {
+                got = work.call();
+            } catch (Exception e) {
+                Log.w(TAG, what, e);
+                ui.post(() -> {
+                    if (level == null || alive(level)) fail.run();
+                });
+                return;
+            }
+            ui.post(() -> {
+                if (level == null || alive(level)) ok.accept(got);
+            });
+        });
+    }
+
     // A thread of our own, with async()'s guard: what its body throws is logged, not an uncaught exception, which ends
     // the app.
     static void thread(String name, Runnable body) {
@@ -407,27 +430,22 @@ public class Main extends Activity {
     void loadMine() {
         Cub.Account a = account();
         if (a == null) return;
-        async(() -> {
+        load(null, "mine", () -> {
+            // lang: Coming up's "out" is out in these audio languages (the app English, the audio Russian)
+            Answer r = send(withCub(open(Home.worker + "/mine?lang=" + langs(), 20000), a), null, null);
+            if (r.code() != 200) throw new Status(r.code());
+            return r;
+        }, r -> {
+            if (account() != a) return; // signed out (or in again) meanwhile
+            String before = mineShown;
+            showMine(r.body());
+            if (!Home.keepMine(before, r.body(), mineShown)) return; // the same, or not drawn (not valid)
             try {
-                // lang: Coming up's "out" is out in these audio languages (the app English, the audio
-                // Russian)
-                Answer r = send(withCub(open(Home.worker + "/mine?lang=" + langs(), 20000), a), null, null);
-                if (r.code() != 200) throw new Status(r.code());
-                ui.post(() -> {
-                    if (account() != a) return; // signed out (or in again) meanwhile
-                    String before = mineShown;
-                    showMine(r.body());
-                    if (!Home.keepMine(before, r.body(), mineShown)) return; // the same, or not drawn (not valid)
-                    try {
-                        Files.write(mineFile().toPath(), r.body().getBytes(StandardCharsets.UTF_8)); // ~2 KB
-                    } catch (IOException e) {
-                        Log.w(TAG, "mine not kept", e);
-                    }
-                });
+                Files.write(mineFile().toPath(), r.body().getBytes(StandardCharsets.UTF_8)); // ~2 KB
             } catch (IOException e) {
-                Log.w(TAG, "mine", e); // the rows shown stay
+                Log.w(TAG, "mine not kept", e);
             }
-        });
+        }, () -> { }); // the rows shown stay
     }
 
     // Your rows above the TMDB ones, drawn again only when the answer changed. Focus stays on the same film when it
@@ -845,34 +863,26 @@ public class Main extends Activity {
         pushLevel(sv, c.backdrop(), pics, sources == null);
         restoring = sources != null;
 
-        async(() -> {
-            try {
-                Film f = Film.parse(new String(read(Film.url(c)), StandardCharsets.UTF_8));
-                ui.post(() -> {
-                    restoring = false;
-                    if (!alive(sv)) return;
-                    // A film's first sources into the disk cache while the page is read, so Watch shows them at
-                    // once (a series waits for its episode). Before the page's photos and posters on the pool.
-                    if (c.type().equals("movie") && !f.imdb().isEmpty() && pageTop == sv
-                        && !Sources.refusedLately(refusedAt, System.currentTimeMillis())) { // else a 502 for nothing
-                        String url = Sources.url(f.imdb(), 0, 0, langs(), 0);
-                        preload = pool.submit(() -> {
-                            cache(url);
-                            Log.i(TAG, "sources preloaded " + (System.currentTimeMillis() - t) + " ms after OK");
-                            return null;
-                        });
-                    }
-                    fill(column, info, f, c, pics, true);
-                    loadMarks(f);
-                    Log.i(TAG, "film details " + (System.currentTimeMillis() - t) + " ms after OK");
-                    if (sources != null && pageTop == sv) reopen(f, c, sources[0], sources[1], null, false);
+        load(null, "film " + c.id(), () -> Film.parse(new String(read(Film.url(c)), StandardCharsets.UTF_8)), f -> {
+            restoring = false;
+            if (!alive(sv)) return;
+            // A film's first sources into the disk cache while the page is read, so Watch shows them at
+            // once (a series waits for its episode). Before the page's photos and posters on the pool.
+            if (c.type().equals("movie") && !f.imdb().isEmpty() && pageTop == sv
+                && !Sources.refusedLately(refusedAt, System.currentTimeMillis())) { // else a 502 for nothing
+                String url = Sources.url(f.imdb(), 0, 0, langs(), 0);
+                preload = pool.submit(() -> {
+                    cache(url);
+                    Log.i(TAG, "sources preloaded " + (System.currentTimeMillis() - t) + " ms after OK");
+                    return null;
                 });
-            } catch (Exception e) {
-                Log.w(TAG, "film " + c.id(), e); // the page keeps what the card gave it
-                ui.post(() -> restoring = false);
-                // ponytail: a restore whose /card fails stays without its backdrop; Back and in again shows it
             }
-        });
+            fill(column, info, f, c, pics, true);
+            loadMarks(f);
+            Log.i(TAG, "film details " + (System.currentTimeMillis() - t) + " ms after OK");
+            if (sources != null && pageTop == sv) reopen(f, c, sources[0], sources[1], null, false);
+        }, () -> restoring = false); // the page keeps what the card gave it
+        // ponytail: a restore whose /card fails stays without its backdrop; Back and in again shows it
     }
 
     // Whether this level is still on the page (on top or under it): loaders check it before drawing.
@@ -886,32 +896,27 @@ public class Main extends Activity {
         String path = pageBackdropPath;
         if (path.isEmpty()) return;
         int sw = getResources().getDisplayMetrics().widthPixels, sh = getResources().getDisplayMetrics().heightPixels;
-        async(() -> {
-            try {
-                // Dimmed, and faded to the ground on the left and at the bottom, in one pass when it loads (a few
-                // ms on the pool; per frame: nothing). Software: at the screen's size; GPU: at its own (the GPU
-                // scales it for free), then into the GPU only.
-                Bitmap raw = decode(read(BACKDROP + path), false, 1);
-                if (raw == null) throw new IOException("not a picture");
-                Bitmap b = fit(raw, soft ? sw : raw.getWidth(), soft ? sh : raw.getHeight(), true);
-                if (!soft) {
-                    Bitmap g = b.copy(Bitmap.Config.HARDWARE, false);
-                    b.recycle();
-                    b = g;
-                }
-                Bitmap done = b;
-                ui.post(() -> {
-                    if (stopped || pageTop != top) { // left meanwhile
-                        if (done != null) done.recycle(); // 4 MB of pixels (native) that no one will see; null: the GPU copy failed
-                        return;
-                    }
-                    pageBackdrop.setImageBitmap(done);
-                    Log.i(TAG, "film backdrop " + (System.currentTimeMillis() - t) + " ms after OK");
-                });
-            } catch (IOException e) {
-                Log.w(TAG, "backdrop " + path, e);
+        load(null, "backdrop " + path, () -> {
+            // Dimmed, and faded to the ground on the left and at the bottom, in one pass when it loads (a few
+            // ms on the pool; per frame: nothing). Software: at the screen's size; GPU: at its own (the GPU
+            // scales it for free), then into the GPU only.
+            Bitmap raw = decode(read(BACKDROP + path), false, 1);
+            if (raw == null) throw new IOException("not a picture");
+            Bitmap b = fit(raw, soft ? sw : raw.getWidth(), soft ? sh : raw.getHeight(), true);
+            if (!soft) {
+                Bitmap g = b.copy(Bitmap.Config.HARDWARE, false);
+                b.recycle();
+                b = g;
             }
-        });
+            return b;
+        }, done -> {
+            if (stopped || pageTop != top) { // left meanwhile
+                if (done != null) done.recycle(); // 4 MB of pixels (native) that no one will see; null: the GPU copy failed
+                return;
+            }
+            pageBackdrop.setImageBitmap(done);
+            Log.i(TAG, "film backdrop " + (System.currentTimeMillis() - t) + " ms after OK");
+        }, () -> { });
     }
 
     // The film's info; then its cast and its collection (but itself) under it, their pictures into pics.
@@ -1132,20 +1137,9 @@ public class Main extends Activity {
         content.addView(info, getResources().getDisplayMetrics().widthPixels * 2 / 3, -2);
         column.addView(content);
         pushLevel(sv, "", pics, false);
-        async(() -> {
-            try {
-                Person p = Person.parse(new String(read(url), StandardCharsets.UTF_8));
-                ui.post(() -> {
-                    if (!alive(sv)) return;
-                    fillPerson(column, info, p, pics);
-                });
-            } catch (Exception e) {
-                Log.w(TAG, "rows " + url, e);
-                ui.post(() -> {
-                    if (alive(sv)) info.addView(text("TMDB didn't answer. Back, and " + again + " again.", 18, 0xff9a9a9a));
-                });
-            }
-        });
+        load(sv, "rows " + url, () -> Person.parse(new String(read(url), StandardCharsets.UTF_8)),
+            p -> fillPerson(column, info, p, pics),
+            () -> info.addView(text("TMDB didn't answer. Back, and " + again + " again.", 18, 0xff9a9a9a)));
     }
 
     // Follow on a person's page: their coming films (directed, or a lead) go to Coming up.
@@ -1160,21 +1154,18 @@ public class Main extends Activity {
             boolean on = !cubFollows.contains(a.id());
             Cub.Account acc = account();
             b.setText(on ? "Following…" : "Unfollowing…");
-            async(() -> {
-                int done = post("/mine/" + (on ? "follow/" : "unfollow/") + a.id(), acc, new byte[0], "text/plain");
-                ui.post(() -> {
-                    if (done == 204) {
-                        Set<Integer> f = new HashSet<>(cubFollows);
-                        if (on) f.add(a.id());
-                        else f.remove(a.id());
-                        cubFollows = f;
-                        loadMine(); // Coming up: their films
-                    } else {
-                        Toast.makeText(this, "Didn't save. Try again.", Toast.LENGTH_LONG).show();
-                    }
-                    label.run();
-                });
-            });
+            load(null, "follow", () -> post("/mine/" + (on ? "follow/" : "unfollow/") + a.id(), acc, new byte[0], "text/plain"), done -> {
+                if (done == 204) {
+                    Set<Integer> f = new HashSet<>(cubFollows);
+                    if (on) f.add(a.id());
+                    else f.remove(a.id());
+                    cubFollows = f;
+                    loadMine(); // Coming up: their films
+                } else {
+                    Toast.makeText(this, "Didn't save. Try again.", Toast.LENGTH_LONG).show();
+                }
+                label.run();
+            }, () -> { });
         });
         return b;
     }
@@ -1346,28 +1337,19 @@ public class Main extends Activity {
     void pickSource(Film f, Sources.Source[] best, TextView plays, View level) {
         String url = Sources.url(f.imdb(), 0, 0, langs(), 0);
         Future<?> before = preload;
-        async(() -> {
-            Sources.Source s = null;
-            boolean read = false;
+        load(level, "pick " + f.imdb(), () -> {
             try {
                 if (before != null) before.get();
             } catch (Exception e) {
                 // read below, from the network
             }
-            try {
-                s = Sources.best(Sources.parse(new String(read(url), StandardCharsets.UTF_8)).streams());
-                read = true;
-            } catch (Exception e) {
-                Log.w(TAG, "pick " + f.imdb(), e); // ▶ Play opens the list
-            }
-            Sources.Source got = s;
-            boolean known = read;
-            ui.post(() -> {
-                if (!alive(level)) return;
-                best[0] = got;
-                plays.setText(got != null ? playsLine(got) : known ? "Nothing cached in " + shownLangs()
-                    + ": ▶ Play lists the sources" : "");
-            });
+            return Sources.best(Sources.parse(new String(read(url), StandardCharsets.UTF_8)).streams());
+        }, got -> {
+            best[0] = got;
+            plays.setText(got != null ? playsLine(got) : "Nothing cached in " + shownLangs() + ": ▶ Play lists the sources");
+        }, () -> { // ▶ Play opens the list
+            best[0] = null;
+            plays.setText("");
         });
     }
 
@@ -1637,22 +1619,19 @@ public class Main extends Activity {
         View panel = overlay;
         Toast.makeText(this, "Saving…", Toast.LENGTH_SHORT).show();
         byte[] body = Cub.gradeBody(c, original, g, System.currentTimeMillis()).getBytes(StandardCharsets.UTF_8);
-        async(() -> {
-            int done = post("/grades", a, body, "application/json");
-            ui.post(() -> {
-                if (done != 200) {
-                    Toast.makeText(this, "The grade wasn't saved. Try again.", Toast.LENGTH_LONG).show();
-                    return;
-                }
-                Map<String, String> m = new HashMap<>(cubGrades);
-                if (g == null) m.remove(Timeline.card(c));
-                else m.put(Timeline.card(c), g);
-                cubGrades = m;
-                if (overlay == panel) closeOverlay(); // not Back meanwhile
-                saved.accept(g);
-                loadMine(); // Home's Rate what you watched
-            });
-        });
+        load(null, "grade", () -> post("/grades", a, body, "application/json"), done -> {
+            if (done != 200) {
+                Toast.makeText(this, "The grade wasn't saved. Try again.", Toast.LENGTH_LONG).show();
+                return;
+            }
+            Map<String, String> m = new HashMap<>(cubGrades);
+            if (g == null) m.remove(Timeline.card(c));
+            else m.put(Timeline.card(c), g);
+            cubGrades = m;
+            if (overlay == panel) closeOverlay(); // not Back meanwhile
+            saved.accept(g);
+            loadMine(); // Home's Rate what you watched
+        }, () -> { });
     }
 
     void setMark(Home.Card c, String mark) {
@@ -1669,18 +1648,15 @@ public class Main extends Activity {
         Cub.Account a = account();
         View panel = overlay;
         Toast.makeText(this, "Saving…", Toast.LENGTH_SHORT).show();
-        async(() -> {
-            int done = post("/mine/" + list + "/" + c.type() + "/" + c.id(), a, new byte[0], "text/plain");
-            ui.post(() -> {
-                if (done != 204) {
-                    Toast.makeText(this, "CUB didn't take it. Try again.", Toast.LENGTH_LONG).show();
-                    return;
-                }
-                saved.run();
-                if (overlay == panel) closeOverlay();
-                loadMine(); // Home's rows: out of Continue browsing, into Finish later or My list
-            });
-        });
+        load(null, "mine post", () -> post("/mine/" + list + "/" + c.type() + "/" + c.id(), a, new byte[0], "text/plain"), done -> {
+            if (done != 204) {
+                Toast.makeText(this, "CUB didn't take it. Try again.", Toast.LENGTH_LONG).show();
+                return;
+            }
+            saved.run();
+            if (overlay == panel) closeOverlay();
+            loadMine(); // Home's rows: out of Continue browsing, into Finish later or My list
+        }, () -> { });
     }
 
     // The source last played of this film or series (play() keeps it), or null.
@@ -1692,19 +1668,14 @@ public class Main extends Activity {
     // ponytail: each remark() hashes every episode's key again (~3000 on a 1000-episode series, a few ms, only when
     // marks come); keep the keys per film if that shows up
     void loadMarks(Film f) {
-        async(() -> {
-            try {
-                Answer a = ask("/timeline?hash=" + Timeline.keys(f), null); // up to 1000 keys: off the UI thread
-                if (a.code() != 200) throw new IOException("HTTP " + a.code());
-                Map<String, Timeline.Point> m = Timeline.marks(a.body());
-                ui.post(() -> {
-                    Timeline.merge(marks, m, played);
-                    remark();
-                });
-            } catch (IOException | JSONException e) {
-                Log.w(TAG, "marks", e); // no marks
-            }
-        });
+        load(null, "marks", () -> {
+            Answer a = ask("/timeline?hash=" + Timeline.keys(f), null); // up to 1000 keys: off the UI thread
+            if (a.code() != 200) throw new IOException("HTTP " + a.code());
+            return Timeline.marks(a.body());
+        }, m -> {
+            Timeline.merge(marks, m, played);
+            remark();
+        }, () -> { }); // no marks
     }
 
     LinearLayout vertical() {
@@ -2148,15 +2119,10 @@ public class Main extends Activity {
             askGrade();
         }
         String json = p.body(t);
-        async(() -> {
-            try {
-                int code = ask("/timeline", json.getBytes(StandardCharsets.UTF_8)).code();
-                if (code != 204) Log.w(TAG, "timeline: HTTP " + code);
-                ui.post(this::loadMine); // the film just played, in Continue browsing
-            } catch (IOException e) {
-                Log.w(TAG, "timeline", e); // ponytail: lost; keep it on the stick and send it later if this shows up
-            }
-        });
+        load(null, "timeline", () -> ask("/timeline", json.getBytes(StandardCharsets.UTF_8)).code(), code -> {
+            if (code != 204) Log.w(TAG, "timeline: HTTP " + code);
+            loadMine(); // the film just played, in Continue browsing
+        }, () -> { }); // ponytail: lost; keep it on the stick and send it later if this shows up
     }
 
     // Our DDD fork's report while it plays (return_progress: every 30 s, on pause, when it leaves the screen), saved
@@ -2348,19 +2314,11 @@ public class Main extends Activity {
         if (a == null) return;
         View level = (View) list.getParent();
         int tz = TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 60000;
-        async(() -> {
-            try {
-                Answer r = send(withCub(open(Home.worker + "/mine/history?tz=" + tz, 20000), a), null, null);
-                if (r.code() != 200) throw new Status(r.code());
-                List<Cub.Played> items = Cub.history(r.body());
-                ui.post(() -> {
-                    if (alive(level)) showHistory(list, note, items, focus);
-                });
-            } catch (IOException | JSONException e) {
-                Log.w(TAG, "history", e);
-                ui.post(() -> note.setText("Can't load History. Back, then open it again."));
-            }
-        });
+        load(level, "history", () -> {
+            Answer r = send(withCub(open(Home.worker + "/mine/history?tz=" + tz, 20000), a), null, null);
+            if (r.code() != 200) throw new Status(r.code());
+            return Cub.history(r.body());
+        }, items -> showHistory(list, note, items, focus), () -> note.setText("Can't load History. Back, then open it again."));
     }
 
     void showHistory(LinearLayout list, TextView note, List<Cub.Played> items, int focus) {
@@ -2458,40 +2416,35 @@ public class Main extends Activity {
         Cub.Account a = account();
         LinearLayout list = historyList;
         Toast.makeText(this, "Saving…", Toast.LENGTH_SHORT).show();
-        async(() -> {
-            int done = post(path, a, body, "application/json");
-            ui.post(() -> {
-                if (done != 204) {
-                    Toast.makeText(this, "CUB didn't take it. Try again.", Toast.LENGTH_LONG).show();
-                    return;
-                }
-                closeOverlay();
-                Timeline.forget(marks, played, unwatched);
-                remark();
-                if (list != null && alive((View) list.getParent())) fillHistory(list, Math.max(0, at));
-                loadMine(); // Continue browsing, the posters' badges
-            });
-        });
+        load(null, "history change", () -> post(path, a, body, "application/json"), done -> {
+            if (done != 204) {
+                Toast.makeText(this, "CUB didn't take it. Try again.", Toast.LENGTH_LONG).show();
+                return;
+            }
+            closeOverlay();
+            Timeline.forget(marks, played, unwatched);
+            remark();
+            if (list != null && alive((View) list.getParent())) fillHistory(list, Math.max(0, at));
+            loadMine(); // Continue browsing, the posters' badges
+        }, () -> { });
     }
 
     // An out episode's "Out" → "⚡ Cached" once TorBox has a release of it in your audio languages (the design's):
     // the same first sources page as ▶ Play's pick.
     void cachedLabel(Cub.Coming x, TextView label) {
         String langs = langs();
-        async(() -> {
-            try {
-                Film film = Film.parse(new String(read(Film.url(x.card())), StandardCharsets.UTF_8));
-                if (film.imdb().isEmpty()) return;
-                Sources.Page p = Sources.parse(new String(read(Sources.url(film.imdb(), x.season(), x.episode(), langs,
-                    0)), StandardCharsets.UTF_8));
-                if (Sources.best(p.streams()) == null) return;
-                SpannableStringBuilder cached = new SpannableStringBuilder(Sources.BOLT + " Cached");
-                cached.setSpan(new Tint(Home.GREEN, 0xff0a7d3e), 0, cached.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-                ui.post(() -> label.setText(cached));
-            } catch (IOException | JSONException e) {
-                Log.w(TAG, "coming " + x.card().id(), e); // stays "Out"
-            }
-        });
+        load(null, "coming " + x.card().id(), () -> {
+            Film film = Film.parse(new String(read(Film.url(x.card())), StandardCharsets.UTF_8));
+            if (film.imdb().isEmpty()) return null;
+            Sources.Page p = Sources.parse(new String(read(Sources.url(film.imdb(), x.season(), x.episode(), langs,
+                0)), StandardCharsets.UTF_8));
+            if (Sources.best(p.streams()) == null) return null;
+            SpannableStringBuilder cached = new SpannableStringBuilder(Sources.BOLT + " Cached");
+            cached.setSpan(new Tint(Home.GREEN, 0xff0a7d3e), 0, cached.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            return cached;
+        }, cached -> {
+            if (cached != null) label.setText(cached);
+        }, () -> { }); // stays "Out"
     }
 
     // Search: an alphabetical keyboard (EN or RU) on the left, the results on the right while typing; the worker
@@ -2862,21 +2815,19 @@ public class Main extends Activity {
         long now = SystemClock.elapsedRealtime();
         if (now - torboxAt < 60_000) return; // the tab's rows drawn again after a sub-sheet: no new request, no "…"
         torboxAt = now;
-        async(() -> { // TorBox's plan and torrents (~0.5 s)
-            String line;
-            try {
-                Answer t = ask("/torbox", null);
-                JSONObject o = new JSONObject(t.body());
-                line = t.code() == 200 ? o.getString("plan") + " · " + o.getInt("torrents") + " torrents" : "Not reachable";
-            } catch (IOException | JSONException e) {
-                line = "Not reachable";
-            }
-            String shown = line;
-            ui.post(() -> {
-                torboxLine = shown;
-                if (torbox.isAttachedToWindow()) ((TextView) torbox.getChildAt(1)).setText(shown);
-                else settingsAgain(); // the tab's rows drawn again meanwhile
-            });
+        // TorBox's plan and torrents (~0.5 s)
+        load(null, "torbox", () -> {
+            Answer t = ask("/torbox", null);
+            JSONObject o = new JSONObject(t.body());
+            return t.code() == 200 ? o.getString("plan") + " · " + o.getInt("torrents") + " torrents" : "Not reachable";
+        }, shown -> {
+            torboxLine = shown;
+            if (torbox.isAttachedToWindow()) ((TextView) torbox.getChildAt(1)).setText(shown);
+            else settingsAgain(); // the tab's rows drawn again meanwhile
+        }, () -> {
+            torboxLine = "Not reachable";
+            if (torbox.isAttachedToWindow()) ((TextView) torbox.getChildAt(1)).setText(torboxLine);
+            else settingsAgain();
         });
     }
 
@@ -2910,30 +2861,23 @@ public class Main extends Activity {
         wait.setPadding(dp(12), 0, 0, 0);
         list.addView(wait);
         View panel = overlay;
-        async(() -> {
-            try {
-                List<Cub.Profile> all = Cub.profiles(cub("profiles/all", null, a.token()).body());
-                ui.post(() -> {
-                    if (overlay != panel) return;
-                    list.removeView(wait);
-                    for (Cub.Profile p : all) {
-                        list.addView(sheetRow(p.name(), p.main() ? "Main profile" : null, check(p.id() == a.profile()), v -> {
-                            try {
-                                saveAccount(new Cub.Account(a.token(), p.id(), p.name()));
-                            } catch (IOException e) {
-                                Toast.makeText(this, "Couldn't save it: " + e.getMessage(), Toast.LENGTH_LONG).show();
-                                return;
-                            }
-                            closeOverlay();
-                            loadMine(); // that profile's rows
-                        }));
+        load(null, "profiles", () -> Cub.profiles(cub("profiles/all", null, a.token()).body()), all -> {
+            if (overlay != panel) return;
+            list.removeView(wait);
+            for (Cub.Profile p : all) {
+                list.addView(sheetRow(p.name(), p.main() ? "Main profile" : null, check(p.id() == a.profile()), v -> {
+                    try {
+                        saveAccount(new Cub.Account(a.token(), p.id(), p.name()));
+                    } catch (IOException e) {
+                        Toast.makeText(this, "Couldn't save it: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                        return;
                     }
-                    panel.requestFocus();
-                });
-            } catch (IOException | JSONException e) {
-                ui.post(() -> wait.setText("CUB doesn't answer. Try again later."));
+                    closeOverlay();
+                    loadMine(); // that profile's rows
+                }));
             }
-        });
+            panel.requestFocus();
+        }, () -> wait.setText("CUB doesn't answer. Try again later."));
     }
 
     // The CUB account signed in (files/cub), or null. Read once; signing in or out sets it.

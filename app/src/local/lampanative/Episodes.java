@@ -7,13 +7,11 @@ import android.graphics.Color;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.text.TextUtils;
-import android.util.Log;
 import android.view.View;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.util.ArrayList;
@@ -21,7 +19,6 @@ import java.util.List;
 import java.util.PrimitiveIterator;
 import java.util.function.Supplier;
 import java.util.stream.IntStream;
-import org.json.JSONException;
 
 // Watch on a series: seasons and episodes on one screen. The seasons on the left with
 // what of each is watched; the focused one's episodes on the right, each with its mark after its number (one
@@ -127,20 +124,14 @@ final class Episodes extends Main.Part {
         about = List.of();
         episodes.removeAllViews();
         right.scrollTo(0, 0);
-        m.async(() -> { // names, runtimes, stills: "Episode 5" rows until then (or for good, offline)
-            try {
-                List<Film.Episode> got = Film.season(new String(read(Film.seasonUrl(c, s.number())),
-                    StandardCharsets.UTF_8));
-                m.ui.post(() -> {
-                    if (shown != s || !m.alive(level)) return;
-                    about = got;
-                    Main.remark(episodes);
-                    m.updateWindow();
-                });
-            } catch (IOException | JSONException e) {
-                Log.w(Main.TAG, "season " + c.id() + "/" + s.number(), e);
-            }
-        });
+        // names, runtimes, stills: "Episode 5" rows until then (or for good, offline)
+        m.load(level, "season " + c.id() + "/" + s.number(),
+            () -> Film.season(new String(read(Film.seasonUrl(c, s.number())), StandardCharsets.UTF_8)), got -> {
+                if (shown != s) return;
+                about = got;
+                Main.remark(episodes);
+                m.updateWindow();
+            }, () -> { });
         PrimitiveIterator.OfInt e = IntStream.rangeClosed(1, s.episodes()).iterator();
         next = () -> e.hasNext() ? episodeRow(s, e.nextInt()) : null;
         m.addRows(episodes, next, 10);
