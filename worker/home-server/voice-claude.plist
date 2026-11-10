@@ -12,6 +12,9 @@
         <string>-c</string>
         <string>exec /usr/bin/python3 "$HOME/lampa-intros/voice-claude.py" &gt;&gt; "$HOME/.lampa-intros/voice.log" 2&gt;&amp;1</string>
     </array>
+    <!-- A Mac whose default route is a VPN's: the address HOME_SERVER names, else the VPN's is picked
+    <key>EnvironmentVariables</key><dict><key>LAMPA_BIND</key><string>192.168.1.20</string></dict>
+    -->
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
     <key>ThrottleInterval</key><integer>30</integer>

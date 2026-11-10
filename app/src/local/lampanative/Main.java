@@ -897,12 +897,13 @@ public class Main extends Activity {
                 if (!soft) {
                     Bitmap g = b.copy(Bitmap.Config.HARDWARE, false);
                     b.recycle();
+                    if (g == null) throw new IOException("no GPU copy"); // out of graphics memory: logged below
                     b = g;
                 }
                 Bitmap done = b;
                 ui.post(() -> {
                     if (stopped || pageTop != top) { // left meanwhile
-                        if (done != null) done.recycle(); // 4 MB of pixels (native) that no one will see; null: the GPU copy failed
+                        done.recycle(); // 4 MB of pixels (native) that no one will see
                         return;
                     }
                     pageBackdrop.setImageBitmap(done);

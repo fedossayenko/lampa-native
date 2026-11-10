@@ -277,9 +277,18 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == '__main__':
+    # LAMPA_BIND (the address HOME_SERVER names, set in the plist) when a VPN owns the default route and lan_address()
+    # would pick it. Bound before the warm Claude starts; after a boot the address may come a minute late
+    where = os.environ.get('LAMPA_BIND') or lan_address()
+    for _ in range(30):
+        try:
+            server = ThreadingHTTPServer((where, PORT), Handler)
+            break
+        except OSError:
+            time.sleep(2)
+    else:
+        sys.exit(f'can\'t listen on {where}:{PORT}')
     spare = start()
     threading.Thread(target=refresh, daemon=True).start()
-    # LAMPA_BIND (the address HOME_SERVER names) when a VPN owns the default route and lan_address() would pick it
-    where = os.environ.get('LAMPA_BIND') or lan_address()
     log(f'listening on {where}:{PORT},', MODEL)
-    ThreadingHTTPServer((where, PORT), Handler).serve_forever()
+    server.serve_forever()
