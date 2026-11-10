@@ -2174,3 +2174,69 @@ test('audio: a file that can\'t be read (the CDN ignores Range) is asked again a
   const rows = (await (await streams('movie/tt1?lang=RU,UA', e)).json()).streams;
   assert.deepEqual([rows[0][9], rows[1][9]], [[], null]);
 });
+
+// Extensions: /ext/<name>/<path> reaches the service bound as EXT_<NAME>; /mine's "learned" asks EXT_LEARN.
+function extension(answer) {
+  const seen = [];
+  return {
+    seen,
+    fetch: async (url, init) => {
+      seen.push({ url: String(url), method: init.method, body: init.body, token: init.headers['X-Ext-Token'] });
+      return answer(url);
+    },
+  };
+}
+const extGet = (path, e, headers = tv, method = 'GET', body = undefined) =>
+  worker.fetch(new Request(`https://w${path}`, { method, headers, body }), e);
+
+test('ext: the stick only; method, path and body go through with the extension\'s token, nothing else', async () => {
+  const ext = extension(() => new Response('{"status":"queued"}', { headers: { 'Content-Type': 'text/plain' } }));
+  const e = { ...playEnv, EXT_LEARN: ext, EXT_LEARN_TOKEN: 'ext-secret' };
+  assert.equal((await extGet('/ext/learn/status?imdb=tt1', e, {})).status, 403);
+  assert.equal((await extGet('/ext/learn/status?imdb=tt1', e, { 'X-Play-Token': 'wrong!' })).status, 403);
+  assert.equal(ext.seen.length, 0, 'nothing reached the extension');
+  const res = await extGet('/ext/learn/queue', e, { ...tv, 'X-Cub-Token': 'private', Cookie: 'c=1' }, 'POST', '{"imdb":"tt1"}');
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('Content-Type'), 'application/json');
+  assert.equal(res.headers.get('Cache-Control'), 'no-store');
+  assert.deepEqual(await res.json(), { status: 'queued' });
+  assert.deepEqual(ext.seen, [{ url: 'https://ext/learn/queue', method: 'POST', body: '{"imdb":"tt1"}', token: 'ext-secret' }]);
+  await extGet('/ext/learn/status?imdb=tt1', e);
+  assert.equal(ext.seen[1].url, 'https://ext/learn/status?imdb=tt1');
+  assert.equal(ext.seen[1].body, undefined);
+});
+
+test('ext: no binding → 404; an extension\'s 403 is a 502 (the stick keeps its token); too large → 413; down → 502', async () => {
+  assert.equal((await extGet('/ext/learn/status', playEnv)).status, 404);
+  const refusing = { ...playEnv, EXT_LEARN: extension(() => new Response('no', { status: 403 })) };
+  assert.equal((await extGet('/ext/learn/status', refusing)).status, 502);
+  assert.equal((await extGet('/ext/learn/queue', refusing, tv, 'POST', 'x'.repeat(20000))).status, 413);
+  const down = { ...playEnv, EXT_LEARN: { fetch: async () => { throw new Error('unreachable'); } } };
+  assert.equal((await extGet('/ext/learn/status', down)).status, 502);
+  const empty = { ...playEnv, EXT_LEARN: extension(() => new Response(null, { status: 204 })) };
+  assert.equal((await extGet('/ext/learn/queue', empty, tv, 'POST', '{}')).status, 204);
+  const long = { 'Content-Length': '20000', ...tv };
+  assert.equal((await extGet('/ext/learn/queue', refusing, long, 'POST', '{}')).status, 413);
+  assert.equal((await extGet('/ext/Learn/status', down)).status, 404, 'names are lower case: the route is not matched');
+  assert.equal((await extGet('/ext/learn/../x', down)).status, 404);
+});
+
+test('mine: "learned" comes from the extension, {} when there is none, it is down or it answers nonsense', async () => {
+  const dump = { 'users/get': { user: { id: 42 } }, 'bookmarks/dump': cubDump([]) };
+  cub(dump);
+  const ext = extension(() => new Response('{"movie_155":93}'));
+  const e = { ...mineEnv(), EXT_LEARN: ext, EXT_LEARN_TOKEN: 't' };
+  assert.deepEqual((await (await getMine(e)).json()).learned, { movie_155: 93 });
+  assert.deepEqual(ext.seen.map((r) => [r.url, r.method]), [['https://ext/learn/progress', undefined]]);
+  cub(dump);
+  assert.equal('learned' in (await (await getMine(mineEnv())).json()), false, 'no extension: no key');
+  cub(dump);
+  assert.deepEqual((await (await getMine({ ...mineEnv(), EXT_LEARN: extension(() => new Response('{}')) })).json()).learned, {});
+  for (const bad of [() => new Response('nope', { status: 500 }), () => new Response('[1]'), () => new Response('<html>')]) {
+    cub(dump);
+    assert.equal('learned' in (await (await getMine({ ...mineEnv(), EXT_LEARN: extension(bad) })).json()), false);
+  }
+  cub(dump);
+  const down = { fetch: async () => { throw new Error('timeout'); } };
+  assert.equal('learned' in (await (await getMine({ ...mineEnv(), EXT_LEARN: down })).json()), false);
+});
