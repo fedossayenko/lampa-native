@@ -177,6 +177,10 @@ class TimelineTest {
         assert Timeline.link(202, "{\"progress\":37}").message().equals("TorBox is downloading it: 37 %. Try again later.");
         assert Timeline.link(502, "{\"error\":\"no video in it\"}").message().equals("Can't get the link: no video in it");
         assert Timeline.link(503, "<html>Cloudflare</html>").message().equals("Can't get the link: HTTP 503");
+        assert Timeline.link(404, "No S01E09 in this release.").message().equals("Can't get the link: No S01E09 in this release.")
+            : "the worker's own line of text";
+        assert Timeline.link(502, "").message().equals("Can't get the link: HTTP 502");
+        assert Timeline.link(200, "{\"time\":3000}").message().equals("Can't get the link: HTTP 200") : "no JSON shown";
         assert Timeline.link(200, "{\"time\":3000}").url() == null : "no link: a message, not DDD on null";
     }
 

@@ -546,6 +546,36 @@ test('play: adds the torrent, picks the file Torrentio meant by its name, answer
   for (const h of headers) assert.equal(h.get('Authorization'), 'Bearer tb-test-key');
 });
 
+test('play: a zamunda.life pack row takes the episode it names from the pack; none there: told so', async () => {
+  torbox({
+    createtorrent: { success: true, data: { torrent_id: 11, hash: H } },
+    'mylist?id': { success: true, data: { ...pack, files: [...pack.files,
+      { id: 4, name: 'Show S01/Show s01 ep03.avi', short_name: 'Show s01 ep03.avi', size: 1e9 },
+      { id: 5, name: 'Show S01/[x] Show S1 - 04.mp4', short_name: '[x] Show S1 - 04.mp4', size: 1e9 },
+      { id: 6, name: 'Show S01/Show.S01E05-E06.mkv', short_name: 'Show.S01E05-E06.mkv', size: 2e9 },
+      { id: 8, name: 'Show S01/Show S01E07-08.mkv', short_name: 'Show S01E07-08.mkv', size: 2e9 }] } },
+    requestdl: { success: true, data: 'https://store.torbox.app/dl/xyz' },
+  });
+  const named = async (tag) => play(`${H}?file=-1&name=${encodeURIComponent(`Show.S01.WEB-DL · ${tag}`)}`);
+  assert.equal((await named('S01E01')).status, 200);
+  assert.equal(new URL(asked.findLast((u) => u.includes('requestdl'))).searchParams.get('file_id'), '0'); // not the biggest
+  assert.equal((await named('S01E03')).status, 200);
+  assert.equal(new URL(asked.findLast((u) => u.includes('requestdl'))).searchParams.get('file_id'), '4'); // "s01 ep03"
+  assert.equal((await named('S01E04')).status, 200);
+  assert.equal(new URL(asked.findLast((u) => u.includes('requestdl'))).searchParams.get('file_id'), '5'); // "S1 - 04"
+  assert.equal((await named('S01E06')).status, 200);
+  assert.equal(new URL(asked.findLast((u) => u.includes('requestdl'))).searchParams.get('file_id'), '6'); // "E05-E06"
+  assert.equal((await named('S01E08')).status, 200);
+  assert.equal(new URL(asked.findLast((u) => u.includes('requestdl'))).searchParams.get('file_id'), '8'); // "S01E07-08"
+  const none = await named('S01E09');
+  assert.equal(none.status, 404);
+  assert.match(await none.text(), /No S01E09 in this release/);
+  torbox({ createtorrent: { success: true, data: { torrent_id: 11, hash: H } }, requestdl: { success: true, data: 'u' },
+    'mylist?id': { success: true, data: { ...pack, files: [{ id: 7, name: 'Gravity.Falls.Pilot.mkv', size: 1e9 }] } } });
+  assert.equal((await named('S01E01')).status, 200); // a single-episode release named otherwise: its only video
+  assert.equal(new URL(asked.findLast((u) => u.includes('requestdl'))).searchParams.get('file_id'), '7');
+});
+
 test('play: a torrent already in the account is found in the list; no name match → Torrentio\'s index → the biggest video', async () => {
   torbox({
     createtorrent: { success: false, error: 'DOWNLOAD_EXISTS' },
@@ -2230,7 +2260,7 @@ function withTracker(answers, seeds) {
   };
 }
 
-test('sources: zamunda.life\'s Bulgarian-audio releases of the film, cached or seeded, join the list as BG rows; films only', async () => {
+test('sources: zamunda.life\'s Bulgarian-audio releases of the film, cached or seeded, join the list as BG rows', async () => {
   const z = (i, title, description, size, extra = {}) => ({ title, description, size, source: 'z', is_bgaudio: 1,
     link: `magnet:?xt=urn:btih:${hash(i).toUpperCase()}&dn=x`, ...extra });
   // cached: all but 52 (5 seed it: shown) and 53 (nobody seeds it: not shown)
@@ -2291,9 +2321,58 @@ test('sources: zamunda.life\'s Bulgarian-audio releases of the film, cached or s
   assert.ok(body.languages.some(([code]) => code === 'BG')); // the Audio button offers it
   tmdbAnswers({ ...fifteen, '/v1/api/torrents/checkcached': { success: true, data: [] } }); // the site (and TMDB) down
   assert.equal((await (await streams('movie/tt1?lang=RU,UA')).json()).total, 12); // Torrentio's rows still come
-  tmdbAnswers({ ...answers, '/stream/series/tt1:1:2.json': fifteen['/stream/movie/tt1.json'] });
-  await streams('series/tt1/1/2');
-  assert.ok(!asked.some((u) => u.includes('zamunda.life'))); // an episode: not asked
+  // read audio tagged English only: a release named for Bulgarian audio stays BG (a TV dub's default tag), one not
+  // named so goes (it is English)
+  const e2 = { ...streamsEnv, DB: d1() };
+  withTracker(answers, { 40: 12, 52: 5, 53: 0 });
+  e2.DB.raw.prepare('INSERT INTO audio (hash, tracks, t) VALUES (?, ?, ?), (?, ?, ?)').run(hash(41),
+    '[["EN","AAC",2,0,""]]', Date.now(), hash(52), '[["EN","DD",6,0,""]]', Date.now());
+  e2.DB.raw.prepare('INSERT INTO audio (hash, tracks, t) VALUES (?, ?, ?)').run(hash(40), // DUAL: two tracks, not BG
+    '[["EN","DD",6,0,""],["ES","DD",6,0,""]]', Date.now());
+  const read = (await (await streams('movie/tt1?lang=BG', e2)).json()).streams.map((r) => r[0]);
+  assert.ok(read.includes(hash(41)) && !read.includes(hash(52)) && !read.includes(hash(40)), String(read));
+  withTracker(answers, { 40: 12, 52: 5, 53: 0 });
+});
+
+test('sources: an episode\'s Bulgarian rows are the series\' releases that hold it, each named for it', async () => {
+  const z = (i, title, extra = {}) => ({ title, description: null, size: '5 GB', source: 'z', is_bgaudio: 1,
+    link: `magnet:?xt=urn:btih:${hash(i)}`, ...extra });
+  const releases = [
+    z(60, 'Kids.Show.S02.1080p.WEB-DL.AC3.DUALAUDiO-4PLA'), // its season
+    z(61, 'Kids-Show-Series-1080p.x264-AAC.BG.Audio-TVRIP'), // the whole series
+    z(62, 'Kids.Show.S01-S03.TVRIP.x264.BGAUDiO-GOD'), // seasons 1 to 3
+    z(63, 'Kids Show s02 ep08-20'), // its season, but episodes 8 to 20
+    z(64, 'Kids.Show.S02E05.SPYRO'), // that episode alone
+    z(65, 'Kids.Show.S03.WEB-DL'), // another season
+    z(66, 'Kids.Show.S02E06.SPYRO'), // another episode
+    z(67, 'Kids Show Tales S02'), // another series
+    z(68, 'Pack_2', { description: 'Kids Show 2018 Season 02 Complete / Детско шоу' }), // by its description
+    z(69, 'Kids Show s02 ep01-07'), // a range holding it (not "episode 1")
+    z(70, 'Kids Show 1998 S02'), // another series of that name (its year)
+    z(71, 'Kids Show 2018 Season 1-3 BG'), // seasons 1 to 3, in words
+    z(72, 'Kids Show S02 - 720p WEB-DL'), // its season (720p is no episode)
+    z(73, 'Kids.Show.S02E01-E10.WEB'), // episodes 1 to 10 (not episode 1 alone)
+    z(74, 'Kids.Show.S02E06-E09.WEB'), // other episodes
+  ];
+  withTracker({ '/stream/series/tt1:2:5.json': { streams: [] },
+    '/v1/api/torrents/checkcached': { success: true, data: releases.map((r) => ({ hash: r.link.slice(-40) })) },
+    // its original title in Latin letters but French: the English one is searched (as Bulgarian releases are named)
+    'find/tt1': { tv_results: [{ name: 'Kids Show', original_name: 'Les Enfants', first_air_date: '2018-10-01' }] },
+    '/api/torrents': releases }, {});
+  const body = await (await streams('series/tt1/2/5?lang=BG')).json();
+  body.streams.push(...(await (await streams(`series/tt1/2/5?lang=BG&from=${body.next}`)).json()).streams); // 9: two pages
+  const searched = asked.filter((u) => u.includes('zamunda.life')).slice(0, 2).map((u) => new URL(u).searchParams);
+  assert.deepEqual(searched.map((q) => [q.get('q'), q.get('bg_audio')]), [['kids show', 'true'], ['kids show', 'false']]);
+  assert.deepEqual(body.streams.map((r) => [r[0], r[1], r[2]]).sort((a, b) => a[0].localeCompare(b[0])), [
+    [hash(60), -1, 'Kids.Show.S02.1080p.WEB-DL.AC3.DUALAUDiO-4PLA · S02E05'],
+    [hash(61), -1, 'Kids-Show-Series-1080p.x264-AAC.BG.Audio-TVRIP · S02E05'],
+    [hash(62), -1, 'Kids.Show.S01-S03.TVRIP.x264.BGAUDiO-GOD · S02E05'],
+    [hash(64), -1, 'Kids.Show.S02E05.SPYRO · S02E05'],
+    [hash(68), -1, 'Pack_2 · S02E05'],
+    [hash(69), -1, 'Kids Show s02 ep01-07 · S02E05'],
+    [hash(71), -1, 'Kids Show 2018 Season 1-3 BG · S02E05'],
+    [hash(72), -1, 'Kids Show S02 - 720p WEB-DL · S02E05'],
+    [hash(73), -1, 'Kids.Show.S02E01-E10.WEB · S02E05']]);
 });
 
 test('sources: a row\'s languages are its audio when known; Torrentio\'s 🇧🇬 (its subtitles) is not Bulgarian', async () => {

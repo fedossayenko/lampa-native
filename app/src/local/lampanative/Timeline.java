@@ -277,8 +277,11 @@ final class Timeline {
                 return new Link(null, 0, "TorBox is downloading it: " + o.getInt("progress") + " %. Try again later.");
             }
             return new Link(null, 0, "Can't get the link: " + o.optString("error", "HTTP " + code));
-        } catch (JSONException e) { // Cloudflare's HTML page, or the worker changed its answer
-            return new Link(null, 0, "Can't get the link: HTTP " + code);
+        } catch (JSONException e) { // the worker's errors are a line of text ("TorBox unavailable."); not Cloudflare's page
+            String line = body == null ? "" : body.strip();
+            boolean text = code >= 400 && !line.isEmpty() && line.length() <= 120 && line.indexOf('<') < 0
+                && line.indexOf('\n') < 0 && line.charAt(0) != '{' && line.charAt(0) != '[';
+            return new Link(null, 0, "Can't get the link: " + (text ? line : "HTTP " + code));
         }
     }
 

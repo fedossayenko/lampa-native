@@ -943,8 +943,8 @@ async function cachedOnTorBox(env, hashes) {
 // Robot: 0 in Torrentio and MaxVol, 4-20 there; 2026-11-11). A film's releases flagged with Bulgarian audio, as
 // Torrentio's streams (so sources() reads them like its own, as OURS: their 🇧🇬 is trusted), plus 🇬🇧 for a
 // DUAL/MULTI/English one. The site doesn't say how many seed a release: opentrackr's count (seedersOf), and only the
-// ones TorBox has cached or someone seeds (an unseeded one would never start). Films only: an episode would need its
-// file found in a season pack. [] when the site or TMDB fails or all takes over ZAMUNDA_WAIT (the list doesn't wait
+// ones TorBox has cached or someone seeds (an unseeded one would never start). An episode's: the series' packs that
+// hold it (holds), Play takes it from the pack. [] when the site or TMDB fails or all takes over ZAMUNDA_WAIT (the list doesn't wait
 // longer for it); TorBox's check or the tracker failing leaves the releases the other one vouches for.
 const ZAMUNDA = 'https://zamunda.life/api/torrents';
 const ZAMUNDA_WAIT = 4000;
@@ -1017,18 +1017,76 @@ function bdecode(b, i = 0, depth = 0) {
   return [ascii(b, colon + 1, colon + 1 + n), colon + 1 + n];
 }
 
-async function zamundaStreams(env, imdb) {
-  try {
-    const { title, year } = await latinTitle(env, imdb);
-    if (!title || !year) return [];
-    // in plain words: a ':' or ',' in q is the site's 500 ("Puss in Boots: The Last Wish", "Monsters, Inc.")
-    const q = new URLSearchParams({ q: `${latinWords(title)} ${year}`, bg_audio: false, bg_movies: false, bg_arena: false,
-      zelka: false, offset: 0 }); // all sources; the Bulgarian audio is picked by its flag below
-    const res = await fetch(`${ZAMUNDA}?${q}`, { ...within(ZAMUNDA_WAIT), cf: { cacheTtl: 3600 } });
+// The site's answer to q, twice: with its own Bulgarian-audio filter (more of Zamunda's: SpongeBob 6, not 0 among
+// the first 20) and without (Zelka's and ArenaBG's, which that filter leaves out). Its first 20 each, edge-cached.
+// A series' release, not just the search's words: its name (or its description's English half) starts with the
+// title, then a season, an episode, a year, "Series" or "Complete" ("Bluey-Series-1080p", "The.Tom.and.Jerry.Show.S02",
+// "Miraculous Tales of Ladybug and Cat Noir 2015 Season 04"), not another word ("Tom and Jerry Tales" for Tom and Jerry),
+// and a year only when it is the series' (±1).
+function sameSeries(t, title, year) {
+  const name = latinWords(title);
+  const starts = (text) => {
+    const w = latinWords(text);
+    if (w === name) return true;
+    const next = w.startsWith(`${name} `) ? w.slice(name.length + 1) : '';
+    const was = next.match(/^(\d{4})\b/); // a year: the series', not another of that name (Doctor Who 1963, 2005)
+    return was ? Math.abs(Number(was[1]) - Number(year)) <= 1 : /^(s\d|season|series|complete|ep?\d|\d)/.test(next);
+  };
+  return starts(t.title) || starts(String(t.description ?? '').split(' / ')[0]);
+}
+
+// Whether a release holds an episode, by its name: that episode alone (S02E02), a season (S02, Season 4, Сезон 2) or
+// seasons (S01-S03, s01-04), with an episode range when it says one (s01 ep08-20); with no season in it, a whole
+// series ("Series", "Complete").
+function holds(t, season, episode) {
+  const name = String(t.title || '');
+  const span = name.match(/S(\d{1,2})[ ._-]?EP?(\d{1,3})-(?:EP?)?(\d{1,3})(?!\d)/i); // S01E01-E10: each of them
+  if (span) return Number(span[1]) === season && episode >= Number(span[2]) && episode <= Number(span[3]);
+  const one = episodeOf(name);
+  if (one) return one[0] === season && one[1] === episode;
+  const text = `${name} ${t.description ?? ''}`;
+  const range = text.match(/(?:\bs|\bseasons?[ ._]?)(\d{1,2})\s*-\s*(?:s|season[ ._]?)?(\d{1,2})\b/i); // S01-S03, Season 1-3
+  if (range) return season >= Number(range[1]) && season <= Number(range[2]);
+  const seasons = [...text.matchAll(/(?:\bs|\bseason[ ._]?|сезон[ ._]?)(\d{1,2})(?![\d]|[ ._-]?e\d)/giu)].map((m) => Number(m[1]));
+  if (!seasons.length) return /\b(series|complete)\b|сериал/iu.test(text);
+  if (!seasons.includes(season)) return false;
+  const eps = name.match(/\bep?[ ._]?(\d{1,3})\s*-\s*(\d{1,3})\b/i);
+  return !eps || episode >= Number(eps[1]) && episode <= Number(eps[2]);
+}
+
+// The end of a pack row's name: the episode Play takes from the pack (linkIn reads it back).
+const episodeTag = (season, episode) => ` · S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`;
+
+async function zamundaSearch(q) {
+  const ask = async (bg) => {
+    const res = await fetch(`${ZAMUNDA}?${new URLSearchParams({ q, bg_audio: bg, bg_movies: false, bg_arena: false,
+      zelka: false, offset: 0 })}`, { ...within(ZAMUNDA_WAIT), cf: { cacheTtl: 3600 } });
     const found = res.ok ? await res.json() : [];
-    const matched = (Array.isArray(found) ? found : []).flatMap((t) => {
+    return Array.isArray(found) ? found : [];
+  };
+  // each on its own: one that fails (a timeout, an HTML page) leaves the other's
+  return (await Promise.allSettled([ask(true), ask(false)])).flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
+}
+
+// season > 0: an episode's (S01E05): the series' releases that hold it, a row each named "<release> · S01E05" so Play
+// takes that file from the pack (linkIn).
+async function zamundaStreams(env, imdb, season = 0, episode = 0) {
+  try {
+    // Bulgarian trackers name releases in English: TMDB's English title (Miraculous: Tales of Ladybug & Cat Noir,
+    // not its French original), its original one when TMDB has none in Latin letters
+    const found0 = await latinTitle(env, imdb);
+    const title = latinWords(found0.english) ? found0.english : found0.title;
+    const { year } = found0;
+    if (!title || !year) return [];
+    // in plain words: a ':' or ',' in q is the site's 500 ("Puss in Boots: The Last Wish", "Monsters, Inc."); a
+    // series' packs carry no year (The.Tom.and.Jerry.Show.S01…)
+    const found = await zamundaSearch(season ? latinWords(title) : `${latinWords(title)} ${year}`);
+    const seen = new Set();
+    const matched = found.flatMap((t) => {
       const hash = (String(t?.link).match(/btih:([0-9a-f]{40})/i) || [])[1]?.toLowerCase();
-      return hash && Number(t.is_bgaudio) === 1 && sameFilm(t, title, year) ? [{ t, hash }] : [];
+      if (!hash || seen.has(hash) || Number(t.is_bgaudio) !== 1) return [];
+      seen.add(hash);
+      return (season ? sameSeries(t, title, year) && holds(t, season, episode) : sameFilm(t, title, year)) ? [{ t, hash }] : [];
     }).slice(0, ZAMUNDA_MAX);
     const hashes = matched.map(({ hash }) => hash);
     const [cached, seeders] = await Promise.all([cachedOnTorBox(env, hashes), seedersOf(hashes)]);
@@ -1037,6 +1095,7 @@ async function zamundaStreams(env, imdb) {
       const st = { infoHash: hash, title: `${oneLine(t.title)}\n👤 ${seeders.get(hash) || 0} 💾 ${size} ⚙️ ${
         ZAMUNDA_TRACKERS.get(t.source) || 'Zamunda'}\n🇧🇬${
         /\b(dual|multi)\b|\bdualaudio|\beng(lish)?\b/i.test(t.title) ? ' / 🇬🇧' : ''}` };
+      if (season) st.behaviorHints = { filename: `${oneLine(t.title)}${episodeTag(season, episode)}` };
       OURS.add(st);
       return st;
     });
@@ -1050,6 +1109,11 @@ async function zamundaStreams(env, imdb) {
 // release is its subtitles: none of them had Bulgarian audio (6 read, 0 of MaxVol's ~1,800; 2026-11-11), so only
 // zamunda.life's (OURS) counts.
 const flagged = (codes, st) => (OURS.has(st) ? codes : codes.filter((c) => c !== 'BG'));
+
+// A zamunda.life release whose name says it has Bulgarian audio (BGAUDiO, BG.Audio, DUAL, MULTi, БГ Аудио) keeps BG
+// whatever its file's tags say: a Bulgarian TV dub is often tagged with a default (Bluey's "BG.Audio" pack: one AAC
+// track tagged English). One whose name doesn't say it is told by its read audio (Zootopia 2 RAW: English only).
+const BG_NAMED = /bg[ ._-]?(?:audi?o|dub)|бг[ ._-]?(?:аудио|озвуч|дублаж)/iu; // not bare BG (subtitles, a group), DUAL or MULTi (any two tracks)
 
 // What a row's audio says it is in, when its tracks are known (read from the file, or MaxVol's) and each has a
 // language: those, not the flags (a flag can be the subtitles, or zamunda.life's mark on a release without the
@@ -1065,8 +1129,8 @@ async function sources(request, env, ctx, kind, imdb, season, episode) {
   // the TV's only: each answer spends TorBox's cache checks and the addon's patience
   if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
   // alongside the addon; a slow TMDB, site or TorBox costs the list at most ZAMUNDA_WAIT (then no BG rows)
-  const bulgarian = kind !== 'movie' ? Promise.resolve([])
-    : Promise.race([zamundaStreams(env, imdb), new Promise((done) => setTimeout(() => done([]), ZAMUNDA_WAIT))]);
+  const bulgarian = Promise.race([zamundaStreams(env, imdb, Number(season) || 0, Number(episode) || 0),
+    new Promise((done) => setTimeout(() => done([]), ZAMUNDA_WAIT))]);
   let list;
   if (request.method === 'POST') {
     if (Number(request.headers.get('Content-Length')) > 4e6) return corsError(request, 'Too big.', 413);
@@ -1112,6 +1176,7 @@ async function sources(request, env, ctx, kind, imdb, season, episode) {
     all.push({
       bytes,
       disc,
+      named: OURS.has(st) && BG_NAMED.test(lines[0]), // says Bulgarian audio itself: kept so whatever its tags say
       row: [hash, st.fileIdx ?? -1, filename || lines[0], badges, size, Number((stats.match(/👤\s*(\d+)/) || [])[1]) || 0,
         ((stats.match(/⚙️\s*(.+)/) || [])[1] || '').trim(), flagged(languagesOf((at >= 0 && lines[at + 1]) || ''), st)],
     });
@@ -1123,7 +1188,10 @@ async function sources(request, env, ctx, kind, imdb, season, episode) {
   const [audioOf, maxvol] = await Promise.all([audioKnown(env, all.map(({ row }) => row[0])),
     Promise.race([mv, new Promise((done) => setTimeout(() => done({}), 300))])]);
   // read first; a file that couldn't be read ([]) leaves MaxVol's
-  for (const { row } of all) row[7] = heardLanguages(audioOf.get(row[0])?.length ? audioOf.get(row[0]) : maxvol[row[0]], row[7]);
+  for (const { row, named } of all) {
+    row[7] = heardLanguages(audioOf.get(row[0])?.length ? audioOf.get(row[0]) : maxvol[row[0]], row[7]);
+    if (named && !row[7].includes('BG')) row[7] = ['BG', ...row[7]];
+  }
   const languages = new Map();
   for (const { row } of all) for (const code of row[7]) languages.set(code, (languages.get(code) || 0) + 1);
   const params = new URL(request.url).searchParams;
@@ -1194,7 +1262,8 @@ async function resumePoint(env, tl) {
 }
 
 // TorBox's link to a release's file: adds the torrent to the account (one already there is found in the list; mine:
-// its id, known: not added) and picks the file Torrentio meant (by name, else its index, else the biggest video).
+// its id, known: not added) and picks the file Torrentio meant (by name, else its index, else the biggest video; a
+// zamunda.life pack row's " · S01E05": that episode's file, or none).
 // {id, files, file, link}, {id, progress} while TorBox still downloads it, or {error, status}. Throws when TorBox is
 // down.
 async function torboxLink(env, hash, fileIdx, name, mine) {
@@ -1225,10 +1294,22 @@ async function linkIn(env, id, fileIdx, name) {
   if (!t) return { id, error: 'TorBox lost it.', status: 502 }; // id: an add of ours still leaves at night
   if (!t.download_present) return { id, progress: Math.round((t.progress || 0) * 100) };
   const files = t.files || [];
+  const videos = files.filter((f) => VIDEO.test(f.name) && !/\bsample\b/i.test(f.name));
+  // a pack row of zamunda.life's names its episode (" · S01E05"): that file, or a release's only video
+  const tag = String(name).match(/ · S(\d+)E(\d+)$/);
+  // its episode, or a file of two that holds it (Avatar's Bulgarian pack: "S03E09-E10": from the 9th)
+  const holdsIt = (f) => {
+    const leaf = String(f.short_name || f.name).split('/').pop();
+    const [s, e] = episodeOf(leaf) || [];
+    const last = Number((leaf.match(/S\d{1,2}[ ._-]?EP?\d{1,3}-(?:EP?)?(\d{1,3})(?!\d)/i) || [])[1]) || e; // E09-E10, E07-08
+    return s === Number(tag[1]) && e <= Number(tag[2]) && Number(tag[2]) <= last;
+  };
   const file = (name && files.find((f) => f.short_name === name || String(f.name).split('/').pop() === name))
     || files.find((f) => f.id === fileIdx && VIDEO.test(f.name))
-    || files.filter((f) => VIDEO.test(f.name)).sort((a, b) => b.size - a.size)[0];
-  if (!file) return { id, error: 'No video in it.', status: 404 };
+    || (tag ? videos.find(holdsIt)
+      || (videos.length === 1 ? videos[0] : null)
+      : videos.sort((a, b) => b.size - a.size)[0]);
+  if (!file) return { id, error: tag ? `No S${tag[1]}E${tag[2]} in this release.` : 'No video in it.', status: 404 };
   // requestdl takes the key as a parameter (it is built for browser redirects); server to server only
   const dl = await torboxApi(env, `requestdl?token=${encodeURIComponent(env.TORBOX_API_KEY)}&torrent_id=${id}&file_id=${file.id}`);
   if (typeof dl?.data !== 'string') return { id, error: dl?.detail || 'No link.', status: 502 };
@@ -1387,7 +1468,7 @@ async function latinTitle(env, imdb) {
   const m = (o.movie_results || [])[0] || (o.tv_results || [])[0];
   if (!m) return {};
   const original = m.original_title || m.original_name || '';
-  return { title: /^[\x20-\x7e]+$/.test(original) ? original : m.title || m.name,
+  return { title: /^[\x20-\x7e]+$/.test(original) ? original : m.title || m.name, english: m.title || m.name || '',
     year: (m.release_date || m.first_air_date || '').slice(0, 4) };
 }
 
@@ -1913,7 +1994,10 @@ function mp4Track(b, s, e) {
 }
 
 function episodeOf(name) {
-  const m = String(name).match(/S(\d{1,2})[ ._-]?E(\d{1,3})(?!\d)/i) || String(name).match(/(?:^|[^\d])(\d{1,2})x(\d{2,3})(?!\d)/i);
+  // then "s01 ep18" (Gravity Falls' Bulgarian pack; "s01 ep01-07" is a range of them, not ep01) and "S3 - 20" (Avatar's:
+  // a season, a spaced dash, the episode; not "S01 - 720p")
+  const m = String(name).match(/S(\d{1,2})[ ._-]?E(\d{1,3})(?!\d)/i) || String(name).match(/(?:^|[^\d])(\d{1,2})x(\d{2,3})(?!\d)/i)
+    || String(name).match(/S(\d{1,2})[ ._-]?EP(\d{1,3})(?!\d|\s*-\s*\d)/i) || String(name).match(/\bS(\d{1,2}) - (\d{1,3})(?![\w-])/i);
   return m ? [Number(m[1]), Number(m[2])] : null;
 }
 
