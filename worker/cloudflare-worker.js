@@ -941,9 +941,10 @@ async function cachedOnTorBox(env, hashes) {
 // zamunda.life: a search over the magnets of the Bulgarian trackers (Zamunda, ArenaBG, Zelka; zamunda.net itself was
 // seized in 2026), which has Bulgarian-dubbed releases none of Torrentio's trackers carry (Moana 2, Zootopia 2, Wild
 // Robot: 0 in Torrentio and MaxVol, 4-20 there; 2026-11-11). A film's releases flagged with Bulgarian audio, as
-// Torrentio's streams (so sources() reads them like its own): 🇧🇬, plus 🇬🇧 for a DUAL/MULTI/English one. Seeders
-// unknown (0): the site doesn't say. Films only: an episode would need its file found in a season pack. [] when the
-// site or TMDB fails or takes over ZAMUNDA_WAIT (the list doesn't wait longer for it).
+// Torrentio's streams (so sources() reads them like its own): 🇧🇬, plus 🇬🇧 for a DUAL/MULTI/English one. Only the
+// ones TorBox has cached: the site doesn't say how many seed a release, so an uncached row would be a guess (shown
+// as 0 seeders); a failed cache check: none. Films only: an episode would need its file found in a season pack. []
+// when the site, TMDB or TorBox fails or takes over ZAMUNDA_WAIT (the list doesn't wait longer for it).
 const ZAMUNDA = 'https://zamunda.life/api/torrents';
 const ZAMUNDA_WAIT = 4000;
 const ZAMUNDA_TRACKERS = new Map([['z', 'Zamunda'], ['arenabg', 'ArenaBG'], ['zelka', 'Zelka']]);
@@ -974,13 +975,15 @@ async function zamundaStreams(env, imdb) {
       zelka: false, offset: 0 }); // all sources; the Bulgarian audio is picked by its flag below
     const res = await fetch(`${ZAMUNDA}?${q}`, { ...within(ZAMUNDA_WAIT), cf: { cacheTtl: 3600 } });
     const found = res.ok ? await res.json() : [];
-    return (Array.isArray(found) ? found : []).flatMap((t) => {
+    const streams = (Array.isArray(found) ? found : []).flatMap((t) => {
       const hash = (String(t?.link).match(/btih:([0-9a-f]{40})/i) || [])[1];
       if (!hash || Number(t.is_bgaudio) !== 1 || !sameFilm(t, title, year)) return [];
       const size = (String(t.size).match(/^\s*([\d.]+)\s*([KMGT]B)\s*$/) || []).slice(1).join(' ');
       return [{ infoHash: hash, title: `${oneLine(t.title)}\n👤 0 💾 ${size} ⚙️ ${ZAMUNDA_TRACKERS.get(t.source) ||
         'Zamunda'}\n🇧🇬${/\b(dual|multi)\b|\bdualaudio|\beng(lish)?\b/i.test(t.title) ? ' / 🇬🇧' : ''}` }];
-    });
+    }).slice(0, MAX);
+    const cached = await cachedOnTorBox(env, streams.map((st) => st.infoHash.toLowerCase()));
+    return cached ? streams.filter((st) => cached.has(st.infoHash.toLowerCase())) : [];
   } catch (e) {
     console.log('zamunda', imdb, String(e)); // wrangler tail
     return [];
@@ -990,7 +993,7 @@ async function zamundaStreams(env, imdb) {
 async function sources(request, env, ctx, kind, imdb, season, episode) {
   // the TV's only: each answer spends TorBox's cache checks and the addon's patience
   if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
-  // alongside the addon; a slow TMDB or site costs the list at most ZAMUNDA_WAIT, not TMDB's 8 s on top
+  // alongside the addon; a slow TMDB, site or TorBox costs the list at most ZAMUNDA_WAIT (then no BG rows)
   const bulgarian = kind !== 'movie' ? Promise.resolve([])
     : Promise.race([zamundaStreams(env, imdb), new Promise((done) => setTimeout(() => done([]), ZAMUNDA_WAIT))]);
   let list;
