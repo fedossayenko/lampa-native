@@ -302,8 +302,13 @@ public class Main extends Activity {
         mine.setOrientation(LinearLayout.VERTICAL);
         rows.addView(mine);
         setContentView(scroll);
-        scroll.getViewTreeObserver().addOnScrollChangedListener(pix::updateWindow);
-        scroll.getViewTreeObserver().addOnGlobalLayoutListener(pix::updateWindow);
+        // On the window's root (attached whenever the window shows, whatever content it holds), not on Home's
+        // scroll: a view not yet attached holds its listeners until it is, and a restore (killed behind DDD) opens
+        // the film page before Home ever is (setContentView(page)), so the page's photos and posters never loaded
+        // until Home came back.
+        View root = getWindow().getDecorView();
+        root.getViewTreeObserver().addOnScrollChangedListener(pix::updateWindow);
+        root.getViewTreeObserver().addOnGlobalLayoutListener(pix::updateWindow);
         // Killed while DDD played (or in the background): the film again, and its source list if it was open. Home
         // waits for the Back that closes the page: nothing built under it while DDD hands back.
         Home.Card film = saved == null ? null : Home.Card.of(saved.getStringArray("film"));
