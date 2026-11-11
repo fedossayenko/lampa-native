@@ -941,12 +941,14 @@ async function cachedOnTorBox(env, hashes) {
 // zamunda.life: a search over the magnets of the Bulgarian trackers (Zamunda, ArenaBG, Zelka; zamunda.net itself was
 // seized in 2026), which has Bulgarian-dubbed releases none of Torrentio's trackers carry (Moana 2, Zootopia 2, Wild
 // Robot: 0 in Torrentio and MaxVol, 4-20 there; 2026-11-11). A film's releases flagged with Bulgarian audio, as
-// Torrentio's streams (so sources() reads them like its own): 🇧🇬, plus 🇬🇧 for a DUAL/MULTI/English one. Only the
-// ones TorBox has cached: the site doesn't say how many seed a release, so an uncached row would be a guess (shown
-// as 0 seeders); a failed cache check: none. Films only: an episode would need its file found in a season pack. []
-// when the site, TMDB or TorBox fails or takes over ZAMUNDA_WAIT (the list doesn't wait longer for it).
+// Torrentio's streams (so sources() reads them like its own, as OURS: their 🇧🇬 is trusted), plus 🇬🇧 for a
+// DUAL/MULTI/English one. The site doesn't say how many seed a release: opentrackr's count (seedersOf), and only the
+// ones TorBox has cached or someone seeds (an unseeded one would never start). Films only: an episode would need its
+// file found in a season pack. [] when the site or TMDB fails or all takes over ZAMUNDA_WAIT (the list doesn't wait
+// longer for it); TorBox's check or the tracker failing leaves the releases the other one vouches for.
 const ZAMUNDA = 'https://zamunda.life/api/torrents';
 const ZAMUNDA_WAIT = 4000;
+const OURS = new WeakSet(); // zamundaStreams' streams: the only ones whose 🇧🇬 means Bulgarian audio
 const ZAMUNDA_TRACKERS = new Map([['z', 'Zamunda'], ['arenabg', 'ArenaBG'], ['zelka', 'Zelka']]);
 // lower case, accents dropped (Amélie = Amelie), and anything but letters and digits one space
 // (Ocean's = Oceans, & = and: how release names spell them)
@@ -967,27 +969,96 @@ function sameFilm(t, title, year) {
   return rest.length > 0 && [name, `${name} ${year}`].includes(latinWords(english)) && rest.join(' / ').includes(`(${year})`);
 }
 
+// opentrackr (the tracker the site's magnets carry; plain http on 1337, which a Worker can reach): how many seed
+// each release, all in one scrape. Its answer is bencoded: {files: {<20-byte hash>: {complete, incomplete, ...}}}.
+// A Map hash -> seeders, empty when it fails (then only cached releases are shown).
+const OPENTRACKR = 'http://tracker.opentrackr.org:1337';
+const ZAMUNDA_MAX = 30; // one scrape's address and one cache check stay short
+
+async function seedersOf(hashes) {
+  if (!hashes.length) return new Map();
+  try {
+    const res = await fetch(`${OPENTRACKR}/scrape?${hashes.map((h) => `info_hash=${h.replace(/../g, '%$&')}`).join('&')}`,
+      { ...within(1500), cf: { cacheTtl: 600 } }); // short: after TMDB and the site, inside ZAMUNDA_WAIT
+    const files = res.ok ? bdecode(new Uint8Array(await res.arrayBuffer()))[0]?.get?.('files') : null;
+    const raw = (h) => String.fromCharCode(...h.match(/../g).map((x) => parseInt(x, 16))); // the key's 20 bytes
+    return new Map(hashes.map((h) => [h, Number(files?.get?.(raw(h))?.get?.('complete')) || 0]));
+  } catch (e) {
+    console.log('opentrackr', String(e)); // wrangler tail
+    return new Map();
+  }
+}
+
+// Bencode (a tracker's answer) from b[i]: [value, next index], next -1 when malformed (everything above it stops
+// too: never a restart from the start, never deeper than 8); dicts as Maps (a key can't reach a prototype), byte
+// strings as one char per byte.
+function bdecode(b, i = 0, depth = 0) {
+  if (i < 0 || i >= b.length || depth > 8) return [null, -1];
+  if (b[i] === 0x69) { // i<digits>e
+    const end = b.indexOf(0x65, i);
+    return end < 0 ? [null, -1] : [Number(ascii(b, i + 1, end)), end + 1];
+  }
+  if (b[i] === 0x6c || b[i] === 0x64) { // l...e, d...e
+    const out = b[i] === 0x64 ? new Map() : [];
+    let at = i + 1;
+    while (at < b.length && b[at] !== 0x65) {
+      const [k, next] = bdecode(b, at, depth + 1);
+      const [v, after] = Array.isArray(out) ? [k, next] : bdecode(b, next, depth + 1);
+      if (after < 0) return [null, -1];
+      if (Array.isArray(out)) out.push(v);
+      else out.set(k, v);
+      at = after;
+    }
+    return at < b.length ? [out, at + 1] : [null, -1];
+  }
+  const colon = b.indexOf(0x3a, i); // <length>:<bytes>
+  const n = Number(ascii(b, i, colon));
+  if (colon < 0 || !Number.isInteger(n) || n < 0 || colon + 1 + n > b.length) return [null, -1];
+  return [ascii(b, colon + 1, colon + 1 + n), colon + 1 + n];
+}
+
 async function zamundaStreams(env, imdb) {
   try {
     const { title, year } = await latinTitle(env, imdb);
     if (!title || !year) return [];
-    const q = new URLSearchParams({ q: `${title} ${year}`, bg_audio: false, bg_movies: false, bg_arena: false,
+    // in plain words: a ':' or ',' in q is the site's 500 ("Puss in Boots: The Last Wish", "Monsters, Inc.")
+    const q = new URLSearchParams({ q: `${latinWords(title)} ${year}`, bg_audio: false, bg_movies: false, bg_arena: false,
       zelka: false, offset: 0 }); // all sources; the Bulgarian audio is picked by its flag below
     const res = await fetch(`${ZAMUNDA}?${q}`, { ...within(ZAMUNDA_WAIT), cf: { cacheTtl: 3600 } });
     const found = res.ok ? await res.json() : [];
-    const streams = (Array.isArray(found) ? found : []).flatMap((t) => {
-      const hash = (String(t?.link).match(/btih:([0-9a-f]{40})/i) || [])[1];
-      if (!hash || Number(t.is_bgaudio) !== 1 || !sameFilm(t, title, year)) return [];
+    const matched = (Array.isArray(found) ? found : []).flatMap((t) => {
+      const hash = (String(t?.link).match(/btih:([0-9a-f]{40})/i) || [])[1]?.toLowerCase();
+      return hash && Number(t.is_bgaudio) === 1 && sameFilm(t, title, year) ? [{ t, hash }] : [];
+    }).slice(0, ZAMUNDA_MAX);
+    const hashes = matched.map(({ hash }) => hash);
+    const [cached, seeders] = await Promise.all([cachedOnTorBox(env, hashes), seedersOf(hashes)]);
+    return matched.filter(({ hash }) => cached?.has(hash) || seeders.get(hash) > 0).map(({ t, hash }) => {
       const size = (String(t.size).match(/^\s*([\d.]+)\s*([KMGT]B)\s*$/) || []).slice(1).join(' ');
-      return [{ infoHash: hash, title: `${oneLine(t.title)}\n👤 0 💾 ${size} ⚙️ ${ZAMUNDA_TRACKERS.get(t.source) ||
-        'Zamunda'}\n🇧🇬${/\b(dual|multi)\b|\bdualaudio|\beng(lish)?\b/i.test(t.title) ? ' / 🇬🇧' : ''}` }];
-    }).slice(0, MAX);
-    const cached = await cachedOnTorBox(env, streams.map((st) => st.infoHash.toLowerCase()));
-    return cached ? streams.filter((st) => cached.has(st.infoHash.toLowerCase())) : [];
+      const st = { infoHash: hash, title: `${oneLine(t.title)}\n👤 ${seeders.get(hash) || 0} 💾 ${size} ⚙️ ${
+        ZAMUNDA_TRACKERS.get(t.source) || 'Zamunda'}\n🇧🇬${
+        /\b(dual|multi)\b|\bdualaudio|\beng(lish)?\b/i.test(t.title) ? ' / 🇬🇧' : ''}` };
+      OURS.add(st);
+      return st;
+    });
   } catch (e) {
     console.log('zamunda', imdb, String(e)); // wrangler tail
     return [];
   }
+}
+
+// A row's languages from its flags. Torrentio's 🇧🇬 is the release name's language list, which on a multi-language
+// release is its subtitles: none of them had Bulgarian audio (6 read, 0 of MaxVol's ~1,800; 2026-11-11), so only
+// zamunda.life's (OURS) counts.
+const flagged = (codes, st) => (OURS.has(st) ? codes : codes.filter((c) => c !== 'BG'));
+
+// What a row's audio says it is in, when its tracks are known (read from the file, or MaxVol's) and each has a
+// language: those, not the flags (a flag can be the subtitles, or zamunda.life's mark on a release without the
+// track: Zootopia 2 RAW, Frozen II YOL0W). Else the flags, with any language heard.
+function heardLanguages(tracks, flags) {
+  const heard = (Array.isArray(tracks) ? tracks : []).map((t) => t?.[0]);
+  if (!heard.length) return flags;
+  const known = [...new Set(heard.filter(Boolean))];
+  return heard.every(Boolean) ? known : [...new Set([...flags, ...known])];
 }
 
 async function sources(request, env, ctx, kind, imdb, season, episode) {
@@ -1021,7 +1092,8 @@ async function sources(request, env, ctx, kind, imdb, season, episode) {
   }
   const seen = new Set();
   const all = [];
-  for (const st of [...list, ...await bulgarian]) {
+  // zamunda.life's first: a release Torrentio lists too keeps its 🇧🇬 (Torrentio's copy of it would lose it)
+  for (const st of [...await bulgarian, ...list]) {
     if (!st || typeof st !== 'object') continue; // the addon's answer, or the stick's post of it: not trusted
     const hash = String(st.infoHash || '').toLowerCase();
     if (!/^[0-9a-f]{40}$/.test(hash) || seen.has(hash)) continue;
@@ -1041,9 +1113,17 @@ async function sources(request, env, ctx, kind, imdb, season, episode) {
       bytes,
       disc,
       row: [hash, st.fileIdx ?? -1, filename || lines[0], badges, size, Number((stats.match(/👤\s*(\d+)/) || [])[1]) || 0,
-        ((stats.match(/⚙️\s*(.+)/) || [])[1] || '').trim(), languagesOf((at >= 0 && lines[at + 1]) || '')],
+        ((stats.match(/⚙️\s*(.+)/) || [])[1] || '').trim(), flagged(languagesOf((at >= 0 && lines[at + 1]) || ''), st)],
     });
   }
+  // the audio known of them (read from the file, or MaxVol's): D1's answer (a few ms) when it has one; a first ask of
+  // MaxVol that day (~0.7-2 s) isn't waited for past 300 ms, it goes on (waitUntil) and the next list carries it
+  const mv = env.DB ? maxvolOf(env, imdb).catch(() => ({})) : Promise.resolve({});
+  if (ctx) ctx.waitUntil(mv);
+  const [audioOf, maxvol] = await Promise.all([audioKnown(env, all.map(({ row }) => row[0])),
+    Promise.race([mv, new Promise((done) => setTimeout(() => done({}), 300))])]);
+  // read first; a file that couldn't be read ([]) leaves MaxVol's
+  for (const { row } of all) row[7] = heardLanguages(audioOf.get(row[0])?.length ? audioOf.get(row[0]) : maxvol[row[0]], row[7]);
   const languages = new Map();
   for (const { row } of all) for (const code of row[7]) languages.set(code, (languages.get(code) || 0) + 1);
   const params = new URL(request.url).searchParams;
@@ -1052,13 +1132,7 @@ async function sources(request, env, ctx, kind, imdb, season, episode) {
     .sort((a, b) => a.disc - b.disc || b.bytes - a.bytes).slice(0, MAX); // stable: equal sizes keep Torrentio's order
   const from = Number(params.get('from')) || 0;
   const batch = shown.slice(from, from ? MAX : FIRST).map(({ row }) => row);
-  const hashes = batch.map(([hash]) => hash);
-  // MaxVol: D1's answer (a few ms) when it has one; a first ask of the day (~0.7-2 s) isn't waited for past 300 ms,
-  // it goes on (waitUntil) and the next list carries it
-  const mv = env.DB ? maxvolOf(env, imdb).catch(() => ({})) : Promise.resolve({});
-  if (ctx) ctx.waitUntil(mv);
-  const [cached, audioOf, maxvol] = await Promise.all([cachedOnTorBox(env, hashes), audioKnown(env, hashes),
-    Promise.race([mv, new Promise((done) => setTimeout(() => done({}), 300))])]);
+  const cached = await cachedOnTorBox(env, batch.map(([hash]) => hash));
   for (const row of batch) row.push(cached ? Number(cached.has(row[0])) : -1);
   for (const row of batch) row.push(audioOf.get(row[0]) ?? null, maxvol[row[0]] ?? null);
   return new Response(JSON.stringify({
@@ -1128,7 +1202,8 @@ async function torboxLink(env, hash, fileIdx, name, mine) {
   let answer;
   if (id === undefined) {
     const form = new FormData();
-    form.append('magnet', `magnet:?xt=urn:btih:${hash}`);
+    // with opentrackr: the peers of a zamunda.life release are there (its own tracker is gone), not always in the DHT
+    form.append('magnet', `magnet:?xt=urn:btih:${hash}&tr=${encodeURIComponent(`${OPENTRACKR}/announce`)}`);
     answer = await torboxApi(env, 'createtorrent', { method: 'POST', body: form });
     id = answer?.data?.torrent_id ?? answer?.data?.id;
   }
@@ -1367,8 +1442,9 @@ async function rememberAudio(env, hash, link, once = false) {
 async function audioKnown(env, hashes) {
   if (!env.DB || !hashes.length) return new Map();
   try {
-    const { results } = await env.DB.prepare(`SELECT hash, tracks, t FROM audio WHERE hash IN (${hashes.map(() => '?')})`)
-      .bind(...hashes).all();
+    // one JSON value, not a ? each: a whole list (up to MAX) is past D1's 100 bound values
+    const { results } = await env.DB.prepare('SELECT hash, tracks, t FROM audio WHERE hash IN (SELECT value FROM json_each(?))')
+      .bind(JSON.stringify(hashes)).all();
     // unreadable: [] (as not MKV/MP4: the stick doesn't ask) until it's asked again
     return new Map(results.filter(settled).map((r) => [r.hash, JSON.parse(r.tracks) ?? []]));
   } catch {

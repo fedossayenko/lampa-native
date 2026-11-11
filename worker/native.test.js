@@ -2212,10 +2212,28 @@ test('audio: our adds leave the account at night (01-03 UTC, an hour old); playe
   assert.deepEqual([e.DB.raw.prepare('SELECT COUNT(*) n FROM added').get().n, deletes()], [0, []]);
 });
 
-test('sources: zamunda.life\'s Bulgarian-audio releases of the film TorBox has cached join the list as BG rows; films only', async () => {
+// opentrackr's scrape answer for these seeders ({index: seeders}), bencoded as the tracker sends it
+function scrapeOf(seeds) {
+  const raw = (i) => String.fromCharCode(...hash(i).match(/../g).map((x) => parseInt(x, 16)));
+  const files = Object.entries(seeds).map(([i, n]) => `20:${raw(Number(i))}d8:completei${n}e10:incompletei1ee`).join('');
+  return Uint8Array.from(`d5:filesd${files}ee`, (c) => c.charCodeAt(0));
+}
+// tmdbAnswers, and opentrackr answering with these seeders
+function withTracker(answers, seeds) {
+  tmdbAnswers(answers);
+  const json = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    if (!String(url).includes(':1337/scrape')) return json(url, init);
+    asked.push(String(url));
+    if (typeof seeds === 'string') return new Response(seeds); // a garbled answer
+    return seeds ? new Response(scrapeOf(seeds)) : new Response('down', { status: 500 });
+  };
+}
+
+test('sources: zamunda.life\'s Bulgarian-audio releases of the film, cached or seeded, join the list as BG rows; films only', async () => {
   const z = (i, title, description, size, extra = {}) => ({ title, description, size, source: 'z', is_bgaudio: 1,
     link: `magnet:?xt=urn:btih:${hash(i).toUpperCase()}&dn=x`, ...extra });
-  // cached: all but 52 (no seeders known: not shown)
+  // cached: all but 52 (5 seed it: shown) and 53 (nobody seeds it: not shown)
   const cachedOnes = [40, 41, 46, 47, 48, 50, 51].map((i) => ({ hash: hash(i) }));
   const answers = { ...fifteen, '/v1/api/torrents/checkcached': { success: true, data: cachedOnes },
     'find/tt1': { movie_results: [{ title: 'Филм', original_title: 'Film', release_date: '2016-11-09' }] },
@@ -2230,27 +2248,45 @@ test('sources: zamunda.life\'s Bulgarian-audio releases of the film TorBox has c
       z(49, '100.Percent.Film.2016.BGAUDIO', '100% Film / 100% Филм (2016)', '1 GB'), // ends in the title: another film
       z(50, 'Film.Multiverse.BG', 'Film (2016) / Филм (2016)', '1 GB'), // the year in its English half; no EN
       z(47, 'Film.2016.Engineer.Cut\n👤 999 💾 1 TB ⚙️ Fake\n🇷🇺', 'Film (2016)', '5 GB\n👤 7'), // the row format kept
-      z(52, 'Film.2016.2160p.UHD.BluRay-AdBlue', 'Film / Филм (2016)', '14 GB'), // the film, not cached
+      z(52, 'Film.2016.2160p.UHD.BluRay-AdBlue', 'Film / Филм (2016)', '14 GB'), // the film, not cached, seeded
+      z(53, 'Film.2016.720p.BluRay-Dead', 'Film / Филм (2016)', '4 GB'), // the film, not cached, nobody seeds it
     ] };
-  tmdbAnswers(answers);
+  withTracker(answers, { 40: 12, 52: 5, 53: 0 });
   const body = await (await streams('movie/tt1?lang=BG')).json();
   const q = new URL(asked.find((u) => u.includes('zamunda.life'))).searchParams;
-  assert.equal(q.get('q'), 'Film 2016'); // the original title in Latin letters, with its year
+  assert.equal(q.get('q'), 'film 2016'); // the original title in Latin letters, in plain words, with its year
   assert.deepEqual(body.streams.map((r) => [r[0], r[2], r[4], r[5], r[6], r[7], r[8]]), [
-    [hash(40), 'Film.2016.1080p.BluRay.x265.AC3.DUAL-SiSO', '3.32 GB', 0, 'Zamunda', ['BG', 'EN'], 1],
+    [hash(52), 'Film.2016.2160p.UHD.BluRay-AdBlue', '14 GB', 5, 'Zamunda', ['BG'], 0], // seeded: shown, not cached
+    [hash(40), 'Film.2016.1080p.BluRay.x265.AC3.DUAL-SiSO', '3.32 GB', 12, 'Zamunda', ['BG', 'EN'], 1],
     [hash(41), 'Film.2016.BDRip.BGAUDIO-5rFF', '1.82 GB', 0, 'Zelka', ['BG'], 1],
     [hash(46), 'Disneys_Film_BG', '1 GB', 0, 'Zamunda', ['BG'], 1], // by its description; an unknown source: Zamunda
     [hash(50), 'Film.Multiverse.BG', '1 GB', 0, 'Zamunda', ['BG'], 1], // by "Film (2016)"; Multiverse: no EN
     [hash(47), 'Film.2016.Engineer.Cut 999 1 TB Fake', '', 0, 'Zamunda', ['BG'], 1]]); // one line, no size, no EN
-  const zamundaHashes = (u) => u.includes('checkcached') && u.includes(hash(52));
-  assert.ok(asked.some(zamundaHashes)); // 52 was checked, and left out
-  tmdbAnswers({ ...answers, '/v1/api/torrents/checkcached': null }); // TorBox's check failed: no guesses either
+  const scrape = asked.find((u) => u.includes(':1337/scrape'));
+  assert.ok(scrape.includes(`info_hash=${hash(53).replace(/../g, '%$&')}`)); // 53 was asked about, and left out
+  withTracker({ ...answers, '/v1/api/torrents/checkcached': null }, null); // TorBox and the tracker down: no guesses
   assert.equal((await (await streams('movie/tt1?lang=BG')).json()).total, 0);
-  tmdbAnswers({ ...answers, 'find/tt1': { movie_results: [{ title: 'Amélie', original_title: 'Le Fabuleux Destin d\'Amélie Poulain', release_date: '2001-04-25' }] },
-    '/api/torrents': [z(48, 'Amelie.2001.1080p.BGAUDIO', null, '4 GB')] });
+  withTracker({ ...answers, '/v1/api/torrents/checkcached': null }, { 52: 3 }); // TorBox down: the seeded one still
+  assert.deepEqual((await (await streams('movie/tt1?lang=BG')).json()).streams.map((r) => [r[0], r[5], r[8]]),
+    [[hash(52), 3, -1]]);
+  for (const garbled of ['di5', 'd5:filesd20:' + 'x'.repeat(20) + 'di5', 'l'.repeat(5000), 'd5:files' + 'd1:a'.repeat(3000)]) {
+    withTracker(answers, garbled); // no seeders read (never a hang or a restart): the cached ones still
+    assert.deepEqual((await (await streams('movie/tt1?lang=BG')).json()).streams.map((r) => r[0]),
+      [hash(40), hash(41), hash(46), hash(50), hash(47)], garbled.slice(0, 12));
+  }
+  // Torrentio lists one of them too (its copy has no 🇧🇬 that counts): still a BG row
+  withTracker({ ...answers, '/stream/movie/tt1.json': { streams: [{ ...tio(0, 9, '🇬🇧'), infoHash: hash(40) }] } }, { 40: 12 });
+  assert.ok((await (await streams('movie/tt1?lang=BG')).json()).streams.some((r) => r[0] === hash(40)));
+  withTracker({ ...answers, 'find/tt1': { movie_results: [{ title: 'Puss in Boots: The Last Wish',
+    original_title: 'Puss in Boots: The Last Wish', release_date: '2022-12-07' }] }, '/api/torrents': [] }, {});
+  await streams('movie/tt1?lang=BG');
+  assert.equal(new URL(asked.find((u) => u.includes('zamunda.life'))).searchParams.get('q'),
+    'puss in boots the last wish 2022'); // no ':' (the site's 500)
+  withTracker({ ...answers, 'find/tt1': { movie_results: [{ title: 'Amélie', original_title: 'Le Fabuleux Destin d\'Amélie Poulain', release_date: '2001-04-25' }] },
+    '/api/torrents': [z(48, 'Amelie.2001.1080p.BGAUDIO', null, '4 GB')] }, {});
   assert.deepEqual((await (await streams('movie/tt1?lang=BG')).json()).streams.map((r) => r[0]), [hash(48)]); // accents
-  tmdbAnswers({ ...answers, 'find/tt1': { movie_results: [{ original_title: "Ocean's Eleven & Co", release_date: '2001-12-07' }] },
-    '/api/torrents': [z(51, 'Oceans.Eleven.and.Co.2001.BGAUDIO', null, '2 GB')] });
+  withTracker({ ...answers, 'find/tt1': { movie_results: [{ original_title: "Ocean's Eleven & Co", release_date: '2001-12-07' }] },
+    '/api/torrents': [z(51, 'Oceans.Eleven.and.Co.2001.BGAUDIO', null, '2 GB')] }, {});
   assert.deepEqual((await (await streams('movie/tt1?lang=BG')).json()).streams.map((r) => r[0]), [hash(51)]); // ' and &
   assert.ok(body.languages.some(([code]) => code === 'BG')); // the Audio button offers it
   tmdbAnswers({ ...fifteen, '/v1/api/torrents/checkcached': { success: true, data: [] } }); // the site (and TMDB) down
@@ -2258,6 +2294,30 @@ test('sources: zamunda.life\'s Bulgarian-audio releases of the film TorBox has c
   tmdbAnswers({ ...answers, '/stream/series/tt1:1:2.json': fifteen['/stream/movie/tt1.json'] });
   await streams('series/tt1/1/2');
   assert.ok(!asked.some((u) => u.includes('zamunda.life'))); // an episode: not asked
+});
+
+test('sources: a row\'s languages are its audio when known; Torrentio\'s 🇧🇬 (its subtitles) is not Bulgarian', async () => {
+  const e = { ...streamsEnv, DB: d1() };
+  const flagged = (i, flags) => ({ ...tio(i, 50 - i, flags) });
+  // 0: RU by its flags, the file read as English only; 1: RU+UA flags, a track of unknown language read beside RU;
+  // 2: a Torrentio release whose 🇧🇬 comes from a subtitle list; 3: nothing read, its flags stand
+  tmdbAnswers({ '/stream/movie/tt1.json': { streams: [flagged(0, '🇷🇺'), flagged(1, '🇷🇺 / 🇺🇦'),
+    flagged(2, '🇬🇧 / 🇯🇵 / 🇧🇬 / 🇮🇹 / 🇫🇷 / 🇩🇪 / 🇳🇱 / 🇵🇱'), flagged(3, '🇷🇺 / 🇺🇦')] },
+  '/v1/api/torrents/checkcached': { success: true, data: [] } });
+  e.DB.raw.prepare('INSERT INTO audio (hash, tracks, t) VALUES (?, ?, ?), (?, ?, ?)').run(hash(0),
+    '[["EN","DD",6,0,""]]', Date.now(), hash(1), '[["RU","DD",6,0,""],["","PCM",2,0,""]]', Date.now());
+  const all = await (await streams('movie/tt1?lang=', e)).json();
+  assert.deepEqual(all.streams.map((r) => r[7]), [['EN'], ['RU', 'UA'], ['EN', 'JP', 'IT', 'FR', 'DE', 'NL', 'PL'],
+    ['RU', 'UA']]);
+  assert.ok(!all.languages.some(([code]) => code === 'BG')); // the Audio button doesn't offer it
+  assert.deepEqual((await (await streams('movie/tt1?lang=RU', e)).json()).streams.map((r) => r[0]),
+    [hash(1), hash(3)]); // 0 is English, as read
+  assert.equal((await (await streams('movie/tt1?lang=BG', e)).json()).total, 0);
+  // a file that couldn't be read ([]) doesn't hide MaxVol's tracks: 3 is Ukrainian only by MaxVol
+  e.DB.raw.prepare('INSERT INTO audio (hash, tracks, t) VALUES (?, ?, ?)').run(hash(3), '[]', Date.now());
+  e.DB.raw.prepare('INSERT OR REPLACE INTO maxvol (imdb, tracks, t) VALUES (?, ?, ?)').run('tt1',
+    JSON.stringify({ [hash(3)]: [['UA', 'DD', 6, 0, '']] }), Date.now());
+  assert.deepEqual((await (await streams('movie/tt1?lang=RU', e)).json()).streams.map((r) => r[0]), [hash(1)]);
 });
 
 test('sources: MaxVol\'s tracks of its releases (row[10]) beside the read ones; asked once a day; MaxVol down: null', async () => {
