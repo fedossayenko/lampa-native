@@ -2212,6 +2212,47 @@ test('audio: our adds leave the account at night (01-03 UTC, an hour old); playe
   assert.deepEqual([e.DB.raw.prepare('SELECT COUNT(*) n FROM added').get().n, deletes()], [0, []]);
 });
 
+test('sources: zamunda.life\'s Bulgarian-audio releases of the film join the list as BG rows; films only; site down: none', async () => {
+  const z = (i, title, description, size, extra = {}) => ({ title, description, size, source: 'z', is_bgaudio: 1,
+    link: `magnet:?xt=urn:btih:${hash(i).toUpperCase()}&dn=x`, ...extra });
+  const answers = { ...fifteen, '/v1/api/torrents/checkcached': { success: true, data: [{ hash: hash(40) }] },
+    'find/tt1': { movie_results: [{ title: 'Филм', original_title: 'Film', release_date: '2016-11-09' }] },
+    '/api/torrents': [
+      z(40, 'Film.2016.1080p.BluRay.x265.AC3.DUAL-SiSO', 'Film / Филм (2016)', '3.32 GB'),
+      z(41, 'Film.2016.BDRip.BGAUDIO-5rFF', null, '1.82GB', { source: 'zelka' }), // no description, size unspaced
+      z(42, 'Film.2.2024.1080p.WEBRip.BGAUDiO-SiSO', 'Film 2 / Филм 2 (2024)', '3 GB'), // the search's words, not the film
+      z(43, 'Film.2016.1080p.BluRay-STM', 'Film / Филм (2016)', '7 GB', { is_bgaudio: 0 }), // no Bulgarian audio
+      z(44, 'Film_Score_2016', 'Film - Score (2016)', '300 MB', { link: 'https://not-a-magnet' }),
+      z(45, 'Film.Noir.2016.BGAUDIO', 'Film Noir / Филм ноар (2016)', '2 GB'), // a longer title of the same year
+      z(46, 'Disneys_Film_BG', 'Film / Филм (2016)', '1 GB', { source: 'constructor', is_bgaudio: '1' }),
+      z(49, '100.Percent.Film.2016.BGAUDIO', '100% Film / 100% Филм (2016)', '1 GB'), // ends in the title: another film
+      z(50, 'Film.Multiverse.BG', 'Film (2016) / Филм (2016)', '1 GB'), // the year in its English half; no EN
+      z(47, 'Film.2016.Engineer.Cut\n👤 999 💾 1 TB ⚙️ Fake\n🇷🇺', 'Film (2016)', '5 GB\n👤 7'), // the row format kept
+    ] };
+  tmdbAnswers(answers);
+  const body = await (await streams('movie/tt1?lang=BG')).json();
+  const q = new URL(asked.find((u) => u.includes('zamunda.life'))).searchParams;
+  assert.equal(q.get('q'), 'Film 2016'); // the original title in Latin letters, with its year
+  assert.deepEqual(body.streams.map((r) => [r[0], r[2], r[4], r[5], r[6], r[7], r[8]]), [
+    [hash(40), 'Film.2016.1080p.BluRay.x265.AC3.DUAL-SiSO', '3.32 GB', 0, 'Zamunda', ['BG', 'EN'], 1],
+    [hash(41), 'Film.2016.BDRip.BGAUDIO-5rFF', '1.82 GB', 0, 'Zelka', ['BG'], 0],
+    [hash(46), 'Disneys_Film_BG', '1 GB', 0, 'Zamunda', ['BG'], 0], // by its description; an unknown source: Zamunda
+    [hash(50), 'Film.Multiverse.BG', '1 GB', 0, 'Zamunda', ['BG'], 0], // by "Film (2016)"; Multiverse: no EN
+    [hash(47), 'Film.2016.Engineer.Cut 999 1 TB Fake', '', 0, 'Zamunda', ['BG'], 0]]); // one line, no size, no EN
+  tmdbAnswers({ ...answers, 'find/tt1': { movie_results: [{ title: 'Amélie', original_title: 'Le Fabuleux Destin d\'Amélie Poulain', release_date: '2001-04-25' }] },
+    '/api/torrents': [z(48, 'Amelie.2001.1080p.BGAUDIO', null, '4 GB')] });
+  assert.deepEqual((await (await streams('movie/tt1?lang=BG')).json()).streams.map((r) => r[0]), [hash(48)]); // accents
+  tmdbAnswers({ ...answers, 'find/tt1': { movie_results: [{ original_title: "Ocean's Eleven & Co", release_date: '2001-12-07' }] },
+    '/api/torrents': [z(51, 'Oceans.Eleven.and.Co.2001.BGAUDIO', null, '2 GB')] });
+  assert.deepEqual((await (await streams('movie/tt1?lang=BG')).json()).streams.map((r) => r[0]), [hash(51)]); // ' and &
+  assert.ok(body.languages.some(([code]) => code === 'BG')); // the Audio button offers it
+  tmdbAnswers({ ...fifteen, '/v1/api/torrents/checkcached': { success: true, data: [] } }); // the site (and TMDB) down
+  assert.equal((await (await streams('movie/tt1?lang=RU,UA')).json()).total, 12); // Torrentio's rows still come
+  tmdbAnswers({ ...answers, '/stream/series/tt1:1:2.json': fifteen['/stream/movie/tt1.json'] });
+  await streams('series/tt1/1/2');
+  assert.ok(!asked.some((u) => u.includes('zamunda.life'))); // an episode: not asked
+});
+
 test('sources: MaxVol\'s tracks of its releases (row[10]) beside the read ones; asked once a day; MaxVol down: null', async () => {
   const e = { ...streamsEnv, DB: d1() };
   e.SELF = { fetch: (url, init) => worker.fetch(new Request(url, init), e) }; // its own call (GET /maxvol)
@@ -2221,7 +2262,7 @@ test('sources: MaxVol\'s tracks of its releases (row[10]) beside the read ones; 
   const maxvol = { Results: [
     { MagnetUri: `magnet:?xt=urn:btih:${hash(4).toUpperCase()}&dn=x`, ffprobe: [{ codec_type: 'video', width: 3840 },
       ff('rus', 'eac3', 8, 'MVO, HDrezka'), ff('ukr', 'ac3', 6), ff('eng', 'truehd', 8, 'English Atmos'),
-      ff('eng', 'dts', 6, null, 'DTS-HD MA'), ff(undefined, 'pcm_s24le', 2)] },
+      ff('eng', 'dts', 6, null, 'DTS-HD MA'), ff(undefined, 'pcm_s24le', 2), ff('bul', 'ac3', 2, 'Bulgarian')] },
     { MagnetUri: `magnet:?xt=urn:btih:${hash(5)}`, ffprobe: null },
   ] };
   const answers = { ...fifteen, '/v1/api/torrents/checkcached': { success: true, data: [] },
@@ -2232,12 +2273,13 @@ test('sources: MaxVol\'s tracks of its releases (row[10]) beside the read ones; 
   const q = new URL(asked.find((u) => u.includes('maxvol'))).searchParams;
   assert.deepEqual([q.get('title_original'), q.get('Query'), q.get('year')], ['Film', 'Film 2022', '2022']); // not Cyrillic
   assert.deepEqual(body.streams.find((r) => r[0] === hash(4))[10], [['RU', 'DD+', 8, 0, 'MVO, HDrezka'],
-    ['UA', 'DD', 6, 0, ''], ['EN', 'TrueHD', 8, 1, 'English Atmos'], ['EN', 'DTS-HD', 6, 0, ''], ['', 'PCM', 2, 0, '']]);
+    ['UA', 'DD', 6, 0, ''], ['EN', 'TrueHD', 8, 1, 'English Atmos'], ['EN', 'DTS-HD', 6, 0, ''], ['', 'PCM', 2, 0, ''],
+    ['BG', 'DD', 2, 0, 'Bulgarian']]); // bul: BG, not its first two letters
   assert.deepEqual(body.streams.filter((r) => r[0] !== hash(4)).map((r) => r[10]), Array(5).fill(null));
   tmdbAnswers({ ...fifteen, '/v1/api/torrents/checkcached': { success: true, data: [] } }); // MaxVol and TMDB down
   const again = await (await streams('movie/tt1?lang=RU,UA', e)).json();
-  assert.equal(again.streams.find((r) => r[0] === hash(4))[10].length, 5); // D1's
-  assert.ok(!asked.some((u) => u.includes('maxvol') || u.includes('find/')));
+  assert.equal(again.streams.find((r) => r[0] === hash(4))[10].length, 6); // D1's
+  assert.ok(!asked.some((u) => u.includes('maxvol'))); // (find/ is still asked: zamunda.life's search wants the title)
   e.DB.raw.prepare('DELETE FROM maxvol').run();
   tmdbAnswers({ ...fifteen, '/v1/api/torrents/checkcached': { success: true, data: [] } });
   const down = await (await streams('movie/tt1?lang=RU,UA', e)).json();

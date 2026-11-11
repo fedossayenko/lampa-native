@@ -938,9 +938,61 @@ async function cachedOnTorBox(env, hashes) {
   }
 }
 
+// zamunda.life: a search over the magnets of the Bulgarian trackers (Zamunda, ArenaBG, Zelka; zamunda.net itself was
+// seized in 2026), which has Bulgarian-dubbed releases none of Torrentio's trackers carry (Moana 2, Zootopia 2, Wild
+// Robot: 0 in Torrentio and MaxVol, 4-20 there; 2026-11-11). A film's releases flagged with Bulgarian audio, as
+// Torrentio's streams (so sources() reads them like its own): 🇧🇬, plus 🇬🇧 for a DUAL/MULTI/English one. Seeders
+// unknown (0): the site doesn't say. Films only: an episode would need its file found in a season pack. [] when the
+// site or TMDB fails or takes over ZAMUNDA_WAIT (the list doesn't wait longer for it).
+const ZAMUNDA = 'https://zamunda.life/api/torrents';
+const ZAMUNDA_WAIT = 4000;
+const ZAMUNDA_TRACKERS = new Map([['z', 'Zamunda'], ['arenabg', 'ArenaBG'], ['zelka', 'Zelka']]);
+// lower case, accents dropped (Amélie = Amelie), and anything but letters and digits one space
+// (Ocean's = Oceans, & = and: how release names spell them)
+const latinWords = (s) => String(s ?? '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/['’]/g, '')
+  .replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ')
+  .trim();
+// the site's text in a row: one line, none of the signs sources() reads the row by, not too long
+const oneLine = (s) => String(s ?? '').replace(/[\r\n👤💾⚙️\u{1F1E6}-\u{1F1FF}]/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 200);
+
+// The film itself, not just the search's words ("Wonder 2017" also finds Wonder Woman (2017), "Moana" Moana 2): the
+// release's name starts with the title and the year ("Moana.2016.1080p…"), or the description's English half is the
+// title ("Inside Out 2 / Отвътре навън 2 (2024)" for "Inside_Out_2_2_2024") with the year in brackets: equal, not
+// ending in it ("100% Coco / 100% Коко (2017)" is another film than Coco (2017)).
+function sameFilm(t, title, year) {
+  const name = latinWords(title);
+  if (latinWords(t.title).startsWith(`${name} ${year}`)) return true;
+  const [english, ...rest] = String(t.description ?? '').split(' / ');
+  return rest.length > 0 && [name, `${name} ${year}`].includes(latinWords(english)) && rest.join(' / ').includes(`(${year})`);
+}
+
+async function zamundaStreams(env, imdb) {
+  try {
+    const { title, year } = await latinTitle(env, imdb);
+    if (!title || !year) return [];
+    const q = new URLSearchParams({ q: `${title} ${year}`, bg_audio: false, bg_movies: false, bg_arena: false,
+      zelka: false, offset: 0 }); // all sources; the Bulgarian audio is picked by its flag below
+    const res = await fetch(`${ZAMUNDA}?${q}`, { ...within(ZAMUNDA_WAIT), cf: { cacheTtl: 3600 } });
+    const found = res.ok ? await res.json() : [];
+    return (Array.isArray(found) ? found : []).flatMap((t) => {
+      const hash = (String(t?.link).match(/btih:([0-9a-f]{40})/i) || [])[1];
+      if (!hash || Number(t.is_bgaudio) !== 1 || !sameFilm(t, title, year)) return [];
+      const size = (String(t.size).match(/^\s*([\d.]+)\s*([KMGT]B)\s*$/) || []).slice(1).join(' ');
+      return [{ infoHash: hash, title: `${oneLine(t.title)}\n👤 0 💾 ${size} ⚙️ ${ZAMUNDA_TRACKERS.get(t.source) ||
+        'Zamunda'}\n🇧🇬${/\b(dual|multi)\b|\bdualaudio|\beng(lish)?\b/i.test(t.title) ? ' / 🇬🇧' : ''}` }];
+    });
+  } catch (e) {
+    console.log('zamunda', imdb, String(e)); // wrangler tail
+    return [];
+  }
+}
+
 async function sources(request, env, ctx, kind, imdb, season, episode) {
   // the TV's only: each answer spends TorBox's cache checks and the addon's patience
   if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
+  // alongside the addon; a slow TMDB or site costs the list at most ZAMUNDA_WAIT, not TMDB's 8 s on top
+  const bulgarian = kind !== 'movie' ? Promise.resolve([])
+    : Promise.race([zamundaStreams(env, imdb), new Promise((done) => setTimeout(() => done([]), ZAMUNDA_WAIT))]);
   let list;
   if (request.method === 'POST') {
     if (Number(request.headers.get('Content-Length')) > 4e6) return corsError(request, 'Too big.', 413);
@@ -966,7 +1018,7 @@ async function sources(request, env, ctx, kind, imdb, season, episode) {
   }
   const seen = new Set();
   const all = [];
-  for (const st of list) {
+  for (const st of [...list, ...await bulgarian]) {
     if (!st || typeof st !== 'object') continue; // the addon's answer, or the stick's post of it: not trusted
     const hash = String(st.infoHash || '').toLowerCase();
     if (!/^[0-9a-f]{40}$/.test(hash) || seen.has(hash)) continue;
@@ -1250,16 +1302,23 @@ async function maxvolOf(env, imdb) {
   }
 }
 
+// A title's name as trackers spell it (the original one when it's in Latin letters, else TMDB's English one) and its
+// year, from TMDB's find by the IMDb id; {} when TMDB doesn't know the id. Throws when TMDB is down.
+async function latinTitle(env, imdb) {
+  const o = await (await tmdb(env, `find/${imdb}`, '&external_source=imdb_id')).json();
+  const m = (o.movie_results || [])[0] || (o.tv_results || [])[0];
+  if (!m) return {};
+  const original = m.original_title || m.original_name || '';
+  return { title: /^[\x20-\x7e]+$/.test(original) ? original : m.title || m.name,
+    year: (m.release_date || m.first_air_date || '').slice(0, 4) };
+}
+
 // GET /maxvol/<IMDb id> (the play token; the worker's own call, maxvolOf): MaxVol asked, its map kept and answered.
 async function maxvolAudio(env, imdb) {
   const map = {};
   try {
-    const o = await (await tmdb(env, `find/${imdb}`, '&external_source=imdb_id')).json();
-    const m = (o.movie_results || [])[0] || (o.tv_results || [])[0];
-    const original = m && (m.original_title || m.original_name || '');
-    const title = m && (/^[\x20-\x7e]+$/.test(original) ? original : m.title || m.name);
+    const { title, year } = await latinTitle(env, imdb);
     if (title) {
-      const year = (m.release_date || m.first_air_date || '').slice(0, 4);
       const res = await fetch(`${MAXVOL}?${new URLSearchParams({ Query: `${title} ${year}`.trim(), title_original: title,
         year, Category: '2000,5000' })}`, within(10000));
       for (const r of res.ok ? (await res.json()).Results || [] : []) {
@@ -1323,8 +1382,10 @@ const LANGS = {
   ru: 'RU', rus: 'RU', uk: 'UA', ukr: 'UA', en: 'EN', eng: 'EN', be: 'BY', bel: 'BY', kk: 'KZ', kaz: 'KZ',
   de: 'DE', ger: 'DE', deu: 'DE', fr: 'FR', fre: 'FR', fra: 'FR', es: 'ES', spa: 'ES', it: 'IT', ita: 'IT',
   ja: 'JP', jpn: 'JP', ko: 'KR', kor: 'KR', zh: 'CN', chi: 'CN', zho: 'CN', pl: 'PL', pol: 'PL', pt: 'PT',
-  por: 'PT', tr: 'TR', tur: 'TR', hi: 'IN', hin: 'IN',
-};
+  por: 'PT', tr: 'TR', tur: 'TR', hi: 'IN', hin: 'IN', bg: 'BG', bul: 'BG', cs: 'CZ', cze: 'CZ', ces: 'CZ',
+  nl: 'NL', dut: 'NL', nld: 'NL', sv: 'SE', swe: 'SE', da: 'DK', dan: 'DK', nb: 'NO', no: 'NO', nor: 'NO',
+  ar: 'SA', ara: 'SA', he: 'IL', heb: 'IL', sr: 'RS', srp: 'RS', el: 'GR', gre: 'GR', ell: 'GR',
+}; // as Torrentio's flags (a country: SE, DK, SA…); a code not here: its first two letters (bul read BU before)
 const langCode = (l) => {
   const k = String(l || '').toLowerCase().split('-')[0];
   return !k || k === 'und' ? '' : LANGS[k] || k.slice(0, 2).toUpperCase();
