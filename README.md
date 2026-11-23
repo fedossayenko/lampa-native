@@ -93,7 +93,9 @@ speed test server when you run Settings → Speed test, and whatever app opens Y
      run `npx wrangler@4 tail` in `worker/`, open Home, and it logs `CUB account <id> isn't in CUB_ACCOUNTS`;
      then `npx wrangler@4 secret put CUB_ACCOUNTS` with that id (comma-separated for several).
    - Voice search: `adb shell pm grant local.lampanative android.permission.RECORD_AUDIO`. Fire OS takes it back
-     at every boot; on a rooted stick `tools/stick/grant-mic.sh` (a Magisk boot script) gives it back.
+     at every boot and at its daily config sync (it revokes the microphone from apps outside Amazon's allowlist); on a
+     rooted stick `tools/stick/grant-mic.sh` (a Magisk `service.d` script, 755) watches for that and grants it again
+     within seconds, logging to `/data/adb/grant-mic.log`.
    - Extensions: another worker of yours, bound as `EXT_<NAME>` in `wrangler.toml` (`[[services]]`, see
      `wrangler.example.toml`), is reached at `/ext/<name>/…` for the TV only, so the TV holds no token for it. With
      `EXT_LEARN` the film page gets a Learn button (the extension's `/learn/status` and `/learn/queue`) and `/mine`
