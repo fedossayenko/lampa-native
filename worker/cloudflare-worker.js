@@ -567,7 +567,12 @@ async function serviceRows(env, ctx, iso) {
     { headers: { 'Cache-Control': `max-age=${36 * 3600}` } })) : null);
   // one build at a time here: the Homes that come while it runs take what is there (two at the same instant can
   // still both build: the Cache API has no lock)
-  if (cache) await kept({ rows: had, done: false, retry: now + 60e3, tries: hit?.tries || 0, missing: hit?.missing });
+  // done rows past their 12 hours stay done meanwhile (Home kept): they are whole, only old
+  const meanwhile = { rows: had, done: hit?.done === true };
+  if (cache) {
+    await kept({ ...meanwhile, retry: now + 60e3, fresh: now + 60e3, tries: hit?.tries || 0, missing: hit?.missing })
+      .catch(() => {});
+  }
   const build = (async () => {
     let lists;
     try {
@@ -600,11 +605,18 @@ async function serviceRows(env, ctx, iso) {
     const out = done ? { rows, done, fresh: now + 12 * 3600e3 } : { rows, done, retry: now + 60e3, tries, missing };
     await kept(out);
     return out;
-  })().catch((e) => (console.log('services', String(e)), { rows: had, done: false }));
+  })().catch(async (e) => { // outside JustWatch's call (D1, the cache): a try that failed, counted as one
+    console.log('services', String(e));
+    const tries = (hit?.tries || 0) + 1;
+    const out = tries >= SERVICES_TRIES ? { rows: had, done: true, fresh: now + 3600e3 }
+      : { rows: had, done: false, retry: now + 60e3, tries, missing: hit?.missing };
+    await kept(out)?.catch(() => {});
+    return out;
+  });
   if (!cache || !ctx) return build;
   ctx.waitUntil(build);
   // what Home had meanwhile (a slow rebuild must not drop the rows shown a minute ago)
-  return upTo(build, Number(env.SERVICES_WAIT) || SERVICES_WAIT, { rows: had, done: false });
+  return upTo(build, Number(env.SERVICES_WAIT) || SERVICES_WAIT, meanwhile);
 }
 
 // What p gives within ms, else fallback (p goes on: its caller keeps it with waitUntil).
@@ -618,8 +630,9 @@ async function upTo(p, ms, fallback) {
 async function home(request, env, ctx) {
   let rawBytes = 0;
   const country = new URL(request.url).searchParams.get('country') || '';
-  const extra = Promise.all([top10Rows(env, ctx, country), serviceRows(env, ctx, country)]) // beside TMDB's rows
-    .catch((e) => (console.log('home extra', String(e)), [[], { rows: [], done: false }])); // never unhandled (a 502 below)
+  const extra = Promise.all([ // beside TMDB's rows; each failing alone (never unhandled: a 502 below doesn't wait)
+    top10Rows(env, ctx, country).catch((e) => (console.log('top10', String(e)), [])),
+    serviceRows(env, ctx, country).catch((e) => (console.log('services', String(e)), { rows: [], done: false }))]);
   const rows = await Promise.all(HOME_ROWS.map(async ([title, path]) => {
     try {
       const res = await tmdb(env, path);

@@ -3291,3 +3291,43 @@ test('Home: at the 12-hour rebuild a JustWatch failure keeps the rows (the entry
     delete globalThis.caches;
   }
 });
+
+test('Home: the cache failing drops only the services\' rows; Netflix\'s stay', async () => {
+  globalThis.caches = { default: { match: async () => { throw new Error('cache down'); }, put: async () => { throw new Error('cache down'); } } };
+  try {
+    servicesAnswer({ dnp: [['SHOW', 11]], mxx: [], prv: [], atp: [], sst: [] });
+    const e = { ...env, DB: d1() };
+    e.DB.raw.prepare("INSERT INTO top10 (country, week, rows, asked, t) VALUES ('BG', '2026-11-22', ?, ?, ?)")
+      .run(JSON.stringify([['Top 10 series on Netflix in Bulgaria', [[1, 'tv', 'B', '', '/b.jpg', 0, '']]]]), Date.now(), Date.now());
+    const waits = [];
+    const res = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, { waitUntil: (p) => waits.push(p) });
+    await Promise.allSettled(waits);
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).rows[0][0], 'Top 10 series on Netflix in Bulgaria');
+  } finally {
+    delete globalThis.caches;
+  }
+});
+
+test('Home: whole rows past their 12 hours are still done while rebuilt (Home kept)', async () => {
+  const kept = cacheStub();
+  try {
+    const row = [['Popular on Disney+ in Bulgaria', [[11, 'tv', 'S', '', '/p.jpg', 70, '']]]];
+    kept.set('https://justwatch.cache/v2/popular/BG', new Response(JSON.stringify({ rows: row, done: true, fresh: Date.now() - 1 })));
+    let release;
+    const slow = new Promise((ok) => { release = ok; });
+    servicesAnswer({ dnp: [['SHOW', 11]], mxx: [], prv: [], atp: [], sst: [] });
+    const inner = globalThis.fetch;
+    globalThis.fetch = async (url, init) => (new URL(url).hostname === 'apis.justwatch.com' ? (await slow, inner(url, init)) : inner(url, init));
+    const e = { ...env, DB: d1(), SERVICES_WAIT: '20' };
+    e.DB.raw.prepare("INSERT INTO top10 (country, week, rows, asked, t) VALUES ('BG', '2026-11-22', '[]', ?, ?)").run(Date.now(), Date.now());
+    const waits = [];
+    const res = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, { waitUntil: (p) => waits.push(p) });
+    assert.equal(res.headers.get('Cache-Control'), 'max-age=3600');
+    assert.deepEqual((await res.json()).rows.filter(([t]) => t.startsWith('Popular on')), row);
+    release();
+    await Promise.all(waits);
+  } finally {
+    delete globalThis.caches;
+  }
+});
