@@ -3184,3 +3184,21 @@ test('Home: JustWatch slower than SERVICES_WAIT → Home without those rows, not
     delete globalThis.caches;
   }
 });
+
+test('Home: JustWatch failing on a rebuild keeps the rows it had (an hour), not none', async () => {
+  const kept = cacheStub();
+  const waits = [];
+  const ctx = { waitUntil: (p) => waits.push(p) };
+  try {
+    const row = [['Popular on Disney+ in Bulgaria', [[11, 'tv', 'S', '', '/p.jpg', 70, '']]]];
+    kept.set('https://justwatch.cache/v2/popular/BG', new Response(JSON.stringify({ rows: row, done: false, retry: 0, tries: 1 })));
+    servicesAnswer({}, false);
+    const e = { ...env, DB: d1() };
+    const res = await (await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx)).json();
+    await Promise.all(waits);
+    assert.deepEqual(res.rows.filter(([t]) => t.startsWith('Popular on')), row);
+    assert.deepEqual((await kept.get('https://justwatch.cache/v2/popular/BG').clone().json()).rows, row);
+  } finally {
+    delete globalThis.caches;
+  }
+});

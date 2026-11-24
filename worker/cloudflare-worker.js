@@ -573,7 +573,8 @@ async function serviceRows(env, ctx, iso) {
         Number(e.node.content?.externalIds?.tmdbId)]).filter(([, id]) => id > 0));
     } catch (e) {
       console.log('justwatch', String(e));
-      const none = { rows: [], done: true }; // slow, refused or a country it doesn't know: not asked again each Home
+      // slow, refused or a country it doesn't know: not asked again each Home for an hour; rows it had stay
+      const none = { rows: hit?.rows?.length ? hit.rows : [], done: true };
       await kept(none, 3600);
       return none;
     }
