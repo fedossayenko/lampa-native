@@ -2898,3 +2898,29 @@ test('Home: D1 failing → no Netflix rows and no read started', async () => {
   assert.deepEqual((await res.json()).rows.map(([t]) => t), ['Today in trend']);
   assert.deepEqual(own, []);
 });
+
+test('Top 10: a title TMDB had none of is looked for again a day later', async () => {
+  netflixAnswers();
+  const e = { ...env, DB: d1() };
+  const keep = tmdbSearch.Heist;
+  delete tmdbSearch.Heist;
+  await worker.fetch(new Request('https://w/top10/refresh?country=BG', { headers: tv }), e);
+  assert.equal(e.DB.raw.prepare("SELECT card FROM top10_titles WHERE key = 'movie:Heist'").get().card, 'null');
+  tmdbSearch.Heist = keep;
+  netflixAnswers();
+  await worker.fetch(new Request('https://w/top10/refresh?country=BG', { headers: tv }), e);
+  assert.deepEqual(asked.filter((u) => u.includes('/search/')), []); // within the day: not again
+  e.DB.raw.prepare("UPDATE top10_titles SET t = 0 WHERE key = 'movie:Heist'").run();
+  netflixAnswers();
+  const { rows } = await (await worker.fetch(new Request('https://w/top10/refresh?country=BG', { headers: tv }), e)).json();
+  assert.equal(asked.filter((u) => u.includes('/search/')).length, 1);
+  assert.equal(rows[1][1][0][2], 'Heist');
+});
+
+test('Home: the first read failed → Home kept as ever (max-age), no Netflix rows', async () => {
+  tmdbAnswers({ 'trending/all/day': { results: [{ id: 5, media_type: 'movie', title: 'T', poster_path: '/t.jpg' }] } });
+  const e = { ...env, DB: d1() };
+  e.DB.raw.prepare("INSERT INTO top10 (country, week, rows, asked, t) VALUES ('BG', '', '[]', ?, ?)").run(Date.now(), Date.now());
+  const res = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, { waitUntil: () => {} });
+  assert.equal(res.headers.get('Cache-Control'), 'max-age=3600');
+});

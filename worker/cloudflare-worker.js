@@ -439,23 +439,32 @@ async function netflixWeek(name) {
     .sort((a, b) => a.rank - b.rank);
 }
 
-// A title of the list as a Home card, found on TMDB by its name and kept (top10_titles), null when TMDB has none.
+// The list's titles as Home cards ([type, title] → card or null), found on TMDB by name and kept (top10_titles):
+// one D1 read for all, one write for the new ones (D1's 50 queries a call). One TMDB has none of is asked again a
+// day later (a new release may not be on TMDB yet).
 // ponytail: the name alone (the file has no year or id): an exact name, the most popular one, else TMDB's first;
 // a remake with the same name can win (Netflix's ids would need its own API).
-async function top10Card(env, type, title, now) {
-  const key = `${type}:${title}`;
-  const had = await env.DB.prepare('SELECT card FROM top10_titles WHERE key = ?').bind(key).first();
-  if (had) return JSON.parse(had.card);
-  const res = await tmdb(env, `search/${type}`, `&include_adult=false&query=${encodeURIComponent(title)}`);
-  if (!res.ok) return null; // asked again next time
-  const found = ((await res.json()).results || []).filter((m) => m.poster_path);
-  const same = (m) => [m.title, m.name, m.original_title, m.original_name].some((n) => n && n.toLowerCase() === title.toLowerCase());
-  const exact = found.filter(same).sort((a, b) => (b.popularity || 0) - (a.popularity || 0));
-  const m = exact[0] || found[0];
-  const card = m ? cardOf(m, type) : null;
-  await env.DB.prepare(`INSERT INTO top10_titles (key, card, t) VALUES (?, ?, ?)
-    ON CONFLICT (key) DO UPDATE SET card = excluded.card, t = excluded.t`).bind(key, JSON.stringify(card), now).run();
-  return card;
+async function top10Cards(env, wanted, now) {
+  const keys = wanted.map(([type, title]) => `${type}:${title}`);
+  const had = new Map((await env.DB.prepare('SELECT key, card, t FROM top10_titles WHERE key IN (SELECT value FROM json_each(?))')
+    .bind(JSON.stringify(keys)).all()).results.filter((r) => r.card !== 'null' || now - r.t < 86400e3).map((r) => [r.key, JSON.parse(r.card)]));
+  const found = await Promise.all(wanted.map(async ([type, title], i) => {
+    if (had.has(keys[i])) return null;
+    const res = await tmdb(env, `search/${type}`, `&include_adult=false&query=${encodeURIComponent(title)}`).catch(() => null);
+    if (!res?.ok) return null; // asked again next time
+    const all = ((await res.json()).results || []).filter((m) => m.poster_path);
+    const same = (m) => [m.title, m.name, m.original_title, m.original_name].some((n) => n && n.toLowerCase() === title.toLowerCase());
+    const m = all.filter(same).sort((a, b) => (b.popularity || 0) - (a.popularity || 0))[0] || all[0];
+    const card = m ? cardOf(m, type) : null;
+    had.set(keys[i], card);
+    return { key: keys[i], card: JSON.stringify(card), t: now };
+  }));
+  const fresh = found.filter(Boolean);
+  if (fresh.length) {
+    await env.DB.prepare(`INSERT INTO top10_titles (key, card, t) SELECT value->>'key', value->>'card', value->>'t' FROM json_each(?)
+      WHERE true ON CONFLICT (key) DO UPDATE SET card = excluded.card, t = excluded.t`).bind(JSON.stringify(fresh)).run();
+  }
+  return keys.map((k) => had.get(k) || null);
 }
 
 // Reads a country's list again (GET /top10/refresh, the worker's own call: its own 10 ms of CPU and 50 subrequests):
@@ -475,9 +484,12 @@ async function refreshTop10(env, asked) {
     throw e;
   });
   const rows = [];
-  for (const [category, type, label] of [['TV', 'tv', 'series'], ['Films', 'movie', 'films']]) {
-    const titles = [...new Set(week.filter((x) => x.category === category).map((x) => x.title))];
-    const cards = (await Promise.all(titles.map((t) => top10Card(env, type, t, now)))).filter(Boolean);
+  const kinds = [['TV', 'tv', 'series'], ['Films', 'movie', 'films']];
+  const wanted = kinds.flatMap(([category, type]) =>
+    [...new Set(week.filter((x) => x.category === category).map((x) => x.title))].map((t) => [type, t]));
+  const got = await top10Cards(env, wanted, now);
+  for (const [, type, label] of kinds) {
+    const cards = got.filter((c, i) => c && wanted[i][0] === type);
     const seen = new Set();
     const once = cards.filter((c) => !seen.has(c[0]) && seen.add(c[0]));
     if (once.length) rows.push([`Top 10 ${label} on Netflix in ${name}`, once]);
@@ -503,7 +515,7 @@ async function top10Rows(env, ctx, iso) {
   const now = Date.now();
   let had;
   try {
-    had = await env.DB.prepare('SELECT rows, week, asked FROM top10 WHERE country = ?').bind(iso).first();
+    had = await env.DB.prepare('SELECT rows, week, asked, t FROM top10 WHERE country = ?').bind(iso).first();
   } catch {
     return []; // D1 failing: no rows, and no read started on every Home meanwhile
   }
@@ -519,7 +531,8 @@ async function top10Rows(env, ctx, iso) {
   if (now - had.asked > 86400e3) { // once a day is enough for "still wanted"
     await env.DB.prepare('UPDATE top10 SET asked = ? WHERE country = ?').bind(now, iso).run().catch(() => {});
   }
-  return had.week ? JSON.parse(had.rows) : null; // read once: kept as any Home, even with no rows
+  if (had.week) return JSON.parse(had.rows); // read: kept as any Home, even with no rows
+  return had.t ? [] : null; // a read failed (tried again later): Home kept as ever; none tried yet: not kept
 }
 
 async function home(request, env, ctx) {
