@@ -540,31 +540,33 @@ async function top10Rows(env, ctx, iso) {
 
 // Home's rows of the other services in the country (Settings → Country): what is popular on each this week, from
 // JustWatch (its streaming charts: offer clicks, watchlist adds, seen marks), one request for all of them (3 s at
-// most), each title a TMDB id: its card from the titles index or TMDB (englishCards, 30 asked at most). The rows
-// are kept at this Cloudflare location: 12 hours when every card was found, a minute while some are still missing
-// (the next Home finds them), an hour of none after a failure. A miss builds them behind the answer and Home waits
-// 3 s at most for it. A service the country lacks comes back empty. {rows, done}: done = Home may be kept.
+// most), each title a TMDB id: its card from the titles index or TMDB (englishCards, 30 asked at most). The rows are
+// kept 12 hours at this Cloudflare location; while some cards are still to come (cut by the budget, or TMDB failed)
+// they are built again a minute later, three times at most for failures (one bad id must not keep Home uncached for
+// good); an hour of none after JustWatch failed. A miss builds them behind the answer and Home waits SERVICES_WAIT at
+// most. A service the country lacks comes back empty. {rows, done}: done = Home may be kept.
 // ponytail: apis.justwatch.com/graphql is the site's own API, not a published one (JustWatch's official Streaming
 // Charts API needs a form); a change there leaves these rows out, nothing else.
 const SERVICES = [['dnp', 'Disney+'], ['mxx', 'HBO Max'], ['prv', 'Prime Video'], ['atp', 'Apple TV'], ['sst', 'SkyShowtime']];
-const SERVICE_TITLES = 12;
+const SERVICES_QUERY = `query($c: Country!) { ${SERVICES.map(([p]) => `${p}: popularTitles(country: $c, first: 12,
+  sortBy: POPULAR, filter: {packages: ["${p}"]}) { edges { node { objectType content(country: $c, language: "en") {
+  externalIds { tmdbId } } } } }`).join(' ')} }`;
 const SERVICES_WAIT = 3000;
+const SERVICES_TRIES = 3;
 async function serviceRows(env, ctx, iso) {
   if (!Object.hasOwn(NETFLIX_COUNTRIES, iso)) return { rows: [], done: true };
-  const key = new Request(`https://justwatch.cache/v2/popular/${iso}`); // v2: {rows, done} (v1 kept bare ids)
+  const key = new Request(`https://justwatch.cache/v2/popular/${iso}`); // v2: {rows, done, ...} (v1 kept bare ids)
   const cache = typeof caches === 'undefined' ? null : caches.default; // none in node tests: built each time
   const hit = await cache?.match(key).then((r) => r?.json()).catch(() => null);
-  if (Array.isArray(hit?.rows)) return hit; // anything else (an older shape): built again
+  const now = Date.now();
+  if (Array.isArray(hit?.rows) && (hit.done || now < (hit.retry || 0))) return hit; // anything else: built again
   const kept = (got, seconds) => (cache ? cache.put(key, new Response(JSON.stringify(got),
     { headers: { 'Cache-Control': `max-age=${seconds}` } })) : null);
   const build = (async () => {
-    const query = `query($c: Country!) { ${SERVICES.map(([p]) => `${p}: popularTitles(country: $c, first: ${SERVICE_TITLES},
-      sortBy: POPULAR, filter: {packages: ["${p}"]}) { edges { node { objectType content(country: $c, language: "en") {
-      externalIds { tmdbId } } } } }`).join(' ')} }`;
     let lists;
     try {
       const res = await fetch('https://apis.justwatch.com/graphql', { method: 'POST', ...within(3000),
-        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query, variables: { c: iso } }) });
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: SERVICES_QUERY, variables: { c: iso } }) });
       const got = res.ok ? await res.json() : null;
       if (!got?.data) throw new Error(`JustWatch ${res.status} ${got?.errors?.[0]?.message || ''}`);
       lists = SERVICES.map(([p]) => (got.data[p]?.edges || []).map((e) => [e.node.objectType === 'SHOW' ? 'tv' : 'movie',
@@ -577,21 +579,22 @@ async function serviceRows(env, ctx, iso) {
     }
     const budget = { left: 30 };
     const cards = await englishCards(env, lists.flat(), [], budget);
-    // done: none cut by the budget and none failed; a title TMDB lacks (404, no poster) just stays out
-    const done = !budget.cut && !budget.failed;
-
+    const tries = (hit?.tries || 0) + 1;
+    // done: none cut by the budget and none failed (or failed SERVICES_TRIES builds running); a title TMDB lacks
+    // (404, no poster) just stays out
+    const done = !budget.cut && (!budget.failed || tries >= SERVICES_TRIES);
     let at = 0;
     const rows = SERVICES.map(([, label], i) => {
       const row = cards.slice(at, at += lists[i].length).filter(Boolean);
       return row.length ? [`Popular on ${label} in ${NETFLIX_COUNTRIES[iso]}`, row] : null;
     }).filter(Boolean);
-    const out = { rows, done };
-    await kept(out, done ? 12 * 3600 : 60);
+    const out = done ? { rows, done } : { rows, done, retry: now + 60e3, tries: budget.cut ? 0 : tries };
+    await kept(out, 12 * 3600);
     return out;
   })().catch((e) => (console.log('services', String(e)), { rows: [], done: false }));
   if (!cache || !ctx) return build;
   ctx.waitUntil(build);
-  return upTo(build, SERVICES_WAIT, { rows: [], done: false });
+  return upTo(build, Number(env.SERVICES_WAIT) || SERVICES_WAIT, { rows: [], done: false });
 }
 
 // What p gives within ms, else fallback (p goes on: its caller keeps it with waitUntil).

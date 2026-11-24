@@ -165,8 +165,9 @@ final class Settings extends Main.Part {
                 showLanguages(all, null);
                 if (sheet) m.overlayBack = () -> showSettings("Audio languages");
             });
-        setting(list, help, "Country", Home.countryName(m.country()), "Home's Top 10 on Netflix: what this country watches "
-            + "this week, series and films. OK picks.", v -> {
+        setting(list, help, "Country", Home.countryName(m.country()), "Home's rows of what this country watches "
+            + "this week: Netflix's Top 10 series and films, and what is popular on Disney+, HBO Max, Prime Video, Apple TV "
+            + "and SkyShowtime there. OK picks.", v -> {
                 showCountries();
                 if (sheet) m.overlayBack = () -> showSettings("Country");
             });
@@ -196,7 +197,7 @@ final class Settings extends Main.Part {
     // Settings → Country: Off or one of Netflix's countries, by name; OK picks and the app starts again with Home's
     // Top 10 on Netflix of that country (the worker's /home?country=).
     void showCountries() {
-        LinearLayout list = m.ux.sheet("Country", "Home shows what it watches on Netflix this week. OK picks.", null);
+        LinearLayout list = m.ux.sheet("Country", "Home shows what it watches this week. OK picks.", null);
         String now = m.country();
         for (String[] c : Home.COUNTRY_LIST) {
             String code = c[0];

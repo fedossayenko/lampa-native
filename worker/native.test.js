@@ -3121,3 +3121,66 @@ test('Home: exactly 30 new cards → all asked, nothing cut, Home kept', async (
   const res = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, { waitUntil: () => {} });
   assert.equal(res.headers.get('Cache-Control'), 'max-age=3600');
 });
+
+function cacheStub() {
+  const kept = new Map();
+  globalThis.caches = { default: {
+    match: async (k) => kept.get(k.url)?.clone(),
+    put: async (k, res) => { kept.set(k.url, res); },
+  } };
+  return kept;
+}
+
+test('Home: one card TMDB keeps failing → built again a minute later, done after 3 tries (Home kept again)', async () => {
+  const kept = cacheStub();
+  const waits = [];
+  const ctx = { waitUntil: (p) => waits.push(p) };
+  try {
+    const e = { ...env, DB: d1() };
+    e.DB.raw.prepare("INSERT INTO top10 (country, week, rows, asked, t) VALUES ('BG', '2026-11-22', '[]', ?, ?)").run(Date.now(), Date.now());
+    const answers = [];
+    for (let i = 0; i < 3; i++) {
+      servicesAnswer({ dnp: [['SHOW', 11], ['MOVIE', 997]], mxx: [], prv: [], atp: [], sst: [] });
+      const inner = globalThis.fetch;
+      globalThis.fetch = async (url, init) => (new URL(url).pathname === '/3/movie/997' ? new Response('oops', { status: 500 }) : inner(url, init));
+      const res = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx);
+      await Promise.all(waits);
+      answers.push(res.headers.get('Cache-Control'));
+      const v = await kept.get('https://justwatch.cache/v2/popular/BG').clone().json();
+      if (!v.done) {
+        v.retry = 0; // the minute is over
+        kept.set('https://justwatch.cache/v2/popular/BG', new Response(JSON.stringify(v)));
+      }
+    }
+    assert.deepEqual(answers, ['no-store', 'no-store', 'max-age=3600']);
+  } finally {
+    delete globalThis.caches;
+  }
+});
+
+test('Home: JustWatch slower than SERVICES_WAIT → Home without those rows, not kept; the build goes on for the next', async () => {
+  const kept = cacheStub();
+  const waits = [];
+  const ctx = { waitUntil: (p) => waits.push(p) };
+  try {
+    let release;
+    const slow = new Promise((ok) => { release = ok; });
+    servicesAnswer({ dnp: [['SHOW', 11]], mxx: [], prv: [], atp: [], sst: [] });
+    const inner = globalThis.fetch;
+    globalThis.fetch = async (url, init) => (new URL(url).hostname === 'apis.justwatch.com' ? (await slow, inner(url, init)) : inner(url, init));
+    const e = { ...env, DB: d1(), SERVICES_WAIT: '20' };
+    e.DB.raw.prepare("INSERT INTO top10 (country, week, rows, asked, t) VALUES ('BG', '2026-11-22', '[]', ?, ?)").run(Date.now(), Date.now());
+    const first = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx);
+    assert.equal(first.headers.get('Cache-Control'), 'no-store');
+    assert.ok(!(await first.json()).rows.some(([t]) => t.startsWith('Popular on')));
+    assert.equal(waits.length, 1);
+    release();
+    await Promise.all(waits);
+    const next = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx);
+    assert.equal(next.headers.get('Cache-Control'), 'max-age=3600');
+    assert.ok((await next.json()).rows.some(([t]) => t === 'Popular on Disney+ in Bulgaria'));
+    assert.ok(kept.size === 1);
+  } finally {
+    delete globalThis.caches;
+  }
+});
