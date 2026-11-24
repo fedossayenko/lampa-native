@@ -3333,3 +3333,12 @@ test('Home: whole rows past their 12 hours are still done while rebuilt (Home ke
     delete globalThis.caches;
   }
 });
+
+test('Home: Netflix\'s lookup failing (a bad row) → Home without them and not kept', async () => {
+  tmdbAnswers({ 'trending/all/day': { results: [{ id: 5, media_type: 'movie', title: 'T', poster_path: '/t.jpg' }] } });
+  const e = { ...env, DB: d1() };
+  e.DB.raw.prepare("INSERT INTO top10 (country, week, rows, asked, t) VALUES ('BG', '2026-11-22', 'not json', ?, ?)").run(Date.now(), Date.now());
+  const res = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, { waitUntil: () => {} });
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('Cache-Control'), 'no-store');
+});

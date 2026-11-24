@@ -565,7 +565,7 @@ async function serviceRows(env, ctx, iso) {
   const had = Array.isArray(hit?.rows) ? hit.rows : []; // what a failed or slow rebuild falls back to
   // fresh till: done rows 12 hours, unfinished a minute (retry); an entry is kept 36 hours, so its rows are still
   // there when it is built again; anything else (an older shape): built again
-  if (Array.isArray(hit?.rows) && now < (hit.done ? hit.fresh || 0 : hit.retry || 0)) return hit;
+  if (Array.isArray(hit?.rows) && now < (hit.done ? hit.fresh || 0 : hit.retry || 0)) return { ...hit, from: 'cache' };
   const kept = (got) => (cache ? cache.put(key, new Response(JSON.stringify(got),
     { headers: { 'Cache-Control': `max-age=${36 * 3600}` } })) : null);
   // one build at a time here: the Homes that come while it runs take what is there (two at the same instant can
@@ -636,7 +636,7 @@ async function home(request, env, ctx) {
   let rawBytes = 0;
   const country = new URL(request.url).searchParams.get('country') || '';
   const extra = Promise.all([ // beside TMDB's rows; each failing alone (never unhandled: a 502 below doesn't wait)
-    top10Rows(env, ctx, country).catch((e) => (console.log('top10', String(e)), [])),
+    top10Rows(env, ctx, country).catch((e) => (console.log('top10', String(e)), null)), // null: Home not kept
     serviceRows(env, ctx, country).catch((e) => (console.log('services', String(e)), { rows: [], done: false }))]);
   const rows = await Promise.all(HOME_ROWS.map(async ([title, path]) => {
     try {
@@ -663,6 +663,7 @@ async function home(request, env, ctx) {
       'Content-Type': 'application/json; charset=utf-8',
       'Cache-Control': netflix && services.done ? 'max-age=3600' : 'no-store', // rows still coming: not kept (the stick serves a day-stale copy)
       'X-Raw-Bytes': String(rawBytes),
+      'X-Services': services.from || 'built', // the services' rows from this location's cache or built now (measured: the Cache API works on workers.dev)
       ...corsHeaders(request),
     },
   });
