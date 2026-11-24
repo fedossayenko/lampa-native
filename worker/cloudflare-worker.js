@@ -542,26 +542,29 @@ async function top10Rows(env, ctx, iso) {
 }
 
 // Home's rows of the other services in the country (Settings → Country): what is popular on each this week, from
-// JustWatch (its streaming charts: offer clicks, watchlist adds, seen marks), one request for all of them, kept 12
-// hours at this Cloudflare location (a failure an hour: 3 s at most, then no rows). Each title is a TMDB id: its card from the titles index or TMDB
-// (englishCards, at most 30 asked a Home: the rest on the next). A service the country lacks comes back empty.
+// JustWatch (its streaming charts: offer clicks, watchlist adds, seen marks), one request for all of them (3 s at
+// most), each title a TMDB id: its card from the titles index or TMDB (englishCards, 30 asked at most). The rows
+// are kept at this Cloudflare location: 12 hours when every card was found, a minute while some are still missing
+// (the next Home finds them), an hour of none after a failure. A miss builds them behind the answer and Home waits
+// 3 s at most for it. A service the country lacks comes back empty. {rows, done}: done = Home may be kept.
 // ponytail: apis.justwatch.com/graphql is the site's own API, not a published one (JustWatch's official Streaming
 // Charts API needs a form); a change there leaves these rows out, nothing else.
 const SERVICES = [['dnp', 'Disney+'], ['mxx', 'HBO Max'], ['prv', 'Prime Video'], ['atp', 'Apple TV'], ['sst', 'SkyShowtime']];
 const SERVICE_TITLES = 12;
-const SERVICES_KEEP = 12 * 3600;
-const SERVICES_FAILED = 3600;
+const SERVICES_WAIT = 3000;
 async function serviceRows(env, ctx, iso) {
-  if (!Object.hasOwn(NETFLIX_COUNTRIES, iso)) return [];
+  if (!Object.hasOwn(NETFLIX_COUNTRIES, iso)) return { rows: [], done: true };
   const key = new Request(`https://justwatch.cache/popular/${iso}`);
-  const cache = typeof caches === 'undefined' ? null : caches.default; // none in node tests
-  let lists = await cache?.match(key).then((r) => r?.json()).catch(() => null);
-  if (!lists) {
-    const remember = (got, seconds) => cache && ctx && ctx.waitUntil(cache.put(key,
-      new Response(JSON.stringify(got), { headers: { 'Cache-Control': `max-age=${seconds}` } })));
+  const cache = typeof caches === 'undefined' ? null : caches.default; // none in node tests: built each time
+  const hit = await cache?.match(key).then((r) => r?.json()).catch(() => null);
+  if (hit) return hit;
+  const kept = (got, seconds) => (cache ? cache.put(key, new Response(JSON.stringify(got),
+    { headers: { 'Cache-Control': `max-age=${seconds}` } })) : null);
+  const build = (async () => {
     const query = `query($c: Country!) { ${SERVICES.map(([p]) => `${p}: popularTitles(country: $c, first: ${SERVICE_TITLES},
       sortBy: POPULAR, filter: {packages: ["${p}"]}) { edges { node { objectType content(country: $c, language: "en") {
       externalIds { tmdbId } } } } }`).join(' ')} }`;
+    let lists;
     try {
       const res = await fetch('https://apis.justwatch.com/graphql', { method: 'POST', ...within(3000),
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query, variables: { c: iso } }) });
@@ -571,20 +574,27 @@ async function serviceRows(env, ctx, iso) {
         Number(e.node.content?.externalIds?.tmdbId)]).filter(([, id]) => id > 0));
     } catch (e) {
       console.log('justwatch', String(e));
-      remember([], SERVICES_FAILED); // slow, refused or a country it doesn't know: not asked again on every Home
-      return [];
+      const none = { rows: [], done: true }; // slow, refused or a country it doesn't know: not asked again each Home
+      await kept(none, 3600);
+      return none;
     }
-    remember(lists, SERVICES_KEEP);
-  }
-  // each title once: one on two services is one TMDB call of the 30
-  const wanted = [...new Map(lists.flat().map((w) => [w.join(':'), w])).values()];
-  const found = await englishCards(env, wanted, wanted.map(() => null), { left: 30 });
-  const card = new Map(wanted.map((w, i) => [w.join(':'), found[i]]));
-  const name = NETFLIX_COUNTRIES[iso];
-  return SERVICES.map(([, label], i) => {
-    const row = (lists[i] || []).map((w) => card.get(w.join(':'))).filter(Boolean);
-    return row.length ? [`Popular on ${label} in ${name}`, row] : null;
-  }).filter(Boolean);
+    const cards = await englishCards(env, lists.flat(), lists.flat().map(() => null), { left: 30 });
+    const done = cards.every(Boolean);
+    let at = 0;
+    const rows = SERVICES.map(([, label], i) => {
+      const row = cards.slice(at, at += lists[i].length).filter(Boolean);
+      return row.length ? [`Popular on ${label} in ${NETFLIX_COUNTRIES[iso]}`, row] : null;
+    }).filter(Boolean);
+    const out = { rows, done };
+    await kept(out, done ? 12 * 3600 : 60);
+    return out;
+  })().catch((e) => (console.log('services', String(e)), { rows: [], done: false }));
+  if (!cache || !ctx) return build;
+  ctx.waitUntil(build);
+  let timer;
+  const got = await Promise.race([build, new Promise((ok) => { timer = setTimeout(() => ok({ rows: [], done: false }), SERVICES_WAIT); })]);
+  clearTimeout(timer);
+  return got;
 }
 
 async function home(request, env, ctx) {
@@ -610,11 +620,11 @@ async function home(request, env, ctx) {
   const ok = rows.filter(Boolean);
   if (!ok.length) return corsError(request, 'TMDB unavailable.', 502);
   const [netflix, services] = await extra;
-  ok.unshift(...(netflix || []), ...services); // before TMDB's: what the country watches on Netflix and the others
+  ok.unshift(...(netflix || []), ...services.rows); // before TMDB's: what the country watches on Netflix and the others
   return new Response(JSON.stringify({ rows: ok }), {
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
-      'Cache-Control': netflix ? 'max-age=3600' : 'no-store', // rows still coming: not kept (the stick serves a day-stale copy)
+      'Cache-Control': netflix && services.done ? 'max-age=3600' : 'no-store', // rows still coming: not kept (the stick serves a day-stale copy)
       'X-Raw-Bytes': String(rawBytes),
       ...corsHeaders(request),
     },
@@ -2381,7 +2391,9 @@ async function englishCards(env, wanted, fallback, fetchMax = 20) {
   const known = new Map(env.DB ? (await env.DB.prepare(`SELECT t.type, t.id, t.card FROM titles t
       JOIN json_each(?) j ON t.type = j.value->>'type' AND t.id = j.value->>'id'`).bind(pairs).all()
     .then((r) => r.results).catch(() => [])).map((r) => [`${r.type}:${r.id}`, JSON.parse(r.card)]) : []);
-  const missing = wanted.filter(([type, id]) => !known.has(`${type}:${id}`)).slice(0, fetchMax.left ?? fetchMax);
+  if (!wanted.length) return [];
+  const missing = [...new Map(wanted.filter(([type, id]) => !known.has(`${type}:${id}`)).map((w) => [w.join(':'), w])).values()]
+    .slice(0, fetchMax.left ?? fetchMax); // each pair once (a title on two services is one call)
   if (fetchMax.left !== undefined) fetchMax.left -= missing.length;
   const fetched = (await Promise.all(missing.map(([type, id]) => tmdb(env, `${type}/${id}`)
     .then((res) => (res.ok ? res.json() : null)).then((m) => (m && m.poster_path ? { type, m } : null))

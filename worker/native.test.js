@@ -3020,7 +3020,7 @@ test('Home: JustWatch down → no service rows, Home as ever; no country → Jus
   assert.deepEqual(asked.filter((u) => u.includes('justwatch')), []);
 });
 
-test('Home: JustWatch asked once in 12 hours (Cloudflare cache), a failure kept an hour', async () => {
+test('Home: the services\' rows kept 12 hours at the Cloudflare location, a failure an hour', async () => {
   const kept = new Map();
   const ages = [];
   globalThis.caches = { default: {
@@ -3038,9 +3038,9 @@ test('Home: JustWatch asked once in 12 hours (Cloudflare cache), a failure kept 
       [['Popular on Disney+ in Bulgaria', 1], ['Popular on HBO Max in Bulgaria', 1]]);
     assert.equal(asked.filter((u) => new URL(u).pathname === '/3/tv/11').length, 1); // on two services, asked once
     servicesAnswer({});
-    const again = await (await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx)).json();
-    assert.deepEqual(asked.filter((u) => u.includes('justwatch')), []);
-    assert.equal(again.rows.filter(([t]) => t.startsWith('Popular')).length, 2);
+    const again = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx);
+    assert.deepEqual(asked.filter((u) => u.includes('justwatch') || /^\/3\/tv\/\d+$/.test(new URL(u).pathname)), []);
+    assert.equal((await again.json()).rows.filter(([t]) => t.startsWith('Popular')).length, 2);
     kept.clear();
     servicesAnswer({}, false);
     await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx);
@@ -3048,8 +3048,39 @@ test('Home: JustWatch asked once in 12 hours (Cloudflare cache), a failure kept 
     servicesAnswer({});
     await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx);
     assert.deepEqual(asked.filter((u) => u.includes('justwatch')), []); // the failure is kept
-    assert.deepEqual(ages.slice(0, 1).concat(ages.slice(-1)), ['max-age=43200', 'max-age=3600']);
+    assert.deepEqual([ages[0], ages.at(-1)], ['max-age=43200', 'max-age=3600']);
   } finally {
     delete globalThis.caches;
   }
+});
+
+test('Home: 30 new cards a Home; until all are found Home is not kept, the next one brings the rest', async () => {
+  const many = Array.from({ length: 35 }, (_, i) => ['MOVIE', 100 + i]);
+  servicesAnswer({ dnp: many.slice(0, 12), mxx: many.slice(12, 24), prv: many.slice(24), atp: [], sst: [] });
+  const e = { ...env, DB: d1() };
+  e.DB.raw.prepare("INSERT INTO top10 (country, week, rows, asked, t) VALUES ('BG', '2026-11-22', '[]', ?, ?)").run(Date.now(), Date.now());
+  const first = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, { waitUntil: () => {} });
+  assert.equal(first.headers.get('Cache-Control'), 'no-store');
+  const count = (rows) => rows.filter(([t]) => t.startsWith('Popular')).reduce((n, [, c]) => n + c.length, 0);
+  assert.equal(count((await first.json()).rows), 30);
+  const next = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, { waitUntil: () => {} });
+  assert.equal(next.headers.get('Cache-Control'), 'max-age=3600');
+  assert.equal(count((await next.json()).rows), 35);
+});
+
+test('Home: a country Netflix doesn\'t list asks no JustWatch; a service JustWatch fails alone leaves only its row out', async () => {
+  servicesAnswer({});
+  const e = { ...env, DB: d1() };
+  await worker.fetch(new Request('https://w/home?country=XX', { headers: tv }), e, { waitUntil: () => {} });
+  assert.deepEqual(asked.filter((u) => u.includes('justwatch')), []);
+  globalThis.fetch = async (url) => {
+    const u = new URL(url);
+    if (u.hostname === 'apis.justwatch.com') return new Response(JSON.stringify({ errors: [{ message: 'mxx failed' }],
+      data: { dnp: { edges: [{ node: { objectType: 'SHOW', content: { externalIds: { tmdbId: '11' } } } }] }, mxx: null } }));
+    if (u.pathname === '/3/tv/11') return new Response(JSON.stringify({ id: 11, name: 'S', poster_path: '/p.jpg' }));
+    if (u.pathname === '/3/trending/all/day') return new Response(JSON.stringify({ results: [{ id: 5, media_type: 'movie', title: 'T', poster_path: '/t.jpg' }] }));
+    return new Response('down', { status: 500 });
+  };
+  const { rows } = await (await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, { waitUntil: () => {} })).json();
+  assert.deepEqual(rows.filter(([t]) => t.startsWith('Popular')).map(([t]) => t), ['Popular on Disney+ in Bulgaria']);
 });
