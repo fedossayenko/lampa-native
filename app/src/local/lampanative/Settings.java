@@ -193,20 +193,30 @@ final class Settings extends Main.Part {
         Process.killProcess(Process.myPid());
     }
 
+    boolean picking; // Settings → Country: a country's list being read before the restart
+
     // Settings → Country: Off or one of Netflix's countries, by name; OK picks and the app starts again with Home's
     // Top 10 on Netflix of that country (the worker's /home?country=).
     void showCountries() {
         LinearLayout list = m.ux.sheet("Country", "Home shows what it watches on Netflix this week. OK picks.", null);
         for (String[] c : Home.countries()) {
             String code = c[0];
-            list.addView(m.ux.sheetRow(c[1], code, Ui.check(code.equals(m.country())), v -> {
-                if (code.equals(m.country())) {
-                    m.closeOverlay();
+            list.addView(m.ux.sheetRow(c[1], null, Ui.check(code.equals(m.country())), v -> {
+                if (code.equals(m.country()) || picking) {
+                    if (!picking) m.closeOverlay();
                     return;
                 }
                 //noinspection ApplySharedPref: on disk now, this process ends below
                 m.settings().edit().putString("country", code).commit();
-                restart();
+                if (code.isEmpty()) {
+                    restart();
+                    return;
+                }
+                // The country's list read first (Bulgaria ~4 s), so the Home after the restart has it; one slower
+                // than ask's 30 s comes with the worker's hourly run
+                picking = true;
+                ((TextView) ((LinearLayout) v).getChildAt(1)).setText("…");
+                m.load(null, "top10", () -> m.ask("/top10/refresh?country=" + code, null), a -> restart(), this::restart);
             }));
         }
     }

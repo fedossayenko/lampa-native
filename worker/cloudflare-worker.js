@@ -246,8 +246,6 @@ const HOME_ROWS = [
   ['Watch in cinemas', 'movie/upcoming'],
   ['Popular films', 'movie/popular'],
   ['Popular TV shows', 'tv/popular'],
-  ['Top movies', 'movie/top_rated'],
-  ['Top series', 'tv/top_rated'],
 ];
 
 function tmdb(env, path, query = '', language = 'en-US') {
@@ -427,13 +425,15 @@ async function netflixWeek(name) {
     else if (at === null) before.push(value);
     else {
       keep = [...before, value];
-      after = value.length;
+      if ((after = value.length) >= 16384) break; // the country's newest week is in hand already
     }
   }
   reader.cancel().catch(() => {});
   let text = '';
   for (const c of keep || before) text += dec.decode(c, { stream: true }); // the last country: its rows are in before
-  const rows = text.split('\n').map((l) => l.split('\t')).filter((f) => f[0] === name && f.length >= 7);
+  const from = text.indexOf(`\n${name}\t`);
+  const rows = (from < 0 ? '' : text.slice(from, from + 8192)).split('\n').map((l) => l.split('\t')) // ~20 lines
+    .filter((f) => f[0] === name && f.length >= 7);
   return rows.filter((f) => f[2] === rows[0][2]) // rows[0]: the newest week (a cut first line has no country name)
     .map(([, , week, category, rank, title]) => ({ week, category, rank: Number(rank), title }))
     .sort((a, b) => a.rank - b.rank);
@@ -487,7 +487,7 @@ async function refreshTop10(env, asked) {
 }
 
 // Home's Netflix rows for ?country= (none without one, or for a country Netflix doesn't list), null while a
-// country has none yet (Home then isn't kept: no-store). A first ask reads the list behind the answer, in the worker's
+// country has none yet (Home then kept a minute only: the stick's disk copy still opens Home fast and offline). A first ask reads the list behind the answer, in the worker's
 // own call (Bulgaria ~4 s, Vietnam over a minute), so Home never waits for it; the next Home shows it.
 async function top10Rows(env, ctx, iso) {
   if (!env.DB || !Object.hasOwn(NETFLIX_COUNTRIES, iso)) return [];
@@ -535,7 +535,7 @@ async function home(request, env, ctx) {
   return new Response(JSON.stringify({ rows: ok }), {
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
-      'Cache-Control': netflix ? 'max-age=3600' : 'no-store', // rows still coming: asked again next time
+      'Cache-Control': netflix ? 'max-age=3600' : 'max-age=60', // rows still coming: asked again soon
       'X-Raw-Bytes': String(rawBytes),
       ...corsHeaders(request),
     },

@@ -46,10 +46,14 @@ final class Home {
 
     // [code, name] in the list's order, Off ("") first
     static List<String[]> countries() {
-        List<String[]> out = new ArrayList<>();
-        out.add(new String[] {"", "Off"});
-        for (String c : COUNTRIES.split("\\|")) out.add(c.split(" ", 2));
-        return out;
+        return LIST;
+    }
+
+    private static final List<String[]> LIST = new ArrayList<>();
+
+    static {
+        LIST.add(new String[] {"", "Off"});
+        for (String c : COUNTRIES.split("\\|")) LIST.add(c.split(" ", 2));
     }
 
     static String countryName(String code) {

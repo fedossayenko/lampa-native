@@ -34,7 +34,7 @@ test('sends only what a card draws: [id, type, name, year, poster, score, backdr
   const res = await worker.fetch(new Request('https://w/home', { headers: tv }), env);
   assert.equal(res.status, 200);
   assert.equal(res.headers.get('Cache-Control'), 'max-age=3600');
-  // the other seven rows failed (500) and are left out instead of blanking the screen
+  // the other five rows failed (500) and are left out instead of blanking the screen
   assert.deepEqual((await res.json()).rows, [
     ['Today in trend', [[1, 'movie', 'Film', '2026', '/p.jpg', 86, '/b.jpg'], [2, 'tv', 'Series', '2021', '/q.jpg', 0, '']]],
   ]);
@@ -45,7 +45,7 @@ test('asks TMDB for English names and descriptions', async () => {
   await worker.fetch(new Request('https://w/home', { headers: tv }), env);
   await worker.fetch(new Request('https://w/card/movie/7', { headers: tv }), env);
   const tmdbUrls = asked.filter((u) => u.includes('api.themoviedb.org'));
-  assert.equal(tmdbUrls.length, 9);
+  assert.equal(tmdbUrls.length, 7); // Home's 6 rows + the film
   for (const u of tmdbUrls) assert.equal(new URL(u).searchParams.get('language'), 'en-US', u);
 });
 
@@ -2811,18 +2811,18 @@ test('Top 10: titles found once (TMDB not asked again); a country Netflix doesn\
   assert.equal((await worker.fetch(new Request('https://w/top10/refresh?country=BG'), e)).status, 403);
 });
 
-test('Home with ?country=: its Netflix rows first; a first ask reads them behind the answer, kept by nobody', async () => {
+test('Home with ?country=: its Netflix rows first; a first ask reads them behind the answer, kept a minute', async () => {
   tmdbAnswers({ 'trending/all/day': { results: [{ id: 5, media_type: 'movie', title: 'T', poster_path: '/t.jpg' }] } });
   const own = [];
   const waits = [];
   const e = { ...env, DB: d1(), SELF: { fetch: async (u, init) => own.push([u, init.headers['X-Play-Token']]) } };
   const ctx = { waitUntil: (p) => waits.push(p) };
   const first = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx);
-  assert.equal(first.headers.get('Cache-Control'), 'no-store');
+  assert.equal(first.headers.get('Cache-Control'), 'max-age=60');
   assert.deepEqual((await first.json()).rows.map(([t]) => t), ['Today in trend']);
   await Promise.all(waits);
   assert.deepEqual(own, [['https://self/top10/refresh?country=BG', 'stick-token']]);
-  assert.equal((await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx)).headers.get('Cache-Control'), 'no-store');
+  assert.equal((await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx)).headers.get('Cache-Control'), 'max-age=60');
   assert.equal(own.length, 1); // asked once: the cron reads it if that one failed
   e.DB.raw.prepare('UPDATE top10 SET rows = ?').run(JSON.stringify([['Top 10 series on Netflix in Bulgaria', [[1, 'tv', 'B', '', '/b.jpg', 0, '']]]]));
   const next = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx);
