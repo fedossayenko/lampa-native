@@ -571,7 +571,7 @@ async function serviceRows(env, ctx, iso) {
   // one build at a time here: the Homes that come while it runs take what is there (two at the same instant can
   // still both build: the Cache API has no lock)
   // done rows past their 12 hours stay done meanwhile (Home kept): they are whole, only old
-  const meanwhile = { rows: had, done: hit?.done === true };
+  const meanwhile = { rows: had, done: hit?.done === true, from: 'cache' };
   if (cache) {
     await kept({ ...meanwhile, retry: now + 60e3, fresh: now + 60e3, tries: hit?.tries || 0, missing: hit?.missing })
       .catch(() => {});
@@ -590,7 +590,7 @@ async function serviceRows(env, ctx, iso) {
       // slow, refused or a country it doesn't know: not asked again each Home for an hour; rows it had stay
       const none = { rows: had, done: true, fresh: now + 3600e3 };
       await kept(none);
-      return none;
+      return { ...none, from: had.length ? 'cache' : 'built' };
     }
     // 30: a cold Home's subrequests are 6 TMDB rows + JustWatch + 30 cards + Netflix's first read + 3 cache = 41
     // of the free plan's 50 (waitUntil's work counts too): raise it, or SERVICES' first, only with that in mind
@@ -616,7 +616,7 @@ async function serviceRows(env, ctx, iso) {
     const out = tries >= SERVICES_TRIES ? { rows: had, done: true, fresh: now + 3600e3 }
       : { rows: had, done: false, retry: now + 60e3, tries, missing: hit?.missing };
     await kept(out)?.catch(() => {});
-    return out;
+    return { ...out, from: had.length ? 'cache' : 'built' };
   });
   if (!cache || !ctx) return build;
   ctx.waitUntil(build);

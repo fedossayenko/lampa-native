@@ -3326,6 +3326,7 @@ test('Home: whole rows past their 12 hours are still done while rebuilt (Home ke
     const waits = [];
     const res = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, { waitUntil: (p) => waits.push(p) });
     assert.equal(res.headers.get('Cache-Control'), 'max-age=3600');
+    assert.equal(res.headers.get('X-Services'), 'cache'); // the rows Home had, while the rebuild is slow
     assert.deepEqual((await res.json()).rows.filter(([t]) => t.startsWith('Popular on')), row);
     release();
     await Promise.all(waits);
