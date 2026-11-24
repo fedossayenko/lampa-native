@@ -542,8 +542,8 @@ async function top10Rows(env, ctx, iso) {
 // JustWatch (its streaming charts: offer clicks, watchlist adds, seen marks), one request for all of them (3 s at
 // most), each title a TMDB id: its card from the titles index or TMDB (englishCards, 30 asked at most). The rows are
 // kept 12 hours at this Cloudflare location; while some cards are still to come (cut by the budget, or TMDB failed)
-// they are built again a minute later, three times at most for failures (one bad id must not keep Home uncached for
-// good); an hour of none after JustWatch failed. A miss builds them behind the answer and Home waits SERVICES_WAIT at
+// they are built again a minute later, until SERVICES_TRIES builds in a row found nothing new (one bad id, or TMDB
+// refusing, must not keep Home uncached for good); an hour of none after JustWatch failed. A miss builds them behind the answer and Home waits SERVICES_WAIT at
 // most. A service the country lacks comes back empty. {rows, done}: done = Home may be kept.
 // ponytail: apis.justwatch.com/graphql is the site's own API, not a published one (JustWatch's official Streaming
 // Charts API needs a form); a change there leaves these rows out, nothing else.
@@ -580,16 +580,17 @@ async function serviceRows(env, ctx, iso) {
     }
     const budget = { left: 30 };
     const cards = await englishCards(env, lists.flat(), [], budget);
-    const tries = (hit?.tries || 0) + 1;
-    // done: none cut by the budget and none failed (or failed SERVICES_TRIES builds running); a title TMDB lacks
+    // tries: builds in a row that found no new card. done: none cut by the budget and none failed, or SERVICES_TRIES
+    // builds without progress (TMDB refusing 30+ of them each time must not keep Home uncached); a title TMDB lacks
     // (404, no poster) just stays out
-    const done = !budget.cut && (!budget.failed || tries >= SERVICES_TRIES);
+    const tries = budget.got ? 0 : (hit?.tries || 0) + 1;
+    const done = (!budget.cut && !budget.failed) || tries >= SERVICES_TRIES;
     let at = 0;
     const rows = SERVICES.map(([, label], i) => {
       const row = cards.slice(at, at += lists[i].length).filter(Boolean);
       return row.length ? [`Popular on ${label} in ${NETFLIX_COUNTRIES[iso]}`, row] : null;
     }).filter(Boolean);
-    const out = done ? { rows, done } : { rows, done, retry: now + 60e3, tries: budget.cut ? 0 : tries };
+    const out = done ? { rows, done } : { rows, done, retry: now + 60e3, tries };
     await kept(out, 12 * 3600);
     return out;
   })().catch((e) => (console.log('services', String(e)), { rows: [], done: false }));
@@ -2415,7 +2416,10 @@ async function englishCards(env, wanted, fallback, fetchMax = 20) {
     .then((res) => (res.ok ? res.json() : (res.status !== 404 && failed++, null)))
     .then((m) => (m && m.poster_path ? { type, m } : null))
     .catch(() => (failed++, null))))).filter(Boolean);
-  if (fetchMax.left !== undefined) fetchMax.failed = (fetchMax.failed || 0) + failed;
+  if (fetchMax.left !== undefined) {
+    fetchMax.failed = (fetchMax.failed || 0) + failed;
+    fetchMax.got = (fetchMax.got || 0) + fetched.length;
+  }
   for (const { type, m } of fetched) known.set(`${type}:${m.id}`, cardOf(m, type));
   if (fetched.length && env.DB) {
     await env.DB.prepare(`INSERT INTO titles (type, id, card, votes, seen, en)

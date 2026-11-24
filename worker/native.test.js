@@ -3131,7 +3131,7 @@ function cacheStub() {
   return kept;
 }
 
-test('Home: one card TMDB keeps failing → built again a minute later, done after 3 tries (Home kept again)', async () => {
+test('Home: one card TMDB keeps failing → built again a minute later, done after 3 builds without a new card', async () => {
   const kept = cacheStub();
   const waits = [];
   const ctx = { waitUntil: (p) => waits.push(p) };
@@ -3139,7 +3139,7 @@ test('Home: one card TMDB keeps failing → built again a minute later, done aft
     const e = { ...env, DB: d1() };
     e.DB.raw.prepare("INSERT INTO top10 (country, week, rows, asked, t) VALUES ('BG', '2026-11-22', '[]', ?, ?)").run(Date.now(), Date.now());
     const answers = [];
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 4; i++) {
       servicesAnswer({ dnp: [['SHOW', 11], ['MOVIE', 997]], mxx: [], prv: [], atp: [], sst: [] });
       const inner = globalThis.fetch;
       globalThis.fetch = async (url, init) => (new URL(url).pathname === '/3/movie/997' ? new Response('oops', { status: 500 }) : inner(url, init));
@@ -3152,7 +3152,7 @@ test('Home: one card TMDB keeps failing → built again a minute later, done aft
         kept.set('https://justwatch.cache/v2/popular/BG', new Response(JSON.stringify(v)));
       }
     }
-    assert.deepEqual(answers, ['no-store', 'no-store', 'max-age=3600']);
+    assert.deepEqual(answers, ['no-store', 'no-store', 'no-store', 'max-age=3600']); // the first found card 11
   } finally {
     delete globalThis.caches;
   }
@@ -3198,6 +3198,47 @@ test('Home: JustWatch failing on a rebuild keeps the rows it had (an hour), not 
     await Promise.all(waits);
     assert.deepEqual(res.rows.filter(([t]) => t.startsWith('Popular on')), row);
     assert.deepEqual((await kept.get('https://justwatch.cache/v2/popular/BG').clone().json()).rows, row);
+  } finally {
+    delete globalThis.caches;
+  }
+});
+
+test('Home: unfinished rows are not built again within their minute', async () => {
+  const kept = cacheStub();
+  try {
+    kept.set('https://justwatch.cache/v2/popular/BG', new Response(JSON.stringify({ rows: [], done: false, retry: Date.now() + 60e3, tries: 1 })));
+    servicesAnswer({});
+    const e = { ...env, DB: d1() };
+    const res = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, { waitUntil: () => {} });
+    assert.deepEqual(asked.filter((u) => u.includes('justwatch')), []);
+    assert.equal(res.headers.get('Cache-Control'), 'no-store');
+  } finally {
+    delete globalThis.caches;
+  }
+});
+
+test('Home: a build cut by the budget that found cards starts the try count again; one that found none counts', async () => {
+  const kept = cacheStub();
+  const waits = [];
+  const ctx = { waitUntil: (p) => waits.push(p) };
+  try {
+    const many = Array.from({ length: 35 }, (_, i) => ['MOVIE', 300 + i]);
+    servicesAnswer({ dnp: many.slice(0, 12), mxx: many.slice(12, 24), prv: many.slice(24), atp: [], sst: [] });
+    const e = { ...env, DB: d1() };
+    await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx);
+    await Promise.all(waits);
+    const v = await kept.get('https://justwatch.cache/v2/popular/BG').clone().json();
+    assert.equal(v.done, false);
+    assert.equal(v.tries, 0); // 30 found
+    // TMDB throws for every card: no progress, counted
+    kept.set('https://justwatch.cache/v2/popular/BG', new Response(JSON.stringify({ ...v, retry: 0 })));
+    servicesAnswer({ dnp: many.slice(0, 12), mxx: many.slice(12, 24), prv: many.slice(24), atp: [], sst: [] });
+    const inner = globalThis.fetch;
+    globalThis.fetch = async (url, init) => (/^\/3\/movie\/\d+$/.test(new URL(url).pathname) ? Promise.reject(new Error('reset')) : inner(url, init));
+    const res = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx);
+    await Promise.all(waits);
+    assert.equal(res.headers.get('Cache-Control'), 'no-store');
+    assert.equal((await kept.get('https://justwatch.cache/v2/popular/BG').clone().json()).tries, 1);
   } finally {
     delete globalThis.caches;
   }
