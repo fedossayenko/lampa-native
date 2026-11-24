@@ -542,7 +542,7 @@ async function top10Rows(env, ctx, iso) {
 // JustWatch (its streaming charts: offer clicks, watchlist adds, seen marks), one request for all of them (3 s at
 // most), each title a TMDB id: its card from the titles index or TMDB (englishCards, 30 asked at most). The rows are
 // kept 12 hours at this Cloudflare location; while some cards are still to come (cut by the budget, or TMDB failed)
-// they are built again a minute later, until SERVICES_TRIES builds in a row found nothing new (one bad id, or TMDB
+// they are built again a minute later (each entry is stored 36 hours with its own freshness inside), until SERVICES_TRIES builds in a row found nothing new (one bad id, or TMDB
 // refusing, must not keep Home uncached for good); an hour of none after JustWatch failed. A miss builds them behind the answer and Home waits SERVICES_WAIT at
 // most. A service the country lacks comes back empty. {rows, done}: done = Home may be kept.
 // ponytail: apis.justwatch.com/graphql is the site's own API, not a published one (JustWatch's official Streaming
@@ -559,12 +559,15 @@ async function serviceRows(env, ctx, iso) {
   const cache = typeof caches === 'undefined' ? null : caches.default; // none in node tests: built each time
   const hit = await cache?.match(key).then((r) => r?.json()).catch(() => null);
   const now = Date.now();
-  if (Array.isArray(hit?.rows) && (hit.done || now < (hit.retry || 0))) return hit; // anything else: built again
-  const kept = (got, seconds) => (cache ? cache.put(key, new Response(JSON.stringify(got),
-    { headers: { 'Cache-Control': `max-age=${seconds}` } })) : null);
+  const had = Array.isArray(hit?.rows) ? hit.rows : []; // what a failed or slow rebuild falls back to
+  // fresh till: done rows 12 hours, unfinished a minute (retry); an entry is kept 36 hours, so its rows are still
+  // there when it is built again; anything else (an older shape): built again
+  if (Array.isArray(hit?.rows) && now < (hit.done ? hit.fresh || 0 : hit.retry || 0)) return hit;
+  const kept = (got) => (cache ? cache.put(key, new Response(JSON.stringify(got),
+    { headers: { 'Cache-Control': `max-age=${36 * 3600}` } })) : null);
   // one build at a time here: the Homes that come while it runs take what is there (two at the same instant can
   // still both build: the Cache API has no lock)
-  if (cache) await kept({ rows: hit?.rows || [], done: false, retry: now + 60e3, tries: hit?.tries || 0, missing: hit?.missing }, 12 * 3600);
+  if (cache) await kept({ rows: had, done: false, retry: now + 60e3, tries: hit?.tries || 0, missing: hit?.missing });
   const build = (async () => {
     let lists;
     try {
@@ -577,11 +580,11 @@ async function serviceRows(env, ctx, iso) {
     } catch (e) {
       console.log('justwatch', String(e));
       // slow, refused or a country it doesn't know: not asked again each Home for an hour; rows it had stay
-      const none = { rows: hit?.rows || [], done: true };
-      await kept(none, 3600);
+      const none = { rows: had, done: true, fresh: now + 3600e3 };
+      await kept(none);
       return none;
     }
-    const budget = { left: 30 };
+    const budget = { left: 30, cut: 0, failed: 0 };
     const cards = await englishCards(env, lists.flat(), [], budget);
     // missing: cards still to come (cut by the budget or failed). tries: builds in a row that left no fewer missing
     // (TMDB refusing 30+ each time, or D1 not keeping what was found, must not keep Home uncached). done: none
@@ -594,14 +597,14 @@ async function serviceRows(env, ctx, iso) {
       const row = cards.slice(at, at += lists[i].length).filter(Boolean);
       return row.length ? [`Popular on ${label} in ${NETFLIX_COUNTRIES[iso]}`, row] : null;
     }).filter(Boolean);
-    const out = done ? { rows, done } : { rows, done, retry: now + 60e3, tries, missing };
-    await kept(out, 12 * 3600);
+    const out = done ? { rows, done, fresh: now + 12 * 3600e3 } : { rows, done, retry: now + 60e3, tries, missing };
+    await kept(out);
     return out;
-  })().catch((e) => (console.log('services', String(e)), { rows: hit?.rows || [], done: false }));
+  })().catch((e) => (console.log('services', String(e)), { rows: had, done: false }));
   if (!cache || !ctx) return build;
   ctx.waitUntil(build);
   // what Home had meanwhile (a slow rebuild must not drop the rows shown a minute ago)
-  return upTo(build, Number(env.SERVICES_WAIT) || SERVICES_WAIT, { rows: hit?.rows || [], done: false });
+  return upTo(build, Number(env.SERVICES_WAIT) || SERVICES_WAIT, { rows: had, done: false });
 }
 
 // What p gives within ms, else fallback (p goes on: its caller keeps it with waitUntil).
@@ -2419,7 +2422,7 @@ async function englishCards(env, wanted, fallback, fetchMax = 20) {
     .catch(() => (failed++, null))))).filter(Boolean);
   if (fetchMax.left !== undefined) {
     fetchMax.left -= missing.length;
-    fetchMax.cut = (fetchMax.cut || 0) + all.length - missing.length;
+    fetchMax.cut = (fetchMax.cut || 0) + all.length - missing.length; // || 0: For you's budget has neither
     fetchMax.failed = (fetchMax.failed || 0) + failed;
   }
   for (const { type, m } of fetched) known.set(`${type}:${m.id}`, cardOf(m, type));

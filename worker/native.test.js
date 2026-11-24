@@ -3050,7 +3050,9 @@ test('Home: the services\' rows kept 12 hours at the Cloudflare location, a fail
     servicesAnswer({});
     await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx);
     assert.deepEqual(asked.filter((u) => u.includes('justwatch')), []); // the failure is kept
-    assert.deepEqual([ages[0], ages.at(-1)], ['max-age=43200', 'max-age=3600']);
+    assert.ok(ages.every((a) => a === 'max-age=129600')); // 36 hours; freshness in the entry
+    const last = await kept.get('https://justwatch.cache/v2/popular/BG').clone().json();
+    assert.ok(last.done && Math.abs(last.fresh - Date.now() - 3600e3) < 5000); // the failure: an hour
   } finally {
     delete globalThis.caches;
   }
@@ -3265,6 +3267,26 @@ test('Home: a slow rebuild keeps the rows Home had; two Homes within a build sta
     release();
     await Promise.all(waits);
     assert.equal(builds, 1);
+  } finally {
+    delete globalThis.caches;
+  }
+});
+
+test('Home: at the 12-hour rebuild a JustWatch failure keeps the rows (the entry outlives its freshness)', async () => {
+  const kept = cacheStub();
+  const waits = [];
+  const ctx = { waitUntil: (p) => waits.push(p) };
+  try {
+    const row = [['Popular on Disney+ in Bulgaria', [[11, 'tv', 'S', '', '/p.jpg', 70, '']]]];
+    kept.set('https://justwatch.cache/v2/popular/BG', new Response(JSON.stringify({ rows: row, done: true, fresh: Date.now() - 1 })));
+    servicesAnswer({}, false);
+    const e = { ...env, DB: d1() };
+    e.DB.raw.prepare("INSERT INTO top10 (country, week, rows, asked, t) VALUES ('BG', '2026-11-22', '[]', ?, ?)").run(Date.now(), Date.now());
+    const res = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx);
+    await Promise.all(waits);
+    assert.ok(asked.some((u) => u.includes('justwatch'))); // past its freshness: asked again
+    assert.deepEqual((await res.json()).rows.filter(([t]) => t.startsWith('Popular on')), row);
+    assert.deepEqual((await kept.get('https://justwatch.cache/v2/popular/BG').clone().json()).rows, row);
   } finally {
     delete globalThis.caches;
   }
