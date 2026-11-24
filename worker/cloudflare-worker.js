@@ -562,6 +562,9 @@ async function serviceRows(env, ctx, iso) {
   if (Array.isArray(hit?.rows) && (hit.done || now < (hit.retry || 0))) return hit; // anything else: built again
   const kept = (got, seconds) => (cache ? cache.put(key, new Response(JSON.stringify(got),
     { headers: { 'Cache-Control': `max-age=${seconds}` } })) : null);
+  // one build at a time here: the Homes that come while it runs take what is there (two at the same instant can
+  // still both build: the Cache API has no lock)
+  if (cache) await kept({ rows: hit?.rows || [], done: false, retry: now + 60e3, tries: hit?.tries || 0, missing: hit?.missing }, 12 * 3600);
   const build = (async () => {
     let lists;
     try {
@@ -574,29 +577,31 @@ async function serviceRows(env, ctx, iso) {
     } catch (e) {
       console.log('justwatch', String(e));
       // slow, refused or a country it doesn't know: not asked again each Home for an hour; rows it had stay
-      const none = { rows: hit?.rows?.length ? hit.rows : [], done: true };
+      const none = { rows: hit?.rows || [], done: true };
       await kept(none, 3600);
       return none;
     }
     const budget = { left: 30 };
     const cards = await englishCards(env, lists.flat(), [], budget);
-    // tries: builds in a row that found no new card. done: none cut by the budget and none failed, or SERVICES_TRIES
-    // builds without progress (TMDB refusing 30+ of them each time must not keep Home uncached); a title TMDB lacks
-    // (404, no poster) just stays out
-    const tries = budget.got ? 0 : (hit?.tries || 0) + 1;
-    const done = (!budget.cut && !budget.failed) || tries >= SERVICES_TRIES;
+    // missing: cards still to come (cut by the budget or failed). tries: builds in a row that left no fewer missing
+    // (TMDB refusing 30+ each time, or D1 not keeping what was found, must not keep Home uncached). done: none
+    // missing, or SERVICES_TRIES such builds; a title TMDB lacks (404, no poster) just stays out
+    const missing = budget.cut + budget.failed;
+    const tries = missing < (hit?.missing ?? Infinity) ? 0 : (hit?.tries || 0) + 1;
+    const done = !missing || tries >= SERVICES_TRIES;
     let at = 0;
     const rows = SERVICES.map(([, label], i) => {
       const row = cards.slice(at, at += lists[i].length).filter(Boolean);
       return row.length ? [`Popular on ${label} in ${NETFLIX_COUNTRIES[iso]}`, row] : null;
     }).filter(Boolean);
-    const out = done ? { rows, done } : { rows, done, retry: now + 60e3, tries };
+    const out = done ? { rows, done } : { rows, done, retry: now + 60e3, tries, missing };
     await kept(out, 12 * 3600);
     return out;
-  })().catch((e) => (console.log('services', String(e)), { rows: [], done: false }));
+  })().catch((e) => (console.log('services', String(e)), { rows: hit?.rows || [], done: false }));
   if (!cache || !ctx) return build;
   ctx.waitUntil(build);
-  return upTo(build, Number(env.SERVICES_WAIT) || SERVICES_WAIT, { rows: [], done: false });
+  // what Home had meanwhile (a slow rebuild must not drop the rows shown a minute ago)
+  return upTo(build, Number(env.SERVICES_WAIT) || SERVICES_WAIT, { rows: hit?.rows || [], done: false });
 }
 
 // What p gives within ms, else fallback (p goes on: its caller keeps it with waitUntil).
@@ -2408,17 +2413,14 @@ async function englishCards(env, wanted, fallback, fetchMax = 20) {
   const all = [...new Map(wanted.filter(([type, id]) => !known.has(`${type}:${id}`)).map((w) => [w.join(':'), w])).values()];
   const missing = all.slice(0, fetchMax.left ?? fetchMax);
   let failed = 0;
-  if (fetchMax.left !== undefined) {
-    fetchMax.left -= missing.length;
-    fetchMax.cut = (fetchMax.cut || 0) + all.length - missing.length;
-  }
   const fetched = (await Promise.all(missing.map(([type, id]) => tmdb(env, `${type}/${id}`)
     .then((res) => (res.ok ? res.json() : (res.status !== 404 && failed++, null)))
     .then((m) => (m && m.poster_path ? { type, m } : null))
     .catch(() => (failed++, null))))).filter(Boolean);
   if (fetchMax.left !== undefined) {
+    fetchMax.left -= missing.length;
+    fetchMax.cut = (fetchMax.cut || 0) + all.length - missing.length;
     fetchMax.failed = (fetchMax.failed || 0) + failed;
-    fetchMax.got = (fetchMax.got || 0) + fetched.length;
   }
   for (const { type, m } of fetched) known.set(`${type}:${m.id}`, cardOf(m, type));
   if (fetched.length && env.DB) {

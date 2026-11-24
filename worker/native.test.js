@@ -3243,3 +3243,29 @@ test('Home: a build cut by the budget that found cards starts the try count agai
     delete globalThis.caches;
   }
 });
+
+test('Home: a slow rebuild keeps the rows Home had; two Homes within a build start one build', async () => {
+  const kept = cacheStub();
+  const waits = [];
+  const ctx = { waitUntil: (p) => waits.push(p) };
+  try {
+    const row = [['Popular on Disney+ in Bulgaria', [[11, 'tv', 'S', '', '/p.jpg', 70, '']]]];
+    kept.set('https://justwatch.cache/v2/popular/BG', new Response(JSON.stringify({ rows: row, done: false, retry: 0, tries: 0, missing: 2 })));
+    let release;
+    const slow = new Promise((ok) => { release = ok; });
+    servicesAnswer({ dnp: [['SHOW', 11]], mxx: [], prv: [], atp: [], sst: [] });
+    const inner = globalThis.fetch;
+    let builds = 0;
+    globalThis.fetch = async (url, init) => (new URL(url).hostname === 'apis.justwatch.com' ? (builds++, await slow, inner(url, init)) : inner(url, init));
+    const e = { ...env, DB: d1(), SERVICES_WAIT: '20' };
+    // the second Home comes while the first one's build still waits on JustWatch (a build takes seconds)
+    const a = await (await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx)).json();
+    const b = await (await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx)).json();
+    for (const h of [a, b]) assert.deepEqual(h.rows.filter(([t]) => t.startsWith('Popular on')), row);
+    release();
+    await Promise.all(waits);
+    assert.equal(builds, 1);
+  } finally {
+    delete globalThis.caches;
+  }
+});
