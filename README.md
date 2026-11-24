@@ -21,7 +21,8 @@ Measured on the stick (the same 39 remote presses; details in [docs/measurements
 ## What it does
 
 - Home: Continue browsing, My list, For you, New in 4K, Netflix's own Top 10 series and films of your country
-  (Settings → Country, from Netflix's weekly lists) and TMDB's rows; a tab bar with Search, Coming up and Settings.
+  (Settings → Country, from Netflix's weekly lists), what is popular there on Disney+, HBO Max, Prime Video, Apple TV
+  and SkyShowtime (JustWatch's streaming charts, through its site's unofficial API) and TMDB's rows; a tab bar with Search, Coming up and Settings.
 - Film and series pages: scores (TMDB, IMDb, Rotten Tomatoes, Metacritic, Letterboxd), cast, collection, trailer,
   seasons and episodes with watch marks, Story so far, More like this, a person's films, follow a person.
 - Sources: a Torrentio-style Stremio addon's releases filtered by audio language, TorBox's cached ones marked, each

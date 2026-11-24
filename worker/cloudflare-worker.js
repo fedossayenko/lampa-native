@@ -541,6 +541,48 @@ async function top10Rows(env, ctx, iso) {
   return had.t ? [] : null; // a read failed (tried again later): Home kept as ever; none tried yet: not kept
 }
 
+// Home's rows of the other services in the country (Settings → Country): what is popular on each this week, from
+// JustWatch (its streaming charts: offer clicks, watchlist adds, seen marks), one request for all of them, kept 12
+// hours at this Cloudflare location. Each title is a TMDB id: its card from the titles index or TMDB
+// (englishCards, at most 30 asked a Home: the rest on the next). A service the country lacks comes back empty.
+// ponytail: apis.justwatch.com/graphql is the site's own API, not a published one (JustWatch's official Streaming
+// Charts API needs a form); a change there leaves these rows out, nothing else.
+const SERVICES = [['dnp', 'Disney+'], ['mxx', 'HBO Max'], ['prv', 'Prime Video'], ['atp', 'Apple TV'], ['sst', 'SkyShowtime']];
+const SERVICE_TITLES = 12;
+const SERVICES_KEEP = 12 * 3600;
+async function serviceRows(env, ctx, iso) {
+  if (!Object.hasOwn(NETFLIX_COUNTRIES, iso)) return [];
+  const key = new Request(`https://justwatch.cache/popular/${iso}`);
+  const cache = typeof caches === 'undefined' ? null : caches.default; // none in node tests
+  let lists = await cache?.match(key).then((r) => r?.json()).catch(() => null);
+  if (!lists) {
+    const query = `query($c: Country!) { ${SERVICES.map(([p]) => `${p}: popularTitles(country: $c, first: ${SERVICE_TITLES},
+      sortBy: POPULAR, filter: {packages: ["${p}"]}) { edges { node { objectType content(country: $c, language: "en") {
+      externalIds { tmdbId } } } } }`).join(' ')} }`;
+    try {
+      const res = await fetch('https://apis.justwatch.com/graphql', { method: 'POST', ...within(),
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query, variables: { c: iso } }) });
+      const got = res.ok ? await res.json() : null;
+      if (!got?.data) throw new Error(`JustWatch ${res.status} ${got?.errors?.[0]?.message || ''}`);
+      lists = SERVICES.map(([p]) => (got.data[p]?.edges || []).map((e) => [e.node.objectType === 'SHOW' ? 'tv' : 'movie',
+        Number(e.node.content?.externalIds?.tmdbId)]).filter(([, id]) => id > 0));
+    } catch (e) {
+      console.log('justwatch', String(e));
+      return []; // asked again on the next Home
+    }
+    const keep = new Response(JSON.stringify(lists), { headers: { 'Cache-Control': `max-age=${SERVICES_KEEP}` } });
+    if (cache && ctx) ctx.waitUntil(cache.put(key, keep));
+  }
+  const wanted = lists.flat();
+  const cards = await englishCards(env, wanted, wanted.map(() => null), { left: 30 });
+  const name = NETFLIX_COUNTRIES[iso];
+  let at = 0;
+  return SERVICES.map(([, label], i) => {
+    const row = cards.slice(at, at += lists[i].length).filter(Boolean);
+    return row.length ? [`Popular on ${label} in ${name}`, row] : null;
+  }).filter(Boolean);
+}
+
 async function home(request, env, ctx) {
   let rawBytes = 0;
   const rows = await Promise.all(HOME_ROWS.map(async ([title, path]) => {
@@ -562,8 +604,8 @@ async function home(request, env, ctx) {
   const ok = rows.filter(Boolean);
   if (!ok.length) return corsError(request, 'TMDB unavailable.', 502);
   const country = new URL(request.url).searchParams.get('country') || '';
-  const netflix = await top10Rows(env, ctx, country);
-  ok.unshift(...(netflix || [])); // before TMDB's: what the country watches on Netflix
+  const [netflix, services] = await Promise.all([top10Rows(env, ctx, country), serviceRows(env, ctx, country)]);
+  ok.unshift(...(netflix || []), ...services); // before TMDB's: what the country watches on Netflix and the others
   return new Response(JSON.stringify({ rows: ok }), {
     headers: {
       'Content-Type': 'application/json; charset=utf-8',

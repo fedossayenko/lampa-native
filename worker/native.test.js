@@ -2971,3 +2971,51 @@ test('Top 10: workerd\'s big reads (readAtLeast), the path Cloudflare runs', asy
     delete proto.readAtLeast;
   }
 });
+
+// Home's rows of the other services (JustWatch's popular titles of the country, by TMDB id)
+function servicesAnswer(lists, ok = true) {
+  asked = [];
+  globalThis.fetch = async (url, init) => {
+    asked.push(String(url));
+    const u = new URL(url);
+    if (u.hostname === 'apis.justwatch.com') {
+      if (!ok) return new Response('down', { status: 503 });
+      const q = JSON.parse(init.body);
+      assert.equal(q.variables.c, 'BG');
+      return new Response(JSON.stringify({ data: Object.fromEntries(Object.entries(lists).map(([p, items]) => [p, { edges: items.map(([t, id]) =>
+        ({ node: { objectType: t, content: { externalIds: { tmdbId: String(id) } } } })) }])) }));
+    }
+    const m = u.pathname.match(/^\/3\/(movie|tv)\/(\d+)$/);
+    if (m) return new Response(JSON.stringify({ id: Number(m[2]), name: `N${m[2]}`, title: `N${m[2]}`, poster_path: '/p.jpg', vote_average: 7 }));
+    if (u.pathname === '/3/trending/all/day') return new Response(JSON.stringify({ results: [{ id: 5, media_type: 'movie', title: 'T', poster_path: '/t.jpg' }] }));
+    return new Response('down', { status: 500 });
+  };
+}
+
+test('Home with ?country=: a row per service that has titles there, in order, after Netflix\'s; their cards kept', async () => {
+  servicesAnswer({ dnp: [['SHOW', 11], ['MOVIE', 12]], mxx: [], prv: [['SHOW', 13]], atp: [], sst: [['SHOW', 0]] });
+  const e = { ...env, DB: d1() };
+  e.DB.raw.prepare("INSERT INTO top10 (country, week, rows, asked, t) VALUES ('BG', '2026-11-22', ?, ?, ?)")
+    .run(JSON.stringify([['Top 10 series on Netflix in Bulgaria', [[1, 'tv', 'B', '', '/b.jpg', 0, '']]]]), Date.now(), Date.now());
+  const { rows } = await (await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, { waitUntil: () => {} })).json();
+  assert.deepEqual(rows.map(([t, c]) => [t, c.map((x) => `${x[1]}:${x[0]}`)]).slice(0, 3), [
+    ['Top 10 series on Netflix in Bulgaria', ['tv:1']],
+    ['Popular on Disney+ in Bulgaria', ['tv:11', 'movie:12']],
+    ['Popular on Prime Video in Bulgaria', ['tv:13']],
+  ]);
+  assert.equal(rows[3][0], 'Today in trend');
+  servicesAnswer({ dnp: [['SHOW', 11], ['MOVIE', 12]], mxx: [], prv: [['SHOW', 13]], atp: [], sst: [] });
+  await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, { waitUntil: () => {} });
+  assert.deepEqual(asked.filter((u) => /\/3\/(movie|tv)\/\d+$/.test(new URL(u).pathname)), []); // cards from the titles index
+});
+
+test('Home: JustWatch down → no service rows, Home as ever; no country → JustWatch not asked', async () => {
+  servicesAnswer({}, false);
+  const e = { ...env, DB: d1() };
+  const down = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, { waitUntil: () => {} });
+  assert.equal(down.status, 200);
+  assert.ok(!(await down.json()).rows.some(([t]) => t.startsWith('Popular on')));
+  servicesAnswer({});
+  await worker.fetch(new Request('https://w/home', { headers: tv }), e, { waitUntil: () => {} });
+  assert.deepEqual(asked.filter((u) => u.includes('justwatch')), []);
+});
