@@ -115,7 +115,7 @@ shaping; custom-drawn rows would only save Java heap, which is 3–6 MB (log row
 0. **Measure Lampa against the prototype** (`proto/`: 5 rows × 20 real posters + focused backdrop, every
    poster kept in memory = worst case). Same 39 key presses on both. Gate: the prototype fits the menu budget.
    Needs the TV for ~2 minutes with Lampa on its home screen.
-1. **Real home screen.** ✅ 2026-10-31: Lampa's 8 TMDB rows from the worker's `/home`. Within budget in
+1. **Real home screen.** ✅ 2026-10-31: Lampa's 8 TMDB rows from the worker's `/home` (6 since 2026-11-24: Top movies and Top series dropped, user; Netflix's own Top 10 of Settings → Country above them, worker `top10.sql`). Within budget in
    menus; background meets it once Android trims (see log). Later, if peaks matter: reuse dropped poster
    bitmaps (`inBitmap`) and skip loads for posters that already scrolled away, so scrolling allocates nothing.
 2. **Film page.** ✅ 2026-10-31: worker `/card/{movie|tv}/{id}` (TMDB details + credits + MDBList scores in one

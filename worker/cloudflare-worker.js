@@ -487,8 +487,14 @@ async function refreshTop10(env, asked) {
 }
 
 // Home's Netflix rows for ?country= (none without one, or for a country Netflix doesn't list), null while a
-// country has none yet (Home then kept a minute only: the stick's disk copy still opens Home fast and offline). A first ask reads the list behind the answer, in the worker's
-// own call (Bulgaria ~4 s, Vietnam over a minute), so Home never waits for it; the next Home shows it.
+// country has none yet: Home is then kept a minute only, so the next start asks again (the stick's disk copy still
+// opens Home fast and offline). A first ask starts the read behind the answer, in the worker's own call, so Home
+// never waits for it. waitUntil lasts 30 s past the answer: enough for a country in the first ~25 MB of the file
+// (Bulgaria ~4 s); a later one (United Kingdom, United States, Vietnam) is read by the hourly cron, which has no
+// such limit. Its rows then show at the next start.
+// ponytail: the file is the documented one; netflix.com/tudum/top10/<country> (films) and .../<country>/tv are 2 MB
+// each, any country in ~1 s and a few days fresher, but only as HTML (logo alt texts, rank icons): the way out if
+// the late countries' hour or the CPU above matter.
 async function top10Rows(env, ctx, iso) {
   if (!env.DB || !Object.hasOwn(NETFLIX_COUNTRIES, iso)) return [];
   const now = Date.now();
