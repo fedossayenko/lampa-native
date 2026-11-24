@@ -371,7 +371,7 @@ public class Main extends Activity {
             try {
                 // From the disk even past its hour (≤ a day; measured: first poster 370-410 ms after start instead
                 // of 580-700), then a fresh one into the disk for the next start. Your rows as last seen, with it.
-                List<Home.Row> data = Home.parse(new String(read(Home.worker + "/home", true), StandardCharsets.UTF_8));
+                List<Home.Row> data = Home.parse(new String(read(homeUrl(), true), StandardCharsets.UTF_8));
                 String saved = signedIn ? readFile(mineFile()) : "";
                 ui.post(() -> {
                     if (mineShown.isEmpty()) showMine(saved); // not over a fresh one that came first
@@ -379,7 +379,7 @@ public class Main extends Activity {
                 });
                 background.execute(() -> {
                     try {
-                        cache(Home.worker + "/home");
+                        cache(homeUrl());
                     } catch (IOException e) {
                         // the next start shows this one again
                     }
@@ -1013,6 +1013,15 @@ public class Main extends Activity {
 
     SharedPreferences settings() {
         return getSharedPreferences("settings", MODE_PRIVATE);
+    }
+
+    // Settings → Country (ISO code, "": off): Home's Netflix rows
+    String country() {
+        return settings().getString("country", "");
+    }
+
+    String homeUrl() {
+        return Home.worker + "/home" + (country().isEmpty() ? "" : "?country=" + country());
     }
 
     String langs() {

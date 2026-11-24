@@ -620,6 +620,7 @@ function d1() {
   db.exec(readFileSync(new URL('./news.sql', import.meta.url), 'utf8'));
   db.exec(readFileSync(new URL('./audio.sql', import.meta.url), 'utf8'));
   db.exec(readFileSync(new URL('./grades.sql', import.meta.url), 'utf8'));
+  db.exec(readFileSync(new URL('./top10.sql', import.meta.url), 'utf8'));
   const stmt = (sql, args = []) => ({
     bind: (...a) => stmt(sql, a),
     all: async () => ({ results: db.prepare(sql).all(...args) }),
@@ -2738,4 +2739,91 @@ test('grades: 5000 grades with cards go in chunks, no bound value near D1\'s 2 M
   assert.equal(e.DB.raw.prepare('SELECT count(*) n FROM grades').get().n, 5000);
   assert.ok(widest < 1e6, `${widest} characters in one bound value`);
   assert.equal((await post(many(5001))).status, 413);
+});
+
+
+// Netflix's Top 10 (Settings → Country): its file of every country and week, read in chunks of any size
+const TSV_HEAD = 'country_name\tcountry_iso2\tweek\tcategory\tweekly_rank\tshow_title\tseason_title\tcumulative_weeks_in_top_10\n';
+const tsvLines = (country, iso, week, list) => list.map(([category, rank, title]) =>
+  `${country}\t${iso}\t${week}\t${category}\t${rank}\t${title}\tN/A\t1\n`).join('');
+const TSV = TSV_HEAD
+  + tsvLines('Argentina', 'AR', '2026-11-15', [['Films', 1, 'Uno']]) + tsvLines('Argentina', 'AR', '2026-11-08', [['Films', 1, 'Old']])
+  + tsvLines('Bulgaria', 'BG', '2026-11-15', [['TV', 2, 'Lupin'], ['TV', 1, 'Black Doves'], ['TV', 3, 'Lupin'], ['Films', 1, 'Heist']])
+  + tsvLines('Bulgaria', 'BG', '2026-11-08', [['TV', 1, 'Older']]).repeat(40)
+  + tsvLines('Vietnam', 'VN', '2026-11-15', [['Films', 1, 'Last']]);
+function chunked(text, size) {
+  const bytes = new TextEncoder().encode(text);
+  let at = 0;
+  return new ReadableStream({ pull(c) {
+    if (at >= bytes.length) return c.close();
+    c.enqueue(bytes.slice(at, at += size));
+  } });
+}
+const tmdbSearch = {
+  'Black Doves': [{ id: 1, name: 'Black Doves', first_air_date: '2024-12-05', poster_path: '/d.jpg', popularity: 50 }],
+  Lupin: [{ id: 3, name: 'Lupin the Third', poster_path: '/l3.jpg', popularity: 90 },
+    { id: 2, name: 'Lupin', first_air_date: '2021-01-08', poster_path: '/l.jpg', popularity: 40 },
+    { id: 4, name: 'Lupin', poster_path: '/old.jpg', popularity: 1 }],
+  Heist: [{ id: 9, title: 'Heist', release_date: '2026-10-01', poster_path: '/h.jpg', popularity: 5 }],
+};
+function netflixAnswers(size = 7) {
+  asked = [];
+  globalThis.fetch = async (url) => {
+    asked.push(String(url));
+    const u = new URL(url);
+    if (u.hostname === 'www.netflix.com') return new Response(chunked(TSV, size));
+    if (u.pathname.startsWith('/3/search/')) return new Response(JSON.stringify({ results: tmdbSearch[u.searchParams.get('query')] || [] }));
+    return new Response('down', { status: 500 });
+  };
+}
+
+test('Top 10: a country\'s newest week, best first, whatever size the chunks come in; series once; exact names first', async () => {
+  for (const size of [1, 5, 64, 100000]) {
+    netflixAnswers(size);
+    const e = { ...env, DB: d1() };
+    const res = await worker.fetch(new Request('https://w/top10/refresh?country=BG', { headers: tv }), e);
+    const got = await res.json();
+    assert.equal(got.week, '2026-11-15', `chunks of ${size}`);
+    assert.deepEqual(JSON.parse(e.DB.raw.prepare('SELECT rows FROM top10 WHERE country = ?').get('BG').rows), got.rows);
+    assert.deepEqual(got.rows, [
+      ['Top 10 series on Netflix in Bulgaria', [[1, 'tv', 'Black Doves', '2024', '/d.jpg', 0, ''], [2, 'tv', 'Lupin', '2021', '/l.jpg', 0, '']]],
+      ['Top 10 films on Netflix in Bulgaria', [[9, 'movie', 'Heist', '2026', '/h.jpg', 0, '']]],
+    ]);
+  }
+  // the first country and the last one too
+  for (const [iso, title] of [['AR', 'Uno'], ['VN', 'Last']]) {
+    netflixAnswers(3);
+    tmdbSearch[title] = [{ id: 7, title, poster_path: '/x.jpg' }];
+    const e = { ...env, DB: d1() };
+    assert.equal((await (await worker.fetch(new Request(`https://w/top10/refresh?country=${iso}`, { headers: tv }), e)).json()).rows.length, 1);
+    assert.equal(JSON.parse(e.DB.raw.prepare('SELECT rows FROM top10').get().rows)[0][1][0][2], title);
+  }
+});
+
+test('Top 10: titles found once (TMDB not asked again); a country Netflix doesn\'t list or no token: nothing', async () => {
+  netflixAnswers();
+  const e = { ...env, DB: d1() };
+  await worker.fetch(new Request('https://w/top10/refresh?country=BG', { headers: tv }), e);
+  netflixAnswers();
+  await worker.fetch(new Request('https://w/top10/refresh?country=BG', { headers: tv }), e);
+  assert.deepEqual(asked.filter((u) => u.includes('/search/')), []);
+  assert.equal(await (await worker.fetch(new Request('https://w/top10/refresh?country=XX', { headers: tv }), e)).text(), 'null');
+  assert.equal((await worker.fetch(new Request('https://w/top10/refresh?country=BG'), e)).status, 403);
+});
+
+test('Home with ?country=: its Netflix rows first; the first ask reads them in the worker\'s own call', async () => {
+  tmdbAnswers({ 'trending/all/day': { results: [{ id: 5, media_type: 'movie', title: 'T', poster_path: '/t.jpg' }] } });
+  const own = [];
+  const e = { ...env, DB: d1(), SELF: { fetch: async (u, init) => (own.push([u, init.headers['X-Play-Token']]),
+    new Response(JSON.stringify({ rows: [['Top 10 films on Netflix in Bulgaria', [[9, 'movie', 'H', '', '/h.jpg', 0, '']]]] }))) } };
+  const ctx = { waitUntil: () => {} };
+  const first = await (await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx)).json();
+  assert.deepEqual(first.rows.map(([t]) => t), ['Top 10 films on Netflix in Bulgaria', 'Today in trend']);
+  assert.deepEqual(own, [['https://self/top10/refresh?country=BG', 'stick-token']]);
+  e.DB.raw.prepare('UPDATE top10 SET rows = ?').run(JSON.stringify([['Top 10 series on Netflix in Bulgaria', [[1, 'tv', 'B', '', '/b.jpg', 0, '']]]]));
+  const next = await (await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx)).json();
+  assert.deepEqual(next.rows.map(([t]) => t), ['Top 10 series on Netflix in Bulgaria', 'Today in trend']);
+  assert.equal(own.length, 1); // asked once
+  const none = await (await worker.fetch(new Request('https://w/home?country=ZZ', { headers: tv }), e, ctx)).json();
+  assert.deepEqual(none.rows.map(([t]) => t), ['Today in trend']);
 });

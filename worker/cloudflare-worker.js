@@ -335,7 +335,7 @@ async function refreshTitles(env, language) {
 // times a series' episode got (asked again after a week anyway), "out in your language" answers (a new episode's, asked
 // for a month), a followed film's news (the app shows 30 days), recommendations of a film no longer graded, MaxVol's
 // lists (a day's), jobs of the intro detector that nothing has taken for a month (it asks the queue every 10 minutes).
-const PURGE = [['segments', 60], ['fresh', 30], ['news', 90], ['recs', 60], ['maxvol', 30], ['intro_jobs', 30]];
+const PURGE = [['segments', 60], ['fresh', 30], ['news', 90], ['recs', 60], ['maxvol', 30], ['intro_jobs', 30], ['top10_titles', 90]];
 async function purgeOld(env, now) {
   for (const [table, days] of PURGE) {
     await env.DB.prepare(`DELETE FROM ${table} WHERE t < ?`).bind(now - days * 86400e3).run().catch((e) => console.log('purge', table, String(e)));
@@ -366,7 +366,147 @@ async function search(request, env) {
   });
 }
 
-async function home(request, env) {
+// Netflix's own Top 10 of a country (Settings → Country): its weekly list of series and of films, published each
+// Tuesday at netflix.com/tudum/top10 as one file of every country and week (~33 MB, no ranges). Sorted by country
+// name, newest week first (checked 2026-11-24: 94 countries, in JavaScript's string order), so the reader looks
+// only at each chunk's first country name and decodes the few KB around the country's start. Netflix sends it at
+// ~1 MB/s: Bulgaria's start is 3 s in, Vietnam's past a minute.
+// ponytail: measured on Cloudflare 2026-11-24, a read costs 47 ms of CPU (Bulgaria) to 98 ms (the United States),
+// over the free plan's 10 ms, and Cloudflare let each one finish; it runs once in 6 hours a country, a failed one
+// keeps the rows it had. If Cloudflare starts refusing: read the file on the home server and post the rows.
+// The countries Netflix lists, by ISO code as in the file.
+const NETFLIX_TSV = 'https://www.netflix.com/tudum/top10/data/all-weeks-countries.tsv';
+const NETFLIX_COUNTRIES = {
+  AR: 'Argentina', AU: 'Australia', AT: 'Austria', BS: 'Bahamas', BH: 'Bahrain', BD: 'Bangladesh', BE: 'Belgium',
+  BO: 'Bolivia', BR: 'Brazil', BG: 'Bulgaria', CA: 'Canada', CL: 'Chile', CO: 'Colombia', CR: 'Costa Rica',
+  HR: 'Croatia', CY: 'Cyprus', CZ: 'Czech Republic', DK: 'Denmark', DO: 'Dominican Republic', EC: 'Ecuador',
+  EG: 'Egypt', SV: 'El Salvador', EE: 'Estonia', FI: 'Finland', FR: 'France', DE: 'Germany', GR: 'Greece',
+  GP: 'Guadeloupe', GT: 'Guatemala', HN: 'Honduras', HK: 'Hong Kong', HU: 'Hungary', IS: 'Iceland', IN: 'India',
+  ID: 'Indonesia', IE: 'Ireland', IL: 'Israel', IT: 'Italy', JM: 'Jamaica', JP: 'Japan', JO: 'Jordan', KE: 'Kenya',
+  KW: 'Kuwait', LV: 'Latvia', LB: 'Lebanon', LT: 'Lithuania', LU: 'Luxembourg', MY: 'Malaysia', MV: 'Maldives',
+  MT: 'Malta', MQ: 'Martinique', MU: 'Mauritius', MX: 'Mexico', MA: 'Morocco', NL: 'Netherlands', NC: 'New Caledonia',
+  NZ: 'New Zealand', NI: 'Nicaragua', NG: 'Nigeria', NO: 'Norway', OM: 'Oman', PK: 'Pakistan', PA: 'Panama',
+  PY: 'Paraguay', PE: 'Peru', PH: 'Philippines', PL: 'Poland', PT: 'Portugal', QA: 'Qatar', RO: 'Romania',
+  RU: 'Russia', RE: 'Réunion', SA: 'Saudi Arabia', RS: 'Serbia', SG: 'Singapore', SK: 'Slovakia', SI: 'Slovenia',
+  ZA: 'South Africa', KR: 'South Korea', ES: 'Spain', LK: 'Sri Lanka', SE: 'Sweden', CH: 'Switzerland', TW: 'Taiwan',
+  TH: 'Thailand', TT: 'Trinidad and Tobago', TR: 'Turkey', UA: 'Ukraine', AE: 'United Arab Emirates',
+  GB: 'United Kingdom', US: 'United States', UY: 'Uruguay', VE: 'Venezuela', VN: 'Vietnam',
+};
+
+// The country's newest week: [{week, category: 'TV'|'Films', rank, title}], best first; [] when it isn't there.
+const READ_AT_LEAST = 256 * 1024;
+async function netflixWeek(name) {
+  const res = await fetch(NETFLIX_TSV, within(60000));
+  if (!res.ok) throw new Error(`Netflix ${res.status}`);
+  // Big reads (256 KB): the CPU goes into each read, not each byte (measured: small chunks cost ~11 ms a MB)
+  // workerd's readAtLeast; elsewhere (node tests) the plain reader: node 26 never settles read(view, {min}) on a
+  // stream that gives small chunks
+  const big = typeof ReadableStreamBYOBReader !== 'undefined' && 'readAtLeast' in ReadableStreamBYOBReader.prototype;
+  const reader = res.body.getReader(big ? { mode: 'byob' } : undefined);
+  const read = () => (big ? reader.readAtLeast(READ_AT_LEAST, new Uint8Array(READ_AT_LEAST)) : reader.read());
+  const dec = new TextDecoder();
+  const firstName = (chunk) => { // the first whole line's country; null: none in this chunk
+    const nl = chunk.indexOf(10);
+    const tab = nl < 0 ? -1 : chunk.indexOf(9, nl + 1);
+    return tab < 0 || tab - nl > 80 ? null : dec.decode(chunk.subarray(nl + 1, tab));
+  };
+  let before = []; // the chunks since the last one that starts in an earlier country: the start may be in them
+  let keep = null;
+  let after = 0;
+  for (let done = false; !done;) {
+    let value;
+    ({ done, value } = await read());
+    if (!value?.length) continue;
+    if (keep) {
+      keep.push(value);
+      if ((after += value.length) >= 16384) break; // a week's 20 lines are ~1.5 KB
+      continue;
+    }
+    const at = firstName(value);
+    if (at !== null && at < name) before = [value];
+    else if (at === null) before.push(value);
+    else {
+      keep = [...before, value];
+      after = value.length;
+    }
+  }
+  reader.cancel().catch(() => {});
+  let text = '';
+  for (const c of keep || before) text += dec.decode(c, { stream: true }); // the last country: its rows are in before
+  const rows = text.split('\n').map((l) => l.split('\t')).filter((f) => f[0] === name && f.length >= 7);
+  return rows.filter((f) => f[2] === rows[0][2]) // rows[0]: the newest week (a cut first line has no country name)
+    .map(([, , week, category, rank, title]) => ({ week, category, rank: Number(rank), title }))
+    .sort((a, b) => a.rank - b.rank);
+}
+
+// A title of the list as a Home card, found on TMDB by its name and kept (top10_titles), null when TMDB has none.
+// ponytail: the name alone (the file has no year or id): an exact name, the most popular one, else TMDB's first;
+// a remake with the same name can win (Netflix's ids would need its own API).
+async function top10Card(env, type, title, now) {
+  const key = `${type}:${title}`;
+  const had = await env.DB.prepare('SELECT card FROM top10_titles WHERE key = ?').bind(key).first();
+  if (had) return JSON.parse(had.card);
+  const res = await tmdb(env, `search/${type}`, `&include_adult=false&query=${encodeURIComponent(title)}`);
+  if (!res.ok) return null; // asked again next time
+  const found = ((await res.json()).results || []).filter((m) => m.poster_path);
+  const same = (m) => [m.title, m.name, m.original_title, m.original_name].some((n) => n && n.toLowerCase() === title.toLowerCase());
+  const exact = found.filter(same).sort((a, b) => (b.popularity || 0) - (a.popularity || 0));
+  const m = exact[0] || found[0];
+  const card = m ? cardOf(m, type) : null;
+  await env.DB.prepare(`INSERT INTO top10_titles (key, card, t) VALUES (?, ?, ?)
+    ON CONFLICT (key) DO UPDATE SET card = excluded.card, t = excluded.t`).bind(key, JSON.stringify(card), now).run();
+  return card;
+}
+
+// Reads a country's list again (GET /top10/refresh, the worker's own call: its own 10 ms of CPU and 50 subrequests):
+// the one asked (?country=, Home's first ask) or the stalest of those Home asked for in the last 30 days, read more
+// than 6 hours ago (the hourly cron). Each title once (Lupin's parts are one series), up to 20 TMDB searches.
+const TOP10_EVERY = 6 * 3600e3;
+async function refreshTop10(env, asked) {
+  const now = Date.now();
+  const iso = asked || (await env.DB.prepare('SELECT country FROM top10 WHERE asked > ? AND t < ? ORDER BY t LIMIT 1')
+    .bind(now - 30 * 86400e3, now - TOP10_EVERY).first())?.country;
+  if (!NETFLIX_COUNTRIES[iso]) return null;
+  const name = NETFLIX_COUNTRIES[iso];
+  const week = await netflixWeek(name);
+  const rows = [];
+  for (const [category, type, label] of [['TV', 'tv', 'series'], ['Films', 'movie', 'films']]) {
+    const titles = [...new Set(week.filter((x) => x.category === category).map((x) => x.title))];
+    const cards = (await Promise.all(titles.map((t) => top10Card(env, type, t, now)))).filter(Boolean);
+    const seen = new Set();
+    const once = cards.filter((c) => !seen.has(c[0]) && seen.add(c[0]));
+    if (once.length) rows.push([`Top 10 ${label} on Netflix in ${name}`, once]);
+  }
+  await env.DB.prepare(`INSERT INTO top10 (country, week, rows, asked, t) VALUES (?1, ?2, ?3, ?4, ?4)
+    ON CONFLICT (country) DO UPDATE SET week = excluded.week, rows = excluded.rows, t = excluded.t`)
+    .bind(iso, week[0]?.week || '', JSON.stringify(rows), now).run();
+  return { country: iso, week: week[0]?.week || '', rows };
+}
+
+// Home's Netflix rows for ?country= (none without one, or for a country Netflix doesn't list); a first ask reads
+// the list at once in the worker's own call and shows it when that takes under 15 s (Bulgaria: ~4 s); a slower one
+// finishes behind the answer (waitUntil) for the next Home, and one past that the hourly cron reads.
+async function top10Rows(env, ctx, iso) {
+  if (!env.DB || !NETFLIX_COUNTRIES[iso]) return [];
+  const now = Date.now();
+  const had = await env.DB.prepare('SELECT rows, asked FROM top10 WHERE country = ?').bind(iso).first().catch(() => null);
+  if (!had) {
+    await env.DB.prepare(`INSERT INTO top10 (country, week, rows, asked, t) VALUES (?, '', '[]', ?, 0)
+      ON CONFLICT (country) DO NOTHING`).bind(iso, now).run().catch(() => {});
+    if (!env.SELF) return [];
+    const call = env.SELF.fetch(`https://self/top10/refresh?country=${iso}`, { headers: { 'X-Play-Token': env.PLAY_TOKEN } })
+      .then((res) => (res.ok ? res.json() : null)).then((o) => o?.rows || [])
+      .catch((e) => (console.log('top10', String(e)), []));
+    if (ctx) ctx.waitUntil(call);
+    return Promise.race([call, new Promise((done) => setTimeout(() => done([]), 15000))]);
+  }
+  if (now - had.asked > 86400e3) { // once a day is enough for "still wanted"
+    await env.DB.prepare('UPDATE top10 SET asked = ? WHERE country = ?').bind(now, iso).run().catch(() => {});
+  }
+  return JSON.parse(had.rows);
+}
+
+async function home(request, env, ctx) {
   let rawBytes = 0;
   const rows = await Promise.all(HOME_ROWS.map(async ([title, path]) => {
     try {
@@ -386,6 +526,8 @@ async function home(request, env) {
   }));
   const ok = rows.filter(Boolean);
   if (!ok.length) return corsError(request, 'TMDB unavailable.', 502);
+  const country = new URL(request.url).searchParams.get('country') || '';
+  ok.unshift(...await top10Rows(env, ctx, country)); // before TMDB's: what the country watches on Netflix
   return new Response(JSON.stringify({ rows: ok }), {
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
@@ -2959,6 +3101,8 @@ export default {
       // follows beside For you (25 of the 50 subrequests), not beside New in 4K (up to 35); a failure stays theirs
       const night = [1, 2, 3].includes(new Date(event.scheduledTime).getUTCHours());
       return Promise.all([refreshForYou(env).catch((e) => console.log('for you', String(e))),
+        env.SELF && env.SELF.fetch('https://self/top10/refresh', { headers: { 'X-Play-Token': env.PLAY_TOKEN } })
+          .catch((e) => console.log('top10', String(e))),
         refreshFollows(env, event.scheduledTime).catch((e) => console.log('follows', e)),
         night && dropProbeAdds(env, event.scheduledTime).catch((e) => console.log('adds', e))]);
     }
@@ -2994,7 +3138,13 @@ async function route(request, env, ctx) {
     return corsError(request, 'Forbidden.', 403);
   }
   if (path === '/grades' && request.method === 'POST') return grades(request, env);
-  if (path === '/home' && request.method === 'GET') return home(request, env);
+  if (path === '/home' && request.method === 'GET') return home(request, env, ctx);
+  if (path === '/top10/refresh' && request.method === 'GET') { // the worker's own call (top10Rows, the hourly cron)
+    if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
+    if (!env.DB) return corsError(request, 'No database.', 503);
+    const done = await refreshTop10(env, url.searchParams.get('country') || '');
+    return new Response(JSON.stringify(done), { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
+  }
   if (path === '/search' && request.method === 'GET') return search(request, env);
   const film = path.match(/^\/card\/(movie|tv)\/(\d+)$/);
   if (film && request.method === 'GET') { // the token first: each new address spends MDBList's daily 1,000
