@@ -2815,7 +2815,7 @@ test('Home with ?country=: its Netflix rows first; a first ask reads them behind
   tmdbAnswers({ 'trending/all/day': { results: [{ id: 5, media_type: 'movie', title: 'T', poster_path: '/t.jpg' }] } });
   const own = [];
   const waits = [];
-  const e = { ...env, DB: d1(), SELF: { fetch: async (u, init) => own.push([u, init.headers['X-Play-Token']]) } };
+  const e = { ...env, DB: d1(), SELF: { fetch: async (u, init) => (own.push([u, init.headers['X-Play-Token']]), new Response('null')) } };
   const ctx = { waitUntil: (p) => waits.push(p) };
   const first = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx);
   assert.equal(first.headers.get('Cache-Control'), 'no-store');
@@ -2923,4 +2923,51 @@ test('Home: the first read failed → Home kept as ever (max-age), no Netflix ro
   e.DB.raw.prepare("INSERT INTO top10 (country, week, rows, asked, t) VALUES ('BG', '', '[]', ?, ?)").run(Date.now(), Date.now());
   const res = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, { waitUntil: () => {} });
   assert.equal(res.headers.get('Cache-Control'), 'max-age=3600');
+});
+
+test('Home right after a pick: the first read\'s rows when it is done in time', async () => {
+  tmdbAnswers({ 'trending/all/day': { results: [{ id: 5, media_type: 'movie', title: 'T', poster_path: '/t.jpg' }] } });
+  const rows = [['Top 10 films on Netflix in Bulgaria', [[9, 'movie', 'H', '', '/h.jpg', 0, '']]]];
+  const e = { ...env, DB: d1(), SELF: { fetch: async () => new Response(JSON.stringify({ rows })) } };
+  const res = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, { waitUntil: () => {} });
+  assert.deepEqual((await res.json()).rows.map(([t]) => t), ['Top 10 films on Netflix in Bulgaria', 'Today in trend']);
+  assert.equal(res.headers.get('Cache-Control'), 'max-age=3600');
+});
+
+test('Top 10: workerd\'s big reads (readAtLeast), the path Cloudflare runs', async () => {
+  const proto = ReadableStreamBYOBReader.prototype;
+  proto.readAtLeast = async function (min, view) { // workerd's: at least min bytes unless the stream ends
+    let n = 0;
+    for (;;) {
+      const { done, value } = await this.read(new Uint8Array(view.buffer, n, view.byteLength - n));
+      if (value) { view = new Uint8Array(value.buffer); n += value.byteLength; }
+      if (done || n >= min) return { done: done && n === 0, value: new Uint8Array(view.buffer, 0, n) };
+    }
+  };
+  try {
+    for (const size of [700, 5000]) {
+      const bytes = new TextEncoder().encode(TSV);
+      let at = 0;
+      // a bare byte stream that answers each read in place (node's Response around it never settles a BYOB read)
+      const body = new ReadableStream({ type: 'bytes', pull(c) {
+        const req = c.byobRequest;
+        if (at >= bytes.length) {
+          c.close();
+          req?.respond(0);
+          return;
+        }
+        const n = Math.min(size, req.view.byteLength, bytes.length - at);
+        req.view.set(bytes.subarray(at, at += n));
+        req.respond(n);
+      } });
+      globalThis.fetch = async (url) => (new URL(url).hostname === 'www.netflix.com' ? { ok: true, body }
+        : new Response(JSON.stringify({ results: tmdbSearch[new URL(url).searchParams.get('query')] || [] })));
+      const e = { ...env, DB: d1() };
+      const got = await (await worker.fetch(new Request('https://w/top10/refresh?country=BG', { headers: tv }), e)).json();
+      assert.deepEqual(got.rows.map(([t, c]) => [t, c.map((x) => x[2])]), [
+        ['Top 10 series on Netflix in Bulgaria', ['Black Doves', 'Lupin']], ['Top 10 films on Netflix in Bulgaria', ['Heist']]], `chunks of ${size}`);
+    }
+  } finally {
+    delete proto.readAtLeast;
+  }
 });

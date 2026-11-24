@@ -503,13 +503,15 @@ async function refreshTop10(env, asked) {
 
 // Home's Netflix rows for ?country= (none without one, or for a country Netflix doesn't list), null while a
 // country was never read yet: Home is then not kept (no-store: the stick would serve a stale copy for a day), so
-// the next start asks again. A first ask starts the read behind the answer, in the worker's own call, so Home
-// never waits for it. waitUntil lasts 30 s past the answer: enough for a country in the first ~25 MB of the file
+// the next start asks again. A first ask (the Home Settings → Country restarts into) starts the read in the
+// worker's own call and waits for it up to FIRST_WAIT (Bulgaria ~4 s), once a country; no other Home waits for
+// Netflix. waitUntil lasts 30 s past the answer: enough for a country in the first ~25 MB of the file
 // (Bulgaria ~4 s); a later one (United Kingdom, United States, Vietnam) is read by the hourly cron, which has no
 // such limit. Its rows then show at the next start.
 // ponytail: the file is the documented one; netflix.com/tudum/top10/<country> (films) and .../<country>/tv are 2 MB
 // each, any country in ~1 s and a few days fresher, but only as HTML (logo alt texts, rank icons): the way out if
 // the late countries' hour or the CPU above matter.
+const FIRST_WAIT = 8000;
 async function top10Rows(env, ctx, iso) {
   if (!env.DB || !Object.hasOwn(NETFLIX_COUNTRIES, iso)) return [];
   const now = Date.now();
@@ -522,11 +524,15 @@ async function top10Rows(env, ctx, iso) {
   if (!had) {
     await env.DB.prepare(`INSERT INTO top10 (country, week, rows, asked, t) VALUES (?, '', '[]', ?, 0)
       ON CONFLICT (country) DO NOTHING`).bind(iso, now).run().catch(() => {});
-    if (env.SELF && ctx) {
-      ctx.waitUntil(env.SELF.fetch(`https://self/top10/refresh?country=${iso}`, { headers: { 'X-Play-Token': env.PLAY_TOKEN } })
-        .catch((e) => console.log('top10', String(e))));
-    }
-    return null;
+    if (!env.SELF || !ctx) return null;
+    const read = env.SELF.fetch(`https://self/top10/refresh?country=${iso}`, { headers: { 'X-Play-Token': env.PLAY_TOKEN } })
+      .then((res) => (res.ok ? res.json() : null)).then((o) => o?.rows || null)
+      .catch((e) => (console.log('top10', String(e)), null));
+    ctx.waitUntil(read);
+    let timer;
+    const got = await Promise.race([read, new Promise((done) => { timer = setTimeout(() => done(null), FIRST_WAIT); })]);
+    clearTimeout(timer);
+    return got;
   }
   if (now - had.asked > 86400e3) { // once a day is enough for "still wanted"
     await env.DB.prepare('UPDATE top10 SET asked = ? WHERE country = ?').bind(now, iso).run().catch(() => {});
