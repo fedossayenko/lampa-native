@@ -529,10 +529,7 @@ async function top10Rows(env, ctx, iso) {
       .then((res) => (res.ok ? res.json() : null)).then((o) => o?.rows || null)
       .catch((e) => (console.log('top10', String(e)), null));
     ctx.waitUntil(read);
-    let timer;
-    const got = await Promise.race([read, new Promise((done) => { timer = setTimeout(() => done(null), FIRST_WAIT); })]);
-    clearTimeout(timer);
-    return got;
+    return upTo(read, FIRST_WAIT, null);
   }
   if (now - had.asked > 86400e3) { // once a day is enough for "still wanted"
     await env.DB.prepare('UPDATE top10 SET asked = ? WHERE country = ?').bind(now, iso).run().catch(() => {});
@@ -578,8 +575,10 @@ async function serviceRows(env, ctx, iso) {
       await kept(none, 3600);
       return none;
     }
-    const cards = await englishCards(env, lists.flat(), lists.flat().map(() => null), { left: 30 });
-    const done = cards.every(Boolean);
+    const budget = { left: 30 };
+    const cards = await englishCards(env, lists.flat(), lists.flat().map(() => null), budget);
+    const done = budget.left > 0; // none cut by the budget: a title TMDB lacks (404, no poster) stays out, kept
+
     let at = 0;
     const rows = SERVICES.map(([, label], i) => {
       const row = cards.slice(at, at += lists[i].length).filter(Boolean);
@@ -591,8 +590,13 @@ async function serviceRows(env, ctx, iso) {
   })().catch((e) => (console.log('services', String(e)), { rows: [], done: false }));
   if (!cache || !ctx) return build;
   ctx.waitUntil(build);
+  return upTo(build, SERVICES_WAIT, { rows: [], done: false });
+}
+
+// What p gives within ms, else fallback (p goes on: its caller keeps it with waitUntil).
+async function upTo(p, ms, fallback) {
   let timer;
-  const got = await Promise.race([build, new Promise((ok) => { timer = setTimeout(() => ok({ rows: [], done: false }), SERVICES_WAIT); })]);
+  const got = await Promise.race([p, new Promise((ok) => { timer = setTimeout(() => ok(fallback), ms); })]);
   clearTimeout(timer);
   return got;
 }
@@ -2387,11 +2391,11 @@ function lampaHash(s) {
 // a card for each, in order (TMDB failed or more than `fetchMax` missing: the card CUB kept).
 // fetchMax: a number, or {left}: a budget shared with other calls, spent as TMDB is asked (the cron's 50 subrequests).
 async function englishCards(env, wanted, fallback, fetchMax = 20) {
+  if (!wanted.length) return [];
   const pairs = JSON.stringify(wanted.map(([type, id]) => ({ type, id })));
   const known = new Map(env.DB ? (await env.DB.prepare(`SELECT t.type, t.id, t.card FROM titles t
       JOIN json_each(?) j ON t.type = j.value->>'type' AND t.id = j.value->>'id'`).bind(pairs).all()
     .then((r) => r.results).catch(() => [])).map((r) => [`${r.type}:${r.id}`, JSON.parse(r.card)]) : []);
-  if (!wanted.length) return [];
   const missing = [...new Map(wanted.filter(([type, id]) => !known.has(`${type}:${id}`)).map((w) => [w.join(':'), w])).values()]
     .slice(0, fetchMax.left ?? fetchMax); // each pair once (a title on two services is one call)
   if (fetchMax.left !== undefined) fetchMax.left -= missing.length;

@@ -3086,3 +3086,14 @@ test('Home: a country Netflix doesn\'t list asks no JustWatch; a service JustWat
   const { rows } = await (await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, { waitUntil: () => {} })).json();
   assert.deepEqual(rows.filter(([t]) => t.startsWith('Popular')).map(([t]) => t), ['Popular on Disney+ in Bulgaria']);
 });
+
+test('Home: a title TMDB lacks (404) stays out and Home is kept: done is "nothing cut by the budget"', async () => {
+  servicesAnswer({ dnp: [['SHOW', 11], ['MOVIE', 999]], mxx: [], prv: [], atp: [], sst: [] });
+  const inner = globalThis.fetch;
+  globalThis.fetch = async (url, init) => (new URL(url).pathname === '/3/movie/999' ? new Response('{}', { status: 404 }) : inner(url, init));
+  const e = { ...env, DB: d1() };
+  e.DB.raw.prepare("INSERT INTO top10 (country, week, rows, asked, t) VALUES ('BG', '2026-11-22', '[]', ?, ?)").run(Date.now(), Date.now());
+  const res = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, { waitUntil: () => {} });
+  assert.equal(res.headers.get('Cache-Control'), 'max-age=3600');
+  assert.deepEqual((await res.json()).rows.find(([t]) => t.startsWith('Popular on Disney+'))[1].map((c) => c[0]), [11]);
+});
