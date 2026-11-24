@@ -194,8 +194,8 @@ final class Settings extends Main.Part {
         Process.killProcess(Process.myPid());
     }
 
-    // Settings → Country: Off or one of Netflix's countries, by name; OK picks and the app starts again with Home's
-    // Top 10 on Netflix of that country (the worker's /home?country=).
+        // Settings → Country: Off or one of Netflix's countries, by name; OK picks and the app starts again with Home's
+    // rows of that country (Netflix's Top 10, the services' popular titles: the worker's /home?country=).
     void showCountries() {
         LinearLayout list = m.ux.sheet("Country", "Home shows what it watches this week. OK picks.", null);
         String now = m.country();

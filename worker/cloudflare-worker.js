@@ -589,6 +589,8 @@ async function serviceRows(env, ctx, iso) {
       await kept(none);
       return none;
     }
+    // 30: a cold Home's subrequests are 6 TMDB rows + JustWatch + 30 cards + Netflix's first read + 3 cache = 41
+    // of the free plan's 50 (waitUntil's work counts too): raise it, or SERVICES' first, only with that in mind
     const budget = { left: 30, cut: 0, failed: 0 };
     const cards = await englishCards(env, lists.flat(), [], budget);
     // missing: cards still to come (cut by the budget or failed). tries: builds in a row that left no fewer missing
@@ -603,7 +605,7 @@ async function serviceRows(env, ctx, iso) {
       return row.length ? [`Popular on ${label} in ${NETFLIX_COUNTRIES[iso]}`, row] : null;
     }).filter(Boolean);
     const out = done ? { rows, done, fresh: now + 12 * 3600e3 } : { rows, done, retry: now + 60e3, tries, missing };
-    await kept(out);
+    await kept(out)?.catch((e) => console.log('services kept', String(e))); // built is built: Home has them now
     return out;
   })().catch(async (e) => { // outside JustWatch's call (D1, the cache): a try that failed, counted as one
     console.log('services', String(e));

@@ -3303,7 +3303,9 @@ test('Home: the cache failing drops only the services\' rows; Netflix\'s stay', 
     const res = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, { waitUntil: (p) => waits.push(p) });
     await Promise.allSettled(waits);
     assert.equal(res.status, 200);
-    assert.equal((await res.json()).rows[0][0], 'Top 10 series on Netflix in Bulgaria');
+    const titles = (await res.json()).rows.map(([t]) => t);
+    assert.equal(titles[0], 'Top 10 series on Netflix in Bulgaria');
+    assert.equal(titles[1], 'Popular on Disney+ in Bulgaria'); // built, though the cache can't keep it
   } finally {
     delete globalThis.caches;
   }
