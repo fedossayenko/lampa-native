@@ -2811,20 +2811,20 @@ test('Top 10: titles found once (TMDB not asked again); a country Netflix doesn\
   assert.equal((await worker.fetch(new Request('https://w/top10/refresh?country=BG'), e)).status, 403);
 });
 
-test('Home with ?country=: its Netflix rows first; a first ask reads them behind the answer, kept a minute', async () => {
+test('Home with ?country=: its Netflix rows first; a first ask reads them behind the answer, kept by nobody until read', async () => {
   tmdbAnswers({ 'trending/all/day': { results: [{ id: 5, media_type: 'movie', title: 'T', poster_path: '/t.jpg' }] } });
   const own = [];
   const waits = [];
   const e = { ...env, DB: d1(), SELF: { fetch: async (u, init) => own.push([u, init.headers['X-Play-Token']]) } };
   const ctx = { waitUntil: (p) => waits.push(p) };
   const first = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx);
-  assert.equal(first.headers.get('Cache-Control'), 'max-age=60');
+  assert.equal(first.headers.get('Cache-Control'), 'no-store');
   assert.deepEqual((await first.json()).rows.map(([t]) => t), ['Today in trend']);
   await Promise.all(waits);
   assert.deepEqual(own, [['https://self/top10/refresh?country=BG', 'stick-token']]);
-  assert.equal((await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx)).headers.get('Cache-Control'), 'max-age=60');
+  assert.equal((await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx)).headers.get('Cache-Control'), 'no-store');
   assert.equal(own.length, 1); // asked once: the cron reads it if that one failed
-  e.DB.raw.prepare('UPDATE top10 SET rows = ?').run(JSON.stringify([['Top 10 series on Netflix in Bulgaria', [[1, 'tv', 'B', '', '/b.jpg', 0, '']]]]));
+  e.DB.raw.prepare("UPDATE top10 SET week = '2026-11-15', rows = ?").run(JSON.stringify([['Top 10 series on Netflix in Bulgaria', [[1, 'tv', 'B', '', '/b.jpg', 0, '']]]]));
   const next = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx);
   assert.equal(next.headers.get('Cache-Control'), 'max-age=3600');
   assert.deepEqual((await next.json()).rows.map(([t]) => t), ['Top 10 series on Netflix in Bulgaria', 'Today in trend']);
@@ -2838,7 +2838,7 @@ test('Home with ?country=: its Netflix rows first; a first ask reads them behind
 
 test('Top 10: Netflix down → tried again in 6 hours, not at the next hourly run; the rows it had stay', async () => {
   const e = { ...env, DB: d1() };
-  e.DB.raw.prepare("INSERT INTO top10 (country, week, rows, asked, t) VALUES ('BG', 'w', '[[\"r\", []]]', ?, 0)").run(Date.now());
+  e.DB.raw.prepare("INSERT INTO top10 (country, week, rows, asked, t) VALUES ('BG', '2026-01-04', '[[\"r\", []]]', ?, 0)").run(Date.now());
   globalThis.fetch = async () => new Response('down', { status: 503 });
   assert.equal((await worker.fetch(new Request('https://w/top10/refresh', { headers: tv }), e)).status, 500);
   const row = e.DB.raw.prepare('SELECT rows, t FROM top10').get();
@@ -2857,4 +2857,24 @@ test('Top 10: the app\'s Settings → Country lists the same countries as the wo
   const app = Object.fromEntries([...list.matchAll(/"([^"]*)"/g)].map((m) => m[1]).join('').split('|').map((c) => [c.slice(0, 2), c.slice(3)]));
   assert.equal(Object.keys(worker).length, 94);
   assert.deepEqual(app, worker);
+});
+
+test('Top 10: read again only once a newer week can be out (its Sunday + 9 days), every 6 hours until then', async () => {
+  const e = { ...env, DB: d1() };
+  const day = 86400e3;
+  const at = (days) => new Date(Date.now() - days * day).toISOString().slice(0, 10);
+  e.DB.raw.prepare("INSERT INTO top10 (country, week, rows, asked, t) VALUES ('BG', ?, '[]', ?, 0), ('AR', ?, '[]', ?, 0)")
+    .run(at(3), Date.now(), at(10), Date.now());
+  netflixAnswers();
+  assert.equal((await (await worker.fetch(new Request('https://w/top10/refresh', { headers: tv }), e)).json()).country, 'AR');
+  netflixAnswers();
+  assert.equal(await (await worker.fetch(new Request('https://w/top10/refresh', { headers: tv }), e)).text(), 'null'); // BG's week is 3 days old
+});
+
+test('Home: a country read with no rows is kept as any Home', async () => {
+  tmdbAnswers({ 'trending/all/day': { results: [{ id: 5, media_type: 'movie', title: 'T', poster_path: '/t.jpg' }] } });
+  const e = { ...env, DB: d1() };
+  e.DB.raw.prepare("INSERT INTO top10 (country, week, rows, asked, t) VALUES ('BG', '2026-11-15', '[]', ?, ?)").run(Date.now(), Date.now());
+  const res = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, { waitUntil: () => {} });
+  assert.equal(res.headers.get('Cache-Control'), 'max-age=3600');
 });

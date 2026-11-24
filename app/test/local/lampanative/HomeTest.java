@@ -32,7 +32,7 @@ class HomeTest {
 
     // Settings → Country: Off first, then by name; a code not listed reads Off; Home's address has the country only when set
     void testCountries() {
-        List<String[]> all = Home.countries();
+        List<String[]> all = Home.COUNTRY_LIST;
         assert all.get(0)[0].isEmpty() && all.get(0)[1].equals("Off");
         java.text.Collator byName = java.text.Collator.getInstance(java.util.Locale.ENGLISH); // Réunion before Romania
         for (int i = 2; i < all.size(); i++) assert byName.compare(all.get(i - 1)[1], all.get(i)[1]) < 0 : all.get(i)[1];

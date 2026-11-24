@@ -464,8 +464,10 @@ async function top10Card(env, type, title, now) {
 const TOP10_EVERY = 6 * 3600e3;
 async function refreshTop10(env, asked) {
   const now = Date.now();
-  const iso = asked || (await env.DB.prepare('SELECT country FROM top10 WHERE asked > ? AND t < ? ORDER BY t LIMIT 1')
-    .bind(now - 30 * 86400e3, now - TOP10_EVERY).first())?.country;
+  // a newer week is out from its Tuesday: the stored week's Sunday + 9 days (then every 6 hours until it is there)
+  const due = (r) => !r.week || now >= Date.parse(r.week) + 9 * 86400e3;
+  const iso = asked || (await env.DB.prepare('SELECT country, week FROM top10 WHERE asked > ? AND t < ? ORDER BY t')
+    .bind(now - 30 * 86400e3, now - TOP10_EVERY).all()).results.find(due)?.country;
   if (!Object.hasOwn(NETFLIX_COUNTRIES, iso || '')) return null;
   const name = NETFLIX_COUNTRIES[iso];
   const week = await netflixWeek(name).catch(async (e) => { // tried again in 6 hours, not at the next hourly run
@@ -487,8 +489,8 @@ async function refreshTop10(env, asked) {
 }
 
 // Home's Netflix rows for ?country= (none without one, or for a country Netflix doesn't list), null while a
-// country has none yet: Home is then kept a minute only, so the next start asks again (the stick's disk copy still
-// opens Home fast and offline). A first ask starts the read behind the answer, in the worker's own call, so Home
+// country was never read yet: Home is then not kept (no-store: the stick would serve a stale copy for a day), so
+// the next start asks again. A first ask starts the read behind the answer, in the worker's own call, so Home
 // never waits for it. waitUntil lasts 30 s past the answer: enough for a country in the first ~25 MB of the file
 // (Bulgaria ~4 s); a later one (United Kingdom, United States, Vietnam) is read by the hourly cron, which has no
 // such limit. Its rows then show at the next start.
@@ -498,7 +500,7 @@ async function refreshTop10(env, asked) {
 async function top10Rows(env, ctx, iso) {
   if (!env.DB || !Object.hasOwn(NETFLIX_COUNTRIES, iso)) return [];
   const now = Date.now();
-  const had = await env.DB.prepare('SELECT rows, asked FROM top10 WHERE country = ?').bind(iso).first().catch(() => null);
+  const had = await env.DB.prepare('SELECT rows, week, asked FROM top10 WHERE country = ?').bind(iso).first().catch(() => null);
   if (!had) {
     await env.DB.prepare(`INSERT INTO top10 (country, week, rows, asked, t) VALUES (?, '', '[]', ?, 0)
       ON CONFLICT (country) DO NOTHING`).bind(iso, now).run().catch(() => {});
@@ -511,8 +513,7 @@ async function top10Rows(env, ctx, iso) {
   if (now - had.asked > 86400e3) { // once a day is enough for "still wanted"
     await env.DB.prepare('UPDATE top10 SET asked = ? WHERE country = ?').bind(now, iso).run().catch(() => {});
   }
-  const rows = JSON.parse(had.rows);
-  return rows.length ? rows : null;
+  return had.week ? JSON.parse(had.rows) : null; // read once: kept as any Home, even with no rows
 }
 
 async function home(request, env, ctx) {
@@ -541,7 +542,7 @@ async function home(request, env, ctx) {
   return new Response(JSON.stringify({ rows: ok }), {
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
-      'Cache-Control': netflix ? 'max-age=3600' : 'max-age=60', // rows still coming: asked again soon
+      'Cache-Control': netflix ? 'max-age=3600' : 'no-store', // rows still coming: not kept (the stick serves a day-stale copy)
       'X-Raw-Bytes': String(rawBytes),
       ...corsHeaders(request),
     },

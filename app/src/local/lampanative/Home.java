@@ -45,19 +45,15 @@ final class Home {
         + "VE Venezuela|VN Vietnam";
 
     // [code, name] in the list's order, Off ("") first
-    static List<String[]> countries() {
-        return LIST;
-    }
-
-    private static final List<String[]> LIST = new ArrayList<>();
+    static final List<String[]> COUNTRY_LIST = new ArrayList<>();
 
     static {
-        LIST.add(new String[] {"", "Off"});
-        for (String c : COUNTRIES.split("\\|")) LIST.add(c.split(" ", 2));
+        COUNTRY_LIST.add(new String[] {"", "Off"});
+        for (String c : COUNTRIES.split("\\|")) COUNTRY_LIST.add(c.split(" ", 2));
     }
 
     static String countryName(String code) {
-        for (String[] c : countries()) if (c[0].equals(code)) return c[1];
+        for (String[] c : COUNTRY_LIST) if (c[0].equals(code)) return c[1];
         return "Off"; // a code no longer listed: the worker sends no rows for it either
     }
 

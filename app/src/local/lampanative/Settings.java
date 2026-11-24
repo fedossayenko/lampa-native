@@ -197,7 +197,7 @@ final class Settings extends Main.Part {
     // Top 10 on Netflix of that country (the worker's /home?country=).
     void showCountries() {
         LinearLayout list = m.ux.sheet("Country", "Home shows what it watches on Netflix this week. OK picks.", null);
-        for (String[] c : Home.countries()) {
+        for (String[] c : Home.COUNTRY_LIST) {
             String code = c[0];
             list.addView(m.ux.sheetRow(c[1], null, Ui.check(code.equals(m.country())), v -> {
                 if (code.equals(m.country())) {
