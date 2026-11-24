@@ -3019,3 +3019,37 @@ test('Home: JustWatch down → no service rows, Home as ever; no country → Jus
   await worker.fetch(new Request('https://w/home', { headers: tv }), e, { waitUntil: () => {} });
   assert.deepEqual(asked.filter((u) => u.includes('justwatch')), []);
 });
+
+test('Home: JustWatch asked once in 12 hours (Cloudflare cache), a failure kept an hour', async () => {
+  const kept = new Map();
+  const ages = [];
+  globalThis.caches = { default: {
+    match: async (k) => kept.get(k.url)?.clone(),
+    put: async (k, res) => { ages.push(res.headers.get('Cache-Control')); kept.set(k.url, res); },
+  } };
+  const waits = [];
+  const ctx = { waitUntil: (p) => waits.push(p) };
+  try {
+    const e = { ...env, DB: d1() };
+    servicesAnswer({ dnp: [['SHOW', 11]], mxx: [['SHOW', 11]], prv: [], atp: [], sst: [] });
+    const first = await (await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx)).json();
+    await Promise.all(waits);
+    assert.deepEqual(first.rows.filter(([t]) => t.startsWith('Popular')).map(([t, c]) => [t, c.length]),
+      [['Popular on Disney+ in Bulgaria', 1], ['Popular on HBO Max in Bulgaria', 1]]);
+    assert.equal(asked.filter((u) => new URL(u).pathname === '/3/tv/11').length, 1); // on two services, asked once
+    servicesAnswer({});
+    const again = await (await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx)).json();
+    assert.deepEqual(asked.filter((u) => u.includes('justwatch')), []);
+    assert.equal(again.rows.filter(([t]) => t.startsWith('Popular')).length, 2);
+    kept.clear();
+    servicesAnswer({}, false);
+    await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx);
+    await Promise.all(waits);
+    servicesAnswer({});
+    await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx);
+    assert.deepEqual(asked.filter((u) => u.includes('justwatch')), []); // the failure is kept
+    assert.deepEqual(ages.slice(0, 1).concat(ages.slice(-1)), ['max-age=43200', 'max-age=3600']);
+  } finally {
+    delete globalThis.caches;
+  }
+});
