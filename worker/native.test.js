@@ -2811,19 +2811,50 @@ test('Top 10: titles found once (TMDB not asked again); a country Netflix doesn\
   assert.equal((await worker.fetch(new Request('https://w/top10/refresh?country=BG'), e)).status, 403);
 });
 
-test('Home with ?country=: its Netflix rows first; the first ask reads them in the worker\'s own call', async () => {
+test('Home with ?country=: its Netflix rows first; a first ask reads them behind the answer, kept by nobody', async () => {
   tmdbAnswers({ 'trending/all/day': { results: [{ id: 5, media_type: 'movie', title: 'T', poster_path: '/t.jpg' }] } });
   const own = [];
-  const e = { ...env, DB: d1(), SELF: { fetch: async (u, init) => (own.push([u, init.headers['X-Play-Token']]),
-    new Response(JSON.stringify({ rows: [['Top 10 films on Netflix in Bulgaria', [[9, 'movie', 'H', '', '/h.jpg', 0, '']]]] }))) } };
-  const ctx = { waitUntil: () => {} };
-  const first = await (await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx)).json();
-  assert.deepEqual(first.rows.map(([t]) => t), ['Top 10 films on Netflix in Bulgaria', 'Today in trend']);
+  const waits = [];
+  const e = { ...env, DB: d1(), SELF: { fetch: async (u, init) => own.push([u, init.headers['X-Play-Token']]) } };
+  const ctx = { waitUntil: (p) => waits.push(p) };
+  const first = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx);
+  assert.equal(first.headers.get('Cache-Control'), 'no-store');
+  assert.deepEqual((await first.json()).rows.map(([t]) => t), ['Today in trend']);
+  await Promise.all(waits);
   assert.deepEqual(own, [['https://self/top10/refresh?country=BG', 'stick-token']]);
+  assert.equal((await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx)).headers.get('Cache-Control'), 'no-store');
+  assert.equal(own.length, 1); // asked once: the cron reads it if that one failed
   e.DB.raw.prepare('UPDATE top10 SET rows = ?').run(JSON.stringify([['Top 10 series on Netflix in Bulgaria', [[1, 'tv', 'B', '', '/b.jpg', 0, '']]]]));
-  const next = await (await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx)).json();
-  assert.deepEqual(next.rows.map(([t]) => t), ['Top 10 series on Netflix in Bulgaria', 'Today in trend']);
-  assert.equal(own.length, 1); // asked once
-  const none = await (await worker.fetch(new Request('https://w/home?country=ZZ', { headers: tv }), e, ctx)).json();
-  assert.deepEqual(none.rows.map(([t]) => t), ['Today in trend']);
+  const next = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx);
+  assert.equal(next.headers.get('Cache-Control'), 'max-age=3600');
+  assert.deepEqual((await next.json()).rows.map(([t]) => t), ['Top 10 series on Netflix in Bulgaria', 'Today in trend']);
+  for (const c of ['ZZ', 'constructor', '__proto__']) {
+    const none = await worker.fetch(new Request(`https://w/home?country=${c}`, { headers: tv }), e, ctx);
+    assert.deepEqual((await none.json()).rows.map(([t]) => t), ['Today in trend'], c);
+    assert.equal(none.headers.get('Cache-Control'), 'max-age=3600');
+  }
+  assert.equal(e.DB.raw.prepare('SELECT count(*) n FROM top10').get().n, 1);
+});
+
+test('Top 10: Netflix down → tried again in 6 hours, not at the next hourly run; the rows it had stay', async () => {
+  const e = { ...env, DB: d1() };
+  e.DB.raw.prepare("INSERT INTO top10 (country, week, rows, asked, t) VALUES ('BG', 'w', '[[\"r\", []]]', ?, 0)").run(Date.now());
+  globalThis.fetch = async () => new Response('down', { status: 503 });
+  assert.equal((await worker.fetch(new Request('https://w/top10/refresh', { headers: tv }), e)).status, 500);
+  const row = e.DB.raw.prepare('SELECT rows, t FROM top10').get();
+  assert.ok(Date.now() - row.t < 5000);
+  assert.equal(row.rows, '[["r", []]]');
+  netflixAnswers();
+  assert.equal(await (await worker.fetch(new Request('https://w/top10/refresh', { headers: tv }), e)).text(), 'null'); // none due
+});
+
+test('Top 10: the app\'s Settings → Country lists the same countries as the worker', () => {
+  const js = readFileSync(new URL('./cloudflare-worker.js', import.meta.url), 'utf8');
+  const java = readFileSync(new URL('../app/src/local/lampanative/Home.java', import.meta.url), 'utf8');
+  const worker = Object.fromEntries([...js.slice(js.indexOf('const NETFLIX_COUNTRIES'), js.indexOf('};', js.indexOf('const NETFLIX_COUNTRIES')))
+    .matchAll(/([A-Z]{2}): '((?:[^'\\]|\\.)*)'/g)].map(([, iso, name]) => [iso, name.replace(/\\'/g, "'")]));
+  const list = java.slice(java.indexOf('COUNTRIES = '), java.indexOf(';', java.indexOf('COUNTRIES = ')));
+  const app = Object.fromEntries([...list.matchAll(/"([^"]*)"/g)].map((m) => m[1]).join('').split('|').map((c) => [c.slice(0, 2), c.slice(3)]));
+  assert.equal(Object.keys(worker).length, 94);
+  assert.deepEqual(app, worker);
 });

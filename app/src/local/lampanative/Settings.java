@@ -165,7 +165,7 @@ final class Settings extends Main.Part {
                 showLanguages(all, null);
                 if (sheet) m.overlayBack = () -> showSettings("Audio languages");
             });
-        setting(list, help, "Country", countryName(m.country()), "Home's Top 10 on Netflix: what this country watches "
+        setting(list, help, "Country", Home.countryName(m.country()), "Home's Top 10 on Netflix: what this country watches "
             + "this week, series and films. OK picks.", v -> {
                 showCountries();
                 if (sheet) m.overlayBack = () -> showSettings("Country");
@@ -193,23 +193,13 @@ final class Settings extends Main.Part {
         Process.killProcess(Process.myPid());
     }
 
-    // The countries Netflix has a Top 10 for (the worker's NETFLIX_COUNTRIES, by ISO code)
-    static final String NETFLIX = "AR AU AT BS BH BD BE BO BR BG CA CL CO CR HR CY CZ DK DO EC EG SV EE FI FR DE GR GP GT HN HK HU IS IN ID IE IL IT JM JP JO KE KW LV LB LT LU MY MV MT MQ MU MX MA NL NC NZ NI NG NO OM PK PA PY PE PH PL PT QA RO RU RE SA RS SG SK SI ZA KR ES LK SE CH TW TH TT TR UA AE GB US UY VE VN";
-
-    // A country's name in English: BG → Bulgaria; "" → Off
-    static String countryName(String code) {
-        return code.isEmpty() ? "Off" : new ULocale("und_" + code).getDisplayCountry(ULocale.ENGLISH);
-    }
-
     // Settings → Country: Off or one of Netflix's countries, by name; OK picks and the app starts again with Home's
     // Top 10 on Netflix of that country (the worker's /home?country=).
     void showCountries() {
         LinearLayout list = m.ux.sheet("Country", "Home shows what it watches on Netflix this week. OK picks.", null);
-        List<String> all = new ArrayList<>(List.of(NETFLIX.split(" ")));
-        all.sort((a, b) -> countryName(a).compareTo(countryName(b)));
-        all.add(0, "");
-        for (String code : all) {
-            list.addView(m.ux.sheetRow(countryName(code), code, Ui.check(code.equals(m.country())), v -> {
+        for (String[] c : Home.countries()) {
+            String code = c[0];
+            list.addView(m.ux.sheetRow(c[1], code, Ui.check(code.equals(m.country())), v -> {
                 if (code.equals(m.country())) {
                     m.closeOverlay();
                     return;

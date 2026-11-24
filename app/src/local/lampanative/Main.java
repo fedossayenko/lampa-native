@@ -1021,7 +1021,7 @@ public class Main extends Activity {
     }
 
     String homeUrl() {
-        return Home.worker + "/home" + (country().isEmpty() ? "" : "?country=" + country());
+        return Home.url(Home.worker, country());
     }
 
     String langs() {

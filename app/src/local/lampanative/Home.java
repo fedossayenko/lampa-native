@@ -28,6 +28,40 @@ final class Home {
 
     private Home() {}
 
+    // Settings → Country: the countries Netflix has a Top 10 for, "ISO Name" by name (the worker's NETFLIX_COUNTRIES,
+    // native.test.js checks they are the same)
+    static final String COUNTRIES = "AR Argentina|AU Australia|AT Austria|BS Bahamas|BH Bahrain|BD Bangladesh|BE Belgium|BO Bolivia|"
+        + "BR Brazil|BG Bulgaria|CA Canada|CL Chile|CO Colombia|CR Costa Rica|HR Croatia|CY Cyprus|"
+        + "CZ Czech Republic|DK Denmark|DO Dominican Republic|EC Ecuador|EG Egypt|SV El Salvador|EE Estonia|"
+        + "FI Finland|FR France|DE Germany|GR Greece|GP Guadeloupe|GT Guatemala|HN Honduras|HK Hong Kong|"
+        + "HU Hungary|IS Iceland|IN India|ID Indonesia|IE Ireland|IL Israel|IT Italy|JM Jamaica|JP Japan|"
+        + "JO Jordan|KE Kenya|KW Kuwait|LV Latvia|LB Lebanon|LT Lithuania|LU Luxembourg|MY Malaysia|"
+        + "MV Maldives|MT Malta|MQ Martinique|MU Mauritius|MX Mexico|MA Morocco|NL Netherlands|"
+        + "NC New Caledonia|NZ New Zealand|NI Nicaragua|NG Nigeria|NO Norway|OM Oman|PK Pakistan|PA Panama|"
+        + "PY Paraguay|PE Peru|PH Philippines|PL Poland|PT Portugal|QA Qatar|RE Réunion|RO Romania|RU Russia|"
+        + "SA Saudi Arabia|RS Serbia|SG Singapore|SK Slovakia|SI Slovenia|ZA South Africa|KR South Korea|"
+        + "ES Spain|LK Sri Lanka|SE Sweden|CH Switzerland|TW Taiwan|TH Thailand|TT Trinidad and Tobago|"
+        + "TR Turkey|UA Ukraine|AE United Arab Emirates|GB United Kingdom|US United States|UY Uruguay|"
+        + "VE Venezuela|VN Vietnam";
+
+    // [code, name] in the list's order, Off ("") first
+    static List<String[]> countries() {
+        List<String[]> out = new ArrayList<>();
+        out.add(new String[] {"", "Off"});
+        for (String c : COUNTRIES.split("\\|")) out.add(c.split(" ", 2));
+        return out;
+    }
+
+    static String countryName(String code) {
+        for (String[] c : countries()) if (c[0].equals(code)) return c[1];
+        return "Off"; // a code no longer listed: the worker sends no rows for it either
+    }
+
+    // Home's address: the Netflix rows of the country, when one is set
+    static String url(String worker, String country) {
+        return worker + "/home" + (country.isEmpty() ? "" : "?country=" + country);
+    }
+
     // The first setup's values (Main.configure): the worker's https address with no path, and a play token.
     static boolean valid(String name, String value) {
         return name.equals("server") ? value.matches("https://[A-Za-z0-9.-]+(:[0-9]{1,5})?")

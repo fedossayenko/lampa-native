@@ -30,6 +30,18 @@ class HomeTest {
         assert c.score() == 0 && c.backdrop().isEmpty() : c;
     }
 
+    // Settings → Country: Off first, then by name; a code not listed reads Off; Home's address has the country only when set
+    void testCountries() {
+        List<String[]> all = Home.countries();
+        assert all.get(0)[0].isEmpty() && all.get(0)[1].equals("Off");
+        java.text.Collator byName = java.text.Collator.getInstance(java.util.Locale.ENGLISH); // Réunion before Romania
+        for (int i = 2; i < all.size(); i++) assert byName.compare(all.get(i - 1)[1], all.get(i)[1]) < 0 : all.get(i)[1];
+        assert Home.countryName("BG").equals("Bulgaria") && Home.countryName("").equals("Off")
+            && Home.countryName("XX").equals("Off");
+        assert Home.url("https://w", "").equals("https://w/home");
+        assert Home.url("https://w", "BG").equals("https://w/home?country=BG");
+    }
+
     void testBrokenJsonThrows() {
         try {
             Home.parse("{\"rows\": 5}");

@@ -396,7 +396,7 @@ const NETFLIX_COUNTRIES = {
 // The country's newest week: [{week, category: 'TV'|'Films', rank, title}], best first; [] when it isn't there.
 const READ_AT_LEAST = 256 * 1024;
 async function netflixWeek(name) {
-  const res = await fetch(NETFLIX_TSV, within(60000));
+  const res = await fetch(NETFLIX_TSV, within(300000)); // the whole read: Vietnam's start is over a minute in
   if (!res.ok) throw new Error(`Netflix ${res.status}`);
   // Big reads (256 KB): the CPU goes into each read, not each byte (measured: small chunks cost ~11 ms a MB)
   // workerd's readAtLeast; elsewhere (node tests) the plain reader: node 26 never settles read(view, {min}) on a
@@ -466,9 +466,12 @@ async function refreshTop10(env, asked) {
   const now = Date.now();
   const iso = asked || (await env.DB.prepare('SELECT country FROM top10 WHERE asked > ? AND t < ? ORDER BY t LIMIT 1')
     .bind(now - 30 * 86400e3, now - TOP10_EVERY).first())?.country;
-  if (!NETFLIX_COUNTRIES[iso]) return null;
+  if (!Object.hasOwn(NETFLIX_COUNTRIES, iso || '')) return null;
   const name = NETFLIX_COUNTRIES[iso];
-  const week = await netflixWeek(name);
+  const week = await netflixWeek(name).catch(async (e) => { // tried again in 6 hours, not at the next hourly run
+    await env.DB.prepare('UPDATE top10 SET t = ? WHERE country = ?').bind(now, iso).run();
+    throw e;
+  });
   const rows = [];
   for (const [category, type, label] of [['TV', 'tv', 'series'], ['Films', 'movie', 'films']]) {
     const titles = [...new Set(week.filter((x) => x.category === category).map((x) => x.title))];
@@ -483,27 +486,27 @@ async function refreshTop10(env, asked) {
   return { country: iso, week: week[0]?.week || '', rows };
 }
 
-// Home's Netflix rows for ?country= (none without one, or for a country Netflix doesn't list); a first ask reads
-// the list at once in the worker's own call and shows it when that takes under 15 s (Bulgaria: ~4 s); a slower one
-// finishes behind the answer (waitUntil) for the next Home, and one past that the hourly cron reads.
+// Home's Netflix rows for ?country= (none without one, or for a country Netflix doesn't list), null while a
+// country has none yet (Home then isn't kept: no-store). A first ask reads the list behind the answer, in the worker's
+// own call (Bulgaria ~4 s, Vietnam over a minute), so Home never waits for it; the next Home shows it.
 async function top10Rows(env, ctx, iso) {
-  if (!env.DB || !NETFLIX_COUNTRIES[iso]) return [];
+  if (!env.DB || !Object.hasOwn(NETFLIX_COUNTRIES, iso)) return [];
   const now = Date.now();
   const had = await env.DB.prepare('SELECT rows, asked FROM top10 WHERE country = ?').bind(iso).first().catch(() => null);
   if (!had) {
     await env.DB.prepare(`INSERT INTO top10 (country, week, rows, asked, t) VALUES (?, '', '[]', ?, 0)
       ON CONFLICT (country) DO NOTHING`).bind(iso, now).run().catch(() => {});
-    if (!env.SELF) return [];
-    const call = env.SELF.fetch(`https://self/top10/refresh?country=${iso}`, { headers: { 'X-Play-Token': env.PLAY_TOKEN } })
-      .then((res) => (res.ok ? res.json() : null)).then((o) => o?.rows || [])
-      .catch((e) => (console.log('top10', String(e)), []));
-    if (ctx) ctx.waitUntil(call);
-    return Promise.race([call, new Promise((done) => setTimeout(() => done([]), 15000))]);
+    if (env.SELF && ctx) {
+      ctx.waitUntil(env.SELF.fetch(`https://self/top10/refresh?country=${iso}`, { headers: { 'X-Play-Token': env.PLAY_TOKEN } })
+        .catch((e) => console.log('top10', String(e))));
+    }
+    return null;
   }
   if (now - had.asked > 86400e3) { // once a day is enough for "still wanted"
     await env.DB.prepare('UPDATE top10 SET asked = ? WHERE country = ?').bind(now, iso).run().catch(() => {});
   }
-  return JSON.parse(had.rows);
+  const rows = JSON.parse(had.rows);
+  return rows.length ? rows : null;
 }
 
 async function home(request, env, ctx) {
@@ -527,11 +530,12 @@ async function home(request, env, ctx) {
   const ok = rows.filter(Boolean);
   if (!ok.length) return corsError(request, 'TMDB unavailable.', 502);
   const country = new URL(request.url).searchParams.get('country') || '';
-  ok.unshift(...await top10Rows(env, ctx, country)); // before TMDB's: what the country watches on Netflix
+  const netflix = await top10Rows(env, ctx, country);
+  ok.unshift(...(netflix || [])); // before TMDB's: what the country watches on Netflix
   return new Response(JSON.stringify({ rows: ok }), {
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
-      'Cache-Control': 'max-age=3600',
+      'Cache-Control': netflix ? 'max-age=3600' : 'no-store', // rows still coming: asked again next time
       'X-Raw-Bytes': String(rawBytes),
       ...corsHeaders(request),
     },
