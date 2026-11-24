@@ -576,8 +576,9 @@ async function serviceRows(env, ctx, iso) {
       return none;
     }
     const budget = { left: 30 };
-    const cards = await englishCards(env, lists.flat(), lists.flat().map(() => null), budget);
-    const done = budget.left > 0; // none cut by the budget: a title TMDB lacks (404, no poster) stays out, kept
+    const cards = await englishCards(env, lists.flat(), [], budget);
+    // done: none cut by the budget and none failed; a title TMDB lacks (404, no poster) just stays out
+    const done = !budget.cut && !budget.failed;
 
     let at = 0;
     const rows = SERVICES.map(([, label], i) => {
@@ -604,7 +605,8 @@ async function upTo(p, ms, fallback) {
 async function home(request, env, ctx) {
   let rawBytes = 0;
   const country = new URL(request.url).searchParams.get('country') || '';
-  const extra = Promise.all([top10Rows(env, ctx, country), serviceRows(env, ctx, country)]); // beside TMDB's rows
+  const extra = Promise.all([top10Rows(env, ctx, country), serviceRows(env, ctx, country)]) // beside TMDB's rows
+    .catch((e) => (console.log('home extra', String(e)), [[], { rows: [], done: false }])); // never unhandled (a 502 below)
   const rows = await Promise.all(HOME_ROWS.map(async ([title, path]) => {
     try {
       const res = await tmdb(env, path);
@@ -2396,12 +2398,20 @@ async function englishCards(env, wanted, fallback, fetchMax = 20) {
   const known = new Map(env.DB ? (await env.DB.prepare(`SELECT t.type, t.id, t.card FROM titles t
       JOIN json_each(?) j ON t.type = j.value->>'type' AND t.id = j.value->>'id'`).bind(pairs).all()
     .then((r) => r.results).catch(() => [])).map((r) => [`${r.type}:${r.id}`, JSON.parse(r.card)]) : []);
-  const missing = [...new Map(wanted.filter(([type, id]) => !known.has(`${type}:${id}`)).map((w) => [w.join(':'), w])).values()]
-    .slice(0, fetchMax.left ?? fetchMax); // each pair once (a title on two services is one call)
-  if (fetchMax.left !== undefined) fetchMax.left -= missing.length;
+  // each pair once (a title on two services is one call); a budget object ({left}) also learns how many were cut
+  // by it (cut) and how many TMDB failed (failed: not a 404 or a title without a poster, which are final)
+  const all = [...new Map(wanted.filter(([type, id]) => !known.has(`${type}:${id}`)).map((w) => [w.join(':'), w])).values()];
+  const missing = all.slice(0, fetchMax.left ?? fetchMax);
+  let failed = 0;
+  if (fetchMax.left !== undefined) {
+    fetchMax.left -= missing.length;
+    fetchMax.cut = (fetchMax.cut || 0) + all.length - missing.length;
+  }
   const fetched = (await Promise.all(missing.map(([type, id]) => tmdb(env, `${type}/${id}`)
-    .then((res) => (res.ok ? res.json() : null)).then((m) => (m && m.poster_path ? { type, m } : null))
-    .catch(() => null)))).filter(Boolean);
+    .then((res) => (res.ok ? res.json() : (res.status !== 404 && failed++, null)))
+    .then((m) => (m && m.poster_path ? { type, m } : null))
+    .catch(() => (failed++, null))))).filter(Boolean);
+  if (fetchMax.left !== undefined) fetchMax.failed = (fetchMax.failed || 0) + failed;
   for (const { type, m } of fetched) known.set(`${type}:${m.id}`, cardOf(m, type));
   if (fetched.length && env.DB) {
     await env.DB.prepare(`INSERT INTO titles (type, id, card, votes, seen, en)

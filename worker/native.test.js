@@ -3097,3 +3097,27 @@ test('Home: a title TMDB lacks (404) stays out and Home is kept: done is "nothin
   assert.equal(res.headers.get('Cache-Control'), 'max-age=3600');
   assert.deepEqual((await res.json()).rows.find(([t]) => t.startsWith('Popular on Disney+'))[1].map((c) => c[0]), [11]);
 });
+
+test('Home: a TMDB failure (not a 404) on a card → not done: Home not kept, the next build asks it again', async () => {
+  servicesAnswer({ dnp: [['SHOW', 11], ['MOVIE', 998]], mxx: [], prv: [], atp: [], sst: [] });
+  const inner = globalThis.fetch;
+  let down = true;
+  globalThis.fetch = async (url, init) => (new URL(url).pathname === '/3/movie/998' && down ? new Response('busy', { status: 429 }) : inner(url, init));
+  const e = { ...env, DB: d1() };
+  e.DB.raw.prepare("INSERT INTO top10 (country, week, rows, asked, t) VALUES ('BG', '2026-11-22', '[]', ?, ?)").run(Date.now(), Date.now());
+  const first = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, { waitUntil: () => {} });
+  assert.equal(first.headers.get('Cache-Control'), 'no-store');
+  down = false;
+  const next = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, { waitUntil: () => {} });
+  assert.equal(next.headers.get('Cache-Control'), 'max-age=3600');
+  assert.equal((await next.json()).rows.find(([t]) => t.startsWith('Popular on Disney+'))[1].length, 2);
+});
+
+test('Home: exactly 30 new cards → all asked, nothing cut, Home kept', async () => {
+  const many = Array.from({ length: 30 }, (_, i) => ['MOVIE', 200 + i]);
+  servicesAnswer({ dnp: many.slice(0, 12), mxx: many.slice(12, 24), prv: many.slice(24), atp: [], sst: [] });
+  const e = { ...env, DB: d1() };
+  e.DB.raw.prepare("INSERT INTO top10 (country, week, rows, asked, t) VALUES ('BG', '2026-11-22', '[]', ?, ?)").run(Date.now(), Date.now());
+  const res = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, { waitUntil: () => {} });
+  assert.equal(res.headers.get('Cache-Control'), 'max-age=3600');
+});
