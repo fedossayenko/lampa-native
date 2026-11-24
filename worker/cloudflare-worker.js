@@ -484,7 +484,8 @@ async function refreshTop10(env, asked) {
   }
   await env.DB.prepare(`INSERT INTO top10 (country, week, rows, asked, t) VALUES (?1, ?2, ?3, ?4, ?4)
     ON CONFLICT (country) DO UPDATE SET week = excluded.week, rows = excluded.rows, t = excluded.t`)
-    .bind(iso, week[0]?.week || '', JSON.stringify(rows), now).run();
+    // not in the file (renamed, dropped): today as its week, so it is kept and read again in 9 days like any other
+    .bind(iso, week[0]?.week || new Date(now).toISOString().slice(0, 10), JSON.stringify(rows), now).run();
   return { country: iso, week: week[0]?.week || '', rows };
 }
 
@@ -500,7 +501,12 @@ async function refreshTop10(env, asked) {
 async function top10Rows(env, ctx, iso) {
   if (!env.DB || !Object.hasOwn(NETFLIX_COUNTRIES, iso)) return [];
   const now = Date.now();
-  const had = await env.DB.prepare('SELECT rows, week, asked FROM top10 WHERE country = ?').bind(iso).first().catch(() => null);
+  let had;
+  try {
+    had = await env.DB.prepare('SELECT rows, week, asked FROM top10 WHERE country = ?').bind(iso).first();
+  } catch {
+    return []; // D1 failing: no rows, and no read started on every Home meanwhile
+  }
   if (!had) {
     await env.DB.prepare(`INSERT INTO top10 (country, week, rows, asked, t) VALUES (?, '', '[]', ?, 0)
       ON CONFLICT (country) DO NOTHING`).bind(iso, now).run().catch(() => {});

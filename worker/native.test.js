@@ -2878,3 +2878,23 @@ test('Home: a country read with no rows is kept as any Home', async () => {
   const res = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, { waitUntil: () => {} });
   assert.equal(res.headers.get('Cache-Control'), 'max-age=3600');
 });
+
+test('Top 10: a country Netflix lists but the file lacks: today as its week, kept and not read again for 9 days', async () => {
+  netflixAnswers();
+  const e = { ...env, DB: d1() };
+  assert.deepEqual((await (await worker.fetch(new Request('https://w/top10/refresh?country=US', { headers: tv }), e)).json()).rows, []);
+  const row = e.DB.raw.prepare('SELECT week, rows FROM top10').get();
+  assert.equal(row.week, new Date().toISOString().slice(0, 10));
+  e.DB.raw.prepare('UPDATE top10 SET t = 0').run();
+  assert.equal(await (await worker.fetch(new Request('https://w/top10/refresh', { headers: tv }), e)).text(), 'null');
+});
+
+test('Home: D1 failing → no Netflix rows and no read started', async () => {
+  tmdbAnswers({ 'trending/all/day': { results: [{ id: 5, media_type: 'movie', title: 'T', poster_path: '/t.jpg' }] } });
+  const own = [];
+  const broken = { prepare: () => ({ bind: () => ({ first: async () => { throw new Error('D1 down'); }, run: async () => { throw new Error('D1 down'); } }) }) };
+  const e = { ...env, DB: broken, SELF: { fetch: async (u) => own.push(u) } };
+  const res = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, { waitUntil: () => {} });
+  assert.deepEqual((await res.json()).rows.map(([t]) => t), ['Today in trend']);
+  assert.deepEqual(own, []);
+});

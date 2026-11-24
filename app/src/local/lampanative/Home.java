@@ -45,11 +45,13 @@ final class Home {
         + "VE Venezuela|VN Vietnam";
 
     // [code, name] in the list's order, Off ("") first
-    static final List<String[]> COUNTRY_LIST = new ArrayList<>();
+    static final List<String[]> COUNTRY_LIST = countryList();
 
-    static {
-        COUNTRY_LIST.add(new String[] {"", "Off"});
-        for (String c : COUNTRIES.split("\\|")) COUNTRY_LIST.add(c.split(" ", 2));
+    private static List<String[]> countryList() {
+        List<String[]> out = new ArrayList<>();
+        out.add(new String[] {"", "Off"});
+        for (String c : COUNTRIES.split("\\|")) out.add(c.split(" ", 2));
+        return List.copyOf(out);
     }
 
     static String countryName(String code) {
