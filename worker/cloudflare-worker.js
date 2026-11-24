@@ -554,10 +554,10 @@ const SERVICE_TITLES = 12;
 const SERVICES_WAIT = 3000;
 async function serviceRows(env, ctx, iso) {
   if (!Object.hasOwn(NETFLIX_COUNTRIES, iso)) return { rows: [], done: true };
-  const key = new Request(`https://justwatch.cache/popular/${iso}`);
+  const key = new Request(`https://justwatch.cache/v2/popular/${iso}`); // v2: {rows, done} (v1 kept bare ids)
   const cache = typeof caches === 'undefined' ? null : caches.default; // none in node tests: built each time
   const hit = await cache?.match(key).then((r) => r?.json()).catch(() => null);
-  if (hit) return hit;
+  if (Array.isArray(hit?.rows)) return hit; // anything else (an older shape): built again
   const kept = (got, seconds) => (cache ? cache.put(key, new Response(JSON.stringify(got),
     { headers: { 'Cache-Control': `max-age=${seconds}` } })) : null);
   const build = (async () => {

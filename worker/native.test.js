@@ -3031,6 +3031,8 @@ test('Home: the services\' rows kept 12 hours at the Cloudflare location, a fail
   const ctx = { waitUntil: (p) => waits.push(p) };
   try {
     const e = { ...env, DB: d1() };
+    // an older shape under the key (v1 kept bare ids under /popular/BG; one under v2 must not break Home either)
+    kept.set('https://justwatch.cache/v2/popular/BG', new Response(JSON.stringify([[['tv', 11]]])));
     servicesAnswer({ dnp: [['SHOW', 11]], mxx: [['SHOW', 11]], prv: [], atp: [], sst: [] });
     const first = await (await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, ctx)).json();
     await Promise.all(waits);
