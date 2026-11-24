@@ -547,9 +547,12 @@ async function top10Rows(env, ctx, iso) {
 // most. A service the country lacks comes back empty. {rows, done}: done = Home may be kept.
 // ponytail: apis.justwatch.com/graphql is the site's own API, not a published one (JustWatch's official Streaming
 // Charts API needs a form); a change there leaves these rows out, nothing else.
-const SERVICES = [['dnp', 'Disney+'], ['mxx', 'HBO Max'], ['prv', 'Prime Video'], ['atp', 'Apple TV'], ['sst', 'SkyShowtime']];
-const SERVICES_QUERY = `query($c: Country!) { ${SERVICES.map(([p]) => `${p}: popularTitles(country: $c, first: 12,
-  sortBy: POPULAR, filter: {packages: ["${p}"]}) { edges { node { objectType content(country: $c, language: "en") {
+// [alias, name, JustWatch's codes]: a service can have one code per region (checked 2026-11-24: Prime Video is
+// amp in US/DE/GB, prv in BG/PL/RO; the others one code everywhere)
+const SERVICES = [['dnp', 'Disney+', ['dnp']], ['mxx', 'HBO Max', ['mxx']], ['prv', 'Prime Video', ['prv', 'amp']],
+  ['atp', 'Apple TV', ['atp']], ['sst', 'SkyShowtime', ['sst']]];
+const SERVICES_QUERY = `query($c: Country!) { ${SERVICES.map(([p, , codes]) => `${p}: popularTitles(country: $c, first: 12,
+  sortBy: POPULAR, filter: {packages: ${JSON.stringify(codes)}}) { edges { node { objectType content(country: $c, language: "en") {
   externalIds { tmdbId } } } } }`).join(' ')} }`;
 const SERVICES_WAIT = 3000;
 const SERVICES_TRIES = 3;
