@@ -3179,14 +3179,20 @@ async function voiceFind(request, env) {
   const t0 = Date.now();
   if (!understood && text && env.AI) {
     const o = await env.AI.run(READS, { messages: [{ role: 'system', content: voicePrompt() }, { role: 'user', content: withTaste(text, ask.taste) }],
-      max_tokens: 1500 }).catch((e) => (console.log('voice model', String(e)), null));
+      max_tokens: 600 }).catch((e) => (console.log('voice model', String(e)), null)); // the JSON: under 400 tokens
     // {response} as text or parsed, or (seen 2026-11-28 from the same model) OpenAI's {choices: [{message: {content}}]}
     const said = o?.response ?? o?.choices?.[0]?.message?.content ?? '';
     understood = typeof said === 'object' ? said : jsonIn(String(said));
-    if (!understood) console.log('voice model said', JSON.stringify(o).slice(0, 600));
+    if (!understood) console.log('voice model said', Object.keys(o || {}), String(said).length); // its shape, not the titles
   }
-  if (!understood) return corsError(request, 'Not understood.', 502);
   const t1 = Date.now();
+  const timing = (tmdbMs) => [by === 'workers-ai' && `model;dur=${t1 - t0}`, tmdbMs != null && `tmdb;dur=${tmdbMs}`]
+    .filter(Boolean).join(', ');
+  if (!understood) {
+    const res = corsError(request, 'Not understood.', 502);
+    res.headers.set('Server-Timing', timing(null));
+    return res;
+  }
   const intent = ['title', 'describe', 'recommend'].includes(understood.intent) ? understood.intent : 'title';
   const guesses = (Array.isArray(understood.candidates) ? understood.candidates : [])
     .filter((c) => c && typeof c.title === 'string' && c.title.trim()).slice(0, 8);
@@ -3198,7 +3204,7 @@ async function voiceFind(request, env) {
   const [a, b] = results;
   const open = intent !== 'recommend' && Boolean(a) && a[7] >= 70 && (!b || b[7] <= a[7] - 50);
   const res = voiceAnswer(request, { intent, by, open, results });
-  res.headers.set('Server-Timing', `model;dur=${t1 - t0}, tmdb;dur=${Date.now() - t1}`); // where an answer's time went
+  res.headers.set('Server-Timing', timing(Date.now() - t1)); // where an answer's time went
   return res;
 }
 

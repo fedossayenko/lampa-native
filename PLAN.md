@@ -293,7 +293,8 @@ shaping; custom-drawn rows would only save Java heap, which is 3–6 MB (log row
      (1.5 s warm against 7 s cold; worker/home-server/voice-claude.py) → worker `/voice/find`: each guess on TMDB
      with its confidence (the card's corner), a recommendation's filters on TMDB discover, one sure title (85%+,
      25 ahead) opened at once; a recommendation leaves out what you graded or marked. No MacBook (off, plan limit):
-     the worker's free Llama 4 Scout reads the text (titles fine, recommendations poor). Test of 16 requests (en, ru,
+     the worker's free model reads the text (Llama 4 Scout then: titles fine, recommendations poor; Llama 3.3 70B fast
+     since 2026-11-28, see 8i). Test of 16 requests (en, ru,
      uk; titles, descriptions, recommendations): Claude Haiku, Sonnet, Opus 12/12 with good picks; free Workers AI
      models 10-12/12 with invented or wrong picks (Saw X for a family evening); GLM 4.7 Flash right but 23 s.
      Rejected: speech to text on the home server (whisper.cpp: small 8.5 s and wrong, turbo 35 s beside the bots),
