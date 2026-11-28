@@ -17,8 +17,10 @@ import android.widget.TextView;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Future;
 
 final class SearchScreen extends Main.Part {
@@ -47,7 +49,7 @@ final class SearchScreen extends Main.Part {
     String inFlight; // the query asked and not answered yet: "dark" → "dark " meanwhile asks nothing more
     boolean ru = m.settings().getBoolean("search_ru", false);
     Search.Theme theme; // the theme whose picks are shown (null: a search's or voice's), and every pick it showed
-    final java.util.Set<String> picked = new java.util.LinkedHashSet<>(); // once each: a repeat takes no slot
+    final Set<String> picked = new LinkedHashSet<>(); // once each: a repeat takes no slot
     Future<String> taste; // the viewer's taste (VoiceSearch.taste), asked once while the screen is open
 
     void show() {

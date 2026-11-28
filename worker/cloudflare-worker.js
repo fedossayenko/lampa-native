@@ -3225,8 +3225,9 @@ async function voiceTaste(request, env, ctx) {
   }
   let taste = lines.join('\n');
   if (taste.length > TASTE_MAX) { // a whole title last
+    const line = taste.lastIndexOf('\n', TASTE_MAX); // the cut stays in the last line it reaches
     const cut = taste.lastIndexOf('; ', TASTE_MAX);
-    taste = taste.slice(0, cut > 0 ? cut : TASTE_MAX);
+    taste = taste.slice(0, cut > line ? cut : line > 0 ? line : TASTE_MAX);
   }
   return new Response(JSON.stringify({ taste }), {
     headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...corsHeaders(request) },
