@@ -137,16 +137,17 @@ final class Voice {
     // ageMs: since it was asked (elapsed time, not the wall clock); same: for the same sign-in and country
     static boolean reuse(Future<String> had, long ageMs, boolean same) {
         try {
-            return had != null && same && ageMs >= 0 && ageMs < TASTE_MS && (!had.isDone() || had.get() != null);
+            return had != null && same && ageMs < TASTE_MS && (!had.isDone() || had.get() != null);
         } catch (Exception e) {
             return false; // failed
         }
     }
 
-    // /voice/taste's answer: the taste; "" for 401 (no CUB sign-in it knows: nothing to know); null to ask again
-    // (a refused play token, 403, works again once tools/connect.sh sets a new one; a failure)
+    // /voice/taste's answer: the taste, else null to ask again. A 401 too: the worker says so when CUB wasn't reached as
+    // well as for a sign-in it doesn't know (cubUser).
+    // ponytail: one request a press for an account outside CUB_ACCOUNTS; a 502 for "CUB not reached" in the worker would let 401 be kept
     static String tasteOf(int code, String body) throws JSONException {
-        return code == 200 ? new JSONObject(body).optString("taste") : code == 401 ? "" : null;
+        return code == 200 ? new JSONObject(body).optString("taste") : null;
     }
 
     // A card's corner: how sure ("97%"), nothing for one the filters found.

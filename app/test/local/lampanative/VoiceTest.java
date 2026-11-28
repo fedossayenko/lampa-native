@@ -105,7 +105,6 @@ class VoiceTest {
         coming.run();
         assert Voice.reuse(coming, 60_000, true) : "came";
         assert !Voice.reuse(coming, Voice.TASTE_MS, true) : "10 minutes: asked again";
-        assert !Voice.reuse(coming, -5, true) : "a clock gone back";
         assert !Voice.reuse(coming, 0, false) : "another sign-in or country";
         assert Voice.reuse(java.util.concurrent.CompletableFuture.completedFuture(""), 0, true) : "nothing to know is an answer";
         java.util.concurrent.FutureTask<String> failed = new java.util.concurrent.FutureTask<>(() -> { throw new java.io.IOException(); });
@@ -113,7 +112,7 @@ class VoiceTest {
         assert !Voice.reuse(java.util.concurrent.CompletableFuture.completedFuture(null), 0, true) && !Voice.reuse(failed, 0, true)
             && !Voice.reuse(null, 0, true) : "a failure is asked again";
         assert Voice.tasteOf(200, "{\"taste\":\"Loved: Dune\"}").equals("Loved: Dune");
-        assert Voice.tasteOf(401, "{}").equals("") : "no sign-in the worker knows";
-        assert Voice.tasteOf(403, "{}") == null && Voice.tasteOf(502, "{}") == null : "asked again";
+        assert Voice.tasteOf(401, "{}") == null && Voice.tasteOf(403, "{}") == null && Voice.tasteOf(502, "{}") == null
+            : "asked again (a 401 may be CUB not reached)";
     }
 }
