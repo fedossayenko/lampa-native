@@ -3177,16 +3177,20 @@ async function voiceFind(request, env) {
   let understood = ask?.understood && typeof ask.understood === 'object' ? ask.understood : null;
   const by = understood ? 'claude' : 'workers-ai';
   const t0 = Date.now();
-  if (!understood && text && env.AI) {
+  const ran = Boolean(!understood && text && env.AI); // the model asked here: its time in Server-Timing
+  if (ran) {
     const o = await env.AI.run(READS, { messages: [{ role: 'system', content: voicePrompt() }, { role: 'user', content: withTaste(text, ask.taste) }],
       max_tokens: 600 }).catch((e) => (console.log('voice model', String(e)), null)); // the JSON: under 400 tokens
     // {response} as text or parsed, or (seen 2026-11-28 from the same model) OpenAI's {choices: [{message: {content}}]}
     const said = o?.response ?? o?.choices?.[0]?.message?.content ?? '';
     understood = typeof said === 'object' ? said : jsonIn(String(said));
-    if (!understood) console.log('voice model said', Object.keys(o || {}), String(said).length); // its shape, not the titles
+    if (!understood) { // its shape and why it stopped, not the titles
+      console.log('voice model said', Object.keys(o || {}), String(said).length, o?.usage?.completion_tokens,
+        o?.choices?.[0]?.finish_reason);
+    }
   }
   const t1 = Date.now();
-  const timing = (tmdbMs) => [by === 'workers-ai' && `model;dur=${t1 - t0}`, tmdbMs != null && `tmdb;dur=${tmdbMs}`]
+  const timing = (tmdbMs) => [ran && `model;dur=${t1 - t0}`, tmdbMs != null && `tmdb;dur=${tmdbMs}`]
     .filter(Boolean).join(', ');
   if (!understood) {
     const res = corsError(request, 'Not understood.', 502);
