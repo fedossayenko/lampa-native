@@ -102,6 +102,21 @@ final class Ui {
         return lp;
     }
 
+    // A tile with a glyph or a word in place of a picture (Continue browsing's History and Your <year>): tag finds it
+    // again when the row is drawn again; focus puts its row at the top, as a card's.
+    View glyphTile(String glyph, int color, String name, String sub, String tag, TextView rowTitle, View.OnClickListener click) {
+        TextView picture = text(glyph, 40, color);
+        picture.setGravity(Gravity.CENTER);
+        picture.setBackground(shape(12 * m.dp, 0x14ffffff, 0x26ffffff));
+        View card = tile(picture, m.dp(195), m.dp(110), 12 * m.dp, name, sub);
+        card.setTag(tag);
+        card.setOnFocusChangeListener((v, focused) -> {
+            if (focused) m.scroll.scrollTo(0, rowTitle.getTop());
+        });
+        card.setOnClickListener(click);
+        return card;
+    }
+
     // A card: a picture (w × h, corners radius; < 0: a circle) in its focus halo, a name and a gray line under it, up
     // to two lines each. The halo is a ring drawn by the card only while focused (the old frame sat inside the
     // picture, over the badges); the card reaches a halo past the picture on each side, inside the gap.

@@ -209,12 +209,21 @@ final class Timeline {
 
     // The worker's /play path: one file of a torrent (Torrentio's index and name) and this point's key. series: an
     // episode's original series name (Lampa's keys of the ones after it), the playlist then comes too; null: a film.
-    // test: a test play (the test_plays setting, written over adb with su: the stick is rooted), kept out of the worker's
-    // starts numbers
-    static String playPath(String hash, int fileIdx, String name, String key, String series, boolean test) {
+    static String playPath(String hash, int fileIdx, String name, String key, String series) {
         try {
             return "/play/" + hash + "?file=" + fileIdx + "&name=" + URLEncoder.encode(name, "UTF-8") + "&tl=" + key
-                + (series == null ? "" : "&series=" + URLEncoder.encode(series, "UTF-8")) + (test ? "&test=1" : "");
+                + (series == null ? "" : "&series=" + URLEncoder.encode(series, "UTF-8"));
+        } catch (UnsupportedEncodingException e) {
+            throw new AssertionError(e); // UTF-8 is always there
+        }
+    }
+
+    // What the worker's play log keeps of a play beside the release (appended to playPath): the film's or series' card,
+    // the name shown, an episode's season and episode.
+    static String playLog(String card, String title, int season, int episode) {
+        try {
+            return "&card=" + card + "&title=" + URLEncoder.encode(title, "UTF-8")
+                + (season > 0 ? "&s=" + season + "&e=" + episode : "");
         } catch (UnsupportedEncodingException e) {
             throw new AssertionError(e); // UTF-8 is always there
         }
@@ -367,10 +376,12 @@ final class Timeline {
         }
 
         // POST /timeline: where DDD stopped ({time, duration, percent} from saved()); the worker stamps the time.
-        String body(long[] t) {
+        // end: DDD's end_by with its answer ("completion", "user"; null: a report while it plays), for the play log
+        String body(long[] t, String end) {
             try {
                 JSONObject p = new JSONObject().put("hash", key).put("time", t[0]).put("duration", t[1])
                     .put("percent", t[2]).put("card", card).put("season", season).put("episode", episode);
+                if (end != null) p.put("end", end);
                 return new JSONObject().put("timelines", new JSONArray().put(p)).toString();
             } catch (JSONException e) {
                 throw new AssertionError(e); // numbers and strings only

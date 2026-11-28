@@ -191,13 +191,12 @@ class TimelineTest {
 
     // The worker's /play path: the file Torrentio meant, its name encoded, and this point's key.
     void testPlayPath() {
-        String p = Timeline.playPath("ab12", 3, "Темный рыцарь / The Dark Knight [2008].mkv", "13906648", null, false);
+        String p = Timeline.playPath("ab12", 3, "Темный рыцарь / The Dark Knight [2008].mkv", "13906648", null);
         assert p.startsWith("/play/ab12?file=3&name=") && p.endsWith("&tl=13906648") : p;
         assert !p.contains(" ") && !p.contains("/ The") && p.contains("%D0%A2") : p;
-        assert Timeline.playPath("ab12", -1, "a&b=c", "1", null, false).contains("name=a%26b%3Dc") : "& and = stay inside the name";
-        assert Timeline.playPath("ab12", 8, "F.S01E09.mkv", "1", "Foundation & Co", false).endsWith("&tl=1&series=Foundation+%26+Co")
+        assert Timeline.playPath("ab12", -1, "a&b=c", "1", null).contains("name=a%26b%3Dc") : "& and = stay inside the name";
+        assert Timeline.playPath("ab12", 8, "F.S01E09.mkv", "1", "Foundation & Co").endsWith("&tl=1&series=Foundation+%26+Co")
             : "an episode: the series' original name, for the playlist's keys";
-        assert Timeline.playPath("ab12", 3, "x", "1", null, true).endsWith("&tl=1&test=1") : "a test play";
     }
 
     // An episode's /play answer: the playlist, this one first, as the worker's /stream addresses.
@@ -231,9 +230,23 @@ class TimelineTest {
         assert Timeline.Playing.of(null) == null;
     }
 
+    // The play log's fields after the release: the card, the name (encoded), an episode's numbers.
+    void testPlayLog() {
+        assert Timeline.playLog("movie_155", "The Dark Knight", 0, 0).equals("&card=movie_155&title=The+Dark+Knight");
+        assert Timeline.playLog("tv_1399", "A & B", 2, 7).equals("&card=tv_1399&title=A+%26+B&s=2&e=7");
+    }
+
+    // DDD's answer says how it ended; a report while it plays doesn't.
+    void testTimelineBodyEnd() throws Exception {
+        Timeline.Playing p = new Timeline.Playing("1", "movie_155", 0, 0, 0);
+        assert new org.json.JSONObject(p.body(new long[] {7000, 7000, 100}, "completion")).getJSONArray("timelines")
+            .getJSONObject(0).getString("end").equals("completion");
+        assert !p.body(new long[] {1, 2, 50}, null).contains("\"end\"");
+    }
+
     // POST /timeline: one point as the worker takes it (it stamps `updated` itself).
     void testTimelineBody() throws Exception {
-        String body = new Timeline.Playing("46902274", "tv_1399", 1, 5, 0).body(new long[] {3000, 7000, 43});
+        String body = new Timeline.Playing("46902274", "tv_1399", 1, 5, 0).body(new long[] {3000, 7000, 43}, null);
         org.json.JSONObject t = new org.json.JSONObject(body).getJSONArray("timelines").getJSONObject(0);
         assert t.getString("hash").equals("46902274") && t.getLong("time") == 3000 && t.getLong("duration") == 7000;
         assert t.getInt("percent") == 43 && t.getString("card").equals("tv_1399");

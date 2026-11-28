@@ -44,8 +44,8 @@ final class Playback extends Main.Part {
         }
         m.asking = true;
         String key = Timeline.key(f, season, episode);
-        String path = Timeline.playPath(hash, fileIdx, name, key, season > 0 ? Timeline.original(f) : null,
-            m.settings().getBoolean("test_plays", false));
+        String path = Timeline.playPath(hash, fileIdx, name, key, season > 0 ? Timeline.original(f) : null)
+            + Timeline.playLog(Timeline.card(c), f.name(), season, episode);
         Toast.makeText(m, "Getting the link…", Toast.LENGTH_SHORT).show();
         // Our DDD fork's skip times (intro, recap, credits) from the worker, asked alongside the link
         String skipPath = Timeline.segmentsPath(c, f.imdb(), season, episode, hash, fileIdx, name, Timeline.original(f));
@@ -203,7 +203,7 @@ final class Playback extends Main.Part {
             m.filmPage.askGradeFor = p.card();
             m.filmPage.askGrade();
         }
-        String json = p.body(t);
+        String json = p.body(t, data.getStringExtra("end_by"));
         m.load(null, "timeline", () -> m.ask("/timeline", json.getBytes(StandardCharsets.UTF_8)).code(), code -> {
             if (code != 204) Log.w(Main.TAG, "timeline: HTTP " + code);
             m.loadMine(); // the film just played, in Continue browsing

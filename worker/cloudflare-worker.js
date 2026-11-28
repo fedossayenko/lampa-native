@@ -333,7 +333,7 @@ async function refreshTitles(env, language) {
 // times a series' episode got (asked again after a week anyway), "out in your language" answers (a new episode's, asked
 // for a month), a followed film's news (the app shows 30 days), recommendations of a film no longer graded, MaxVol's
 // lists (a day's), jobs of the intro detector that nothing has taken for a month (it asks the queue every 10 minutes).
-const PURGE = [['segments', 60], ['fresh', 30], ['news', 90], ['recs', 60], ['maxvol', 30], ['intro_jobs', 30], ['top10_titles', 90], ['starts', 180]];
+const PURGE = [['segments', 60], ['fresh', 30], ['news', 90], ['recs', 60], ['maxvol', 30], ['intro_jobs', 30], ['top10_titles', 90]];
 async function purgeOld(env, now) {
   for (const [table, days] of PURGE) {
     await env.DB.prepare(`DELETE FROM ${table} WHERE t < ?`).bind(now - days * 86400e3).run().catch((e) => console.log('purge', table, String(e)));
@@ -1586,7 +1586,20 @@ async function linkIn(env, id, fileIdx, name) {
   // requestdl takes the key as a parameter (it is built for browser redirects); server to server only
   const dl = await torboxApi(env, `requestdl?token=${encodeURIComponent(env.TORBOX_API_KEY)}&torrent_id=${id}&file_id=${file.id}`);
   if (typeof dl?.data !== 'string') return { id, error: dl?.detail || 'No link.', status: 502 };
-  return { id, files, file, link: dl.data };
+  return { id, files, file, link: dl.data, release: String(t.name || '') };
+}
+
+// The play log (plays.sql): a row for each film or episode Play started, with what the app says it is (&card=tv_1399
+// &title=<its name>&s=1&e=5, an older app sends none: the first report brings the card); not a probe's.
+const PLAY_TITLE_MAX = 200;
+function playRow(q, hash, got, start) {
+  const tl = q.get('tl') || '';
+  if (!/^\d{1,10}$/.test(tl) || q.has('probe')) return null;
+  const card = /^(movie|tv)_\d{1,10}$/.test(q.get('card') || '') ? q.get('card') : null;
+  const n = (k) => (/^\d{1,4}$/.test(q.get(k) || '') && Number(q.get(k)) > 0 ? Number(q.get(k)) : null);
+  return [Date.now(), tl, card, (q.get('title') || '').slice(0, PLAY_TITLE_MAX) || null, n('s'), n('e'), hash,
+    got.release.slice(0, 300) || null, String(got.file.short_name || got.file.name || '').split('/').pop().slice(0, 300) || null,
+    start];
 }
 
 async function play(request, env, ctx, hash) {
@@ -1594,10 +1607,7 @@ async function play(request, env, ctx, hash) {
   const q = new URL(request.url).searchParams;
   const resume = resumePoint(env, q.get('tl')); // alongside TorBox's three calls
   // played: a torrent a probe added stays in the account (dropProbeAdds)
-  // starts: each play's release beside the timeline's key (half a year kept): why plays stop early, by release
-  const played = env.DB && Promise.all([env.DB.prepare('INSERT OR REPLACE INTO plays (hash, t) VALUES (?, ?)').bind(hash, Date.now()).run(),
-    env.DB.prepare('INSERT INTO starts (t, hash, name, tl, test) VALUES (?, ?, ?, ?, ?)').bind(Date.now(), hash,
-      String(q.get('name') || '').slice(0, 300), String(q.get('tl') || '').slice(0, 100), q.get('test') === '1' ? 1 : 0).run()])
+  const played = env.DB?.prepare('INSERT OR REPLACE INTO plays (hash, t) VALUES (?, ?)').bind(hash, Date.now()).run()
     .catch(() => {});
   try {
     const got = await torboxLink(env, hash, Number(q.get('file') ?? -1), q.get('name') || '');
@@ -1616,10 +1626,15 @@ async function play(request, env, ctx, hash) {
         got.file.short_name || '')}`, { headers: { 'X-Play-Token': env.PLAY_TOKEN } }).catch(() => {})
         : rememberAudio(env, hash, got.link, true));
     }
+    const point = await resume;
+    const row = env.DB && playRow(q, hash, got, point.time > 10 && point.percent < 90 ? point.time : 0); // DDD's start (Timeline.startMs)
+    const logged = row ? env.DB.prepare(`INSERT INTO play_log (t, tl, card, title, season, episode, hash, release, file, start)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(...row).run().catch(() => {}) : null; // no log beats no film
     const playlist = q.has('series')
       ? await episodesFrom(request, env, ctx, got.id, got.files, got.file, q.get('series'), got.link, q.has('probe')) : [];
+    await logged;
     return new Response(JSON.stringify(playlist.length
-      ? { url: playlist[0][4], ...(await resume), playlist } : { url: got.link, ...(await resume) }), {
+      ? { url: playlist[0][4], ...point, playlist } : { url: got.link, ...point }), {
       headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...corsHeaders(request) },
     });
   } catch {
@@ -2413,7 +2428,43 @@ async function timeline(request, env) {
       updated = excluded.updated, card = COALESCE(excluded.card, card), season = COALESCE(excluded.season, season),
       episode = COALESCE(excluded.episode, episode)
     WHERE excluded.updated > timeline.updated`).bind(JSON.stringify(rows)).run();
+  // The stick's reports move its plays on (the play log): Lampa's points are only resume points
+  if (isStick(request, env)) {
+    const end = (t) => (/^[a-z_]{1,16}$/.test(t.end || '') ? t.end : null);
+    for (const [i, r] of rows.slice(0, PLAY_LOG_POINTS).entries()) await logReport(env, r, end(list[i]), now).catch(() => {});
+  }
   return new Response(null, { status: 204, headers: corsHeaders(request) });
+}
+
+// A report of DDD's (a point of the stick's) on the play it belongs to: the newest row of that key started within
+// PLAY_LOG_WINDOW. None and a card: a playlist's next episode (DDD went on by itself), a row of its own with the
+// release of the card's newest play (Play only started the first). end: DDD's end_by, its answer when it closed.
+const PLAY_LOG_WINDOW = 12 * 3600e3;
+const PLAY_LOG_POINTS = 5; // the stick sends one a report
+async function logReport(env, r, end, now) {
+  const since = now - PLAY_LOG_WINDOW;
+  const update = () => env.DB.prepare(`UPDATE play_log SET time = ?, duration = ?, percent = ?, updated = ?,
+      card = COALESCE(card, ?), season = COALESCE(season, ?), episode = COALESCE(episode, ?), end_by = COALESCE(?, end_by)
+    WHERE id = (SELECT id FROM play_log WHERE tl = ? AND t > ? ORDER BY t DESC LIMIT 1)`)
+    .bind(r.time, r.duration, r.percent, r.updated, r.card, r.season, r.episode, end, r.hash, since).run();
+  if ((await update()).meta?.changes !== 0 || !r.card) return; // a report a play: one statement
+  await env.DB.prepare(`INSERT INTO play_log (t, tl, card, title, season, episode, hash, release, start)
+    SELECT ?, ?, card, title, ?, ?, hash, release, 0 FROM play_log WHERE card = ? AND t > ? ORDER BY t DESC LIMIT 1`)
+    .bind(now, r.hash, r.season, r.episode, r.card, since).run();
+  await update();
+}
+
+// GET /plays?n=50 (the stick's token) -> {plays: [{t, tl, card, title, season, episode, hash, release, file, start, time,
+// duration, percent, updated, end_by}, ...]}: the play log, newest first (n: 1-500), for reading why plays stop early.
+// Not the app's (its fields may be null).
+async function playsPage(request, env) {
+  if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
+  if (!env.DB) return corsError(request, 'No database.', 503);
+  const n = Math.max(1, Math.min(500, Number(new URL(request.url).searchParams.get('n')) || 50));
+  const { results } = await env.DB.prepare('SELECT * FROM play_log ORDER BY t DESC, id DESC LIMIT ?').bind(n).all();
+  return new Response(JSON.stringify({ plays: results }), {
+    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' },
+  });
 }
 
 // Lampa's Utils.hash: Java's String.hashCode as a positive decimal. Its timeline keys a film by its original title.
@@ -3072,6 +3123,164 @@ async function historyPage(request, env) {
   });
 }
 
+// GET /mine/year?y=2026&tz=<the stick's offset, minutes> (the stick's token and CUB sign-in) -> Your <year>:
+// {year, hours, films, started, episodes, series, days, run: [days in a row, its last day (ms)], genre: [name, titles],
+// director: [name, films], loved, posters: [Home cards], posterTitle, since}. What it counts: a film or an episode
+// played past TRIED_S (or finished), in the year, here or in Lampa: the timeline's points (one a film or episode,
+// stamped since the plugin's sync, ~August 2026; Lampa's older ones carry no time: they count in the year CUB's
+// history last played their title in), the play log's rows (each play, rewatches too: the time watched, not only how
+// far), CUB's history (a title's last play, a day watched). films: finished (90 %), started: played at all; episodes:
+// finished; hours: how far each got (or the play log's sum, when more). genre and director: of the films finished and
+// the series with an episode finished (title_info, from TMDB once). loved: those graded Loved; posters: them, then
+// the most watched. since: the first stamped point (before it, the year's days are CUB's).
+const YEAR_INFO_CALL = 10; // titles a call of its own asks TMDB for (a film's credits: ~50 KB of JSON each to parse)
+const YEAR_INFO_CALLS = 15;
+const YEAR_POSTERS = 10;
+async function yearPage(request, env) {
+  if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
+  const who = await cubUser(request, env);
+  if (!who) return corsError(request, 'CUB sign-in required.', 401);
+  if (!env.DB) return corsError(request, 'No database.', 503);
+  const q = new URL(request.url).searchParams;
+  const year = /^20\d\d$/.test(q.get('y') || '') ? Number(q.get('y')) : new Date().getUTCFullYear();
+  const tz = Math.max(-840, Math.min(840, Number(q.get('tz')) || 0)) * 60e3;
+  const from = Date.UTC(year, 0, 1) - tz;
+  const to = Date.UTC(year + 1, 0, 1) - tz;
+  const inYear = (t) => t >= from && t < to;
+  const day = (t) => Math.floor((t + tz) / 86400e3);
+  const rows = (sql, ...args) => env.DB.prepare(sql).bind(...args).all().then((r) => r.results);
+  const [dump, points, plays, graded, since] = await Promise.all([cubApi(request, 'bookmarks/dump'),
+    rows('SELECT * FROM timeline'),
+    rows('SELECT tl, t, start, time, duration, percent FROM play_log WHERE t >= ? AND t < ?', from, to).catch(() => []),
+    gradeValues(env, who).catch(() => []),
+    rows('SELECT min(updated) AS t FROM timeline WHERE updated > ?', DATED).then((r) => r[0]?.t || 0)]);
+  if (!dump || !Array.isArray(dump.bookmarks)) return corsError(request, 'CUB unavailable.', 502);
+  // each title once, its newest history bookmark: those CUB last played in the year or after it
+  const titles = new Map();
+  for (const b of dump.bookmarks.filter((x) => x.type === 'history' && Number(x.time) >= from)
+    .sort((x, y) => (Number(y.time) || 0) - (Number(x.time) || 0))) {
+    const h = /^(movie|tv)$/.test(b.card_type) && !titles.has(`${b.card_type}_${b.card_id}`) && bookmarkCard(b);
+    if (h) titles.set(`${h.type}_${h.card.id}`, { ...h, t: Number(b.time) || 0 });
+  }
+  const info = await shows(env, [...titles.values()].filter((h) => h.type === 'tv').map((h) => Number(h.card.id)));
+  const of = new Map(); // Lampa's key → [title, season, episode]
+  for (const [key, h] of titles) {
+    if (h.type === 'movie') of.set(lampaHash(h.card.original_title || h.card.title || ''), [key, 0, 0]);
+    const s = h.type === 'tv' && info.get(Number(h.card.id));
+    for (const [n, count] of s ? JSON.parse(s.seasons || '[]') : []) {
+      for (let e = 1; e <= count; e++) of.set(episodeKey([n, e], s.original), [key, n, e]);
+    }
+  }
+  const logged = new Map(); // a key's time watched in the year by the play log (each play from where it started)
+  const played = new Map(); // a key's newest play in the year past a try (t), and whether one finished it
+  const days = new Set();
+  for (const p of plays) {
+    const secs = Math.max(0, Math.min(p.time || 0, p.duration || 0) - (p.start || 0));
+    logged.set(p.tl, (logged.get(p.tl) || 0) + secs);
+    if (secs < TRIED_S && !(p.percent >= 90)) continue; // a release tried and left: no day watched
+    days.add(day(p.t));
+    const was = played.get(p.tl);
+    played.set(p.tl, { t: Math.max(was?.t || 0, p.t), done: was?.done || p.percent >= 90 });
+  }
+  const per = new Map(); // title → {secs, done (a film finished), episodes finished, last}
+  for (const p of points) {
+    const at = p.card ? [p.card, p.season || 0, p.episode || 0] : of.get(p.hash);
+    if (!at) continue;
+    const dated = p.updated > DATED;
+    const h = titles.get(at[0]);
+    // played again after the year (January's look back): its plays in the year, from the play log
+    const later = dated && p.updated >= to && played.get(p.hash);
+    if (!later && ((p.time < TRIED_S && p.percent < 90) || (dated ? !inYear(p.updated) : !h || !inYear(h.t)))) continue;
+    const finished = later ? later.done : p.percent >= 90;
+    const secs = later ? logged.get(p.hash)
+      : Math.max(p.percent >= 90 ? p.duration : Math.min(p.time, p.duration), logged.get(p.hash) || 0);
+    const t = per.get(at[0]) || { secs: 0, done: false, episodes: 0, last: 0 };
+    t.secs += secs;
+    if (finished) {
+      if (at[1] > 0) t.episodes += 1;
+      else t.done = true;
+    }
+    t.last = Math.max(t.last, later ? later.t : dated ? p.updated : h.t);
+    per.set(at[0], t);
+    if (!later) days.add(day(dated ? p.updated : h.t)); // later: its days are the play log's
+  }
+  const films = [...per].filter(([k]) => k.startsWith('movie_'));
+  const watched = [...per].filter(([k, t]) => t.done || t.episodes > 0).map(([k]) => k);
+  const [type, id] = [(k) => k.split('_')[0], (k) => Number(k.split('_')[1])];
+  // genres and directors: TMDB's, asked once a title (calls of the worker's own, YEAR_INFO_CALL titles each)
+  const known = async () => new Map((await rows(`SELECT type, id, genres, people FROM title_info
+    WHERE type || '_' || id IN (SELECT value FROM json_each(?))`, JSON.stringify(watched)).catch(() => []))
+    .map((r) => [`${r.type}_${r.id}`, r]));
+  let about = await known();
+  const missing = watched.filter((k) => !about.has(k)).slice(0, YEAR_INFO_CALL * YEAR_INFO_CALLS);
+  if (missing.length) {
+    const chunks = [];
+    for (let i = 0; i < missing.length; i += YEAR_INFO_CALL) chunks.push(missing.slice(i, i + YEAR_INFO_CALL));
+    await upTo(Promise.all(chunks.map((c) => (env.SELF
+      ? env.SELF.fetch('https://self/year/info', { method: 'POST', body: JSON.stringify({ titles: c }),
+        headers: { 'X-Play-Token': env.PLAY_TOKEN, 'Content-Type': 'application/json' } })
+      : titleInfo(env, c)).catch(() => {}))), 8000, null);
+    about = await known();
+  }
+  const top = (counts) => [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0] || [];
+  const genres = new Map();
+  const directors = new Map();
+  for (const k of watched) {
+    const a = about.get(k);
+    if (!a) continue;
+    for (const g of JSON.parse(a.genres)) genres.set(g, (genres.get(g) || 0) + 1);
+    if (k.startsWith('movie_')) for (const d of JSON.parse(a.people)) directors.set(d, (directors.get(d) || 0) + 1);
+  }
+  const director = top(directors);
+  // the longest run of days in a row with something watched
+  let run = [0, 0];
+  let n = 0;
+  const sorted = [...days].sort((a, b) => a - b);
+  sorted.forEach((d, i) => {
+    n = i > 0 && d === sorted[i - 1] + 1 ? n + 1 : 1;
+    if (n > run[0]) run = [n, d * 86400e3];
+  });
+  const grade = new Map(graded.map((g) => [g.card, Number(g.g)]));
+  const loved = watched.filter((k) => grade.get(k) === 2).sort((a, b) => per.get(b).last - per.get(a).last);
+  const most = [...per].filter(([k]) => !loved.includes(k)).sort((a, b) => b[1].secs - a[1].secs).map(([k]) => k);
+  const shown = [...loved, ...most].slice(0, YEAR_POSTERS);
+  const rest = shown.filter((k) => !(type(k) === 'tv' && info.has(id(k))));
+  const english = await englishCards(env, rest.map((k) => [type(k), id(k)]),
+    rest.map((k) => (titles.has(k) ? cardOf(titles.get(k).card, type(k)) : [id(k), type(k), '', '', '', 0, ''])), YEAR_POSTERS);
+  const cards = new Map(rest.map((k, i) => [k, english[i]]));
+  const posters = shown.map((k) => (cards.has(k) ? cards.get(k) : JSON.parse(info.get(id(k)).card))).filter((c) => c && c[4]);
+  return new Response(JSON.stringify({
+    year, hours: Math.round([...per.values()].reduce((s, t) => s + t.secs, 0) / 3600),
+    films: films.filter(([, t]) => t.done).length, started: films.length,
+    episodes: [...per.values()].reduce((s, t) => s + t.episodes, 0),
+    series: [...per].filter(([k, t]) => k.startsWith('tv_') && t.episodes > 0).length,
+    days: days.size, run, genre: top(genres), director: director[1] >= 2 ? director : [],
+    loved: loved.length, posters, posterTitle: loved.length ? `Loved in ${year}` : `Most watched in ${year}`,
+    since: inYear(since) ? day(since) * 86400e3 : 0, // a local day, as the run's
+  }), { headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...corsHeaders(request) } });
+}
+
+// POST /year/info {titles: ["movie_603", "tv_1399", ...]} (the worker's own call, the stick's token) -> 204: their
+// genres and directors (a series: its creators) from TMDB into title_info. One that fails is asked next time.
+async function titleInfo(env, keys) {
+  const got = await Promise.all(keys.filter((k) => /^(movie|tv)_\d{1,10}$/.test(k)).slice(0, YEAR_INFO_CALL).map(async (k) => {
+    const [kind, n] = k.split('_');
+    const res = await tmdb(env, `${kind}/${n}`, kind === 'movie' ? '&append_to_response=credits' : '').catch(() => null);
+    const m = res?.ok ? await res.json().catch(() => null) : null;
+    if (!m?.id) return null;
+    const people = kind === 'movie' ? (m.credits?.crew || []).filter((c) => c.job === 'Director').map((c) => c.name)
+      : (m.created_by || []).map((c) => c.name);
+    return { type: kind, id: m.id, genres: JSON.stringify((m.genres || []).map((g) => g.name)),
+      people: JSON.stringify(people.filter(Boolean)), t: Date.now() };
+  }));
+  const rows = got.filter(Boolean);
+  if (rows.length) {
+    await env.DB.prepare(`INSERT OR REPLACE INTO title_info (type, id, genres, people, t)
+      SELECT value->>'type', value->>'id', value->>'genres', value->>'people', value->>'t' FROM json_each(?)`)
+      .bind(JSON.stringify(rows)).run();
+  }
+}
+
 // POST /mine/unwatch {hashes: [Lampa's key, ...]} (the same sign-in) -> 204: History's Mark unwatched. The points go
 // back to the start, stamped now, so Lampa takes them too (the newer wins).
 async function unwatch(request, env) {
@@ -3401,8 +3610,18 @@ async function route(request, env, ctx) {
   const file = path.match(/^\/stream\/(\d+)\/(\d+)$/);
   if (file && /^(GET|HEAD)$/.test(request.method)) return stream(request, env, ctx, file[1], file[2]);
   if (path === '/timeline') return timeline(request, env);
+  if (path === '/plays' && request.method === 'GET') return playsPage(request, env);
   if (path === '/mine' && request.method === 'GET') return mine(request, env);
   if (path === '/mine/history' && request.method === 'GET') return historyPage(request, env);
+  if (path === '/mine/year' && request.method === 'GET') return yearPage(request, env);
+  if (path === '/year/info' && request.method === 'POST') { // the worker's own call (yearPage)
+    if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
+    if (!env.DB) return corsError(request, 'No database.', 503);
+    const keys = (await request.json().catch(() => ({}))).titles;
+    if (!Array.isArray(keys)) return corsError(request, 'Bad titles.', 400);
+    await titleInfo(env, keys);
+    return new Response(null, { status: 204 });
+  }
   if (path === '/mine/unwatch' && request.method === 'POST') return unwatch(request, env);
   const followed = path.match(/^\/mine\/(follow|unfollow)\/(\d{1,10})$/);
   if (followed && request.method === 'POST') return follow(request, env, followed[1] === 'follow', followed[2]);

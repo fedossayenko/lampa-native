@@ -180,4 +180,33 @@ class CubTest {
         assert graded.grades().equals(java.util.Map.of("movie_2", "0")) && graded.list().isEmpty() && graded.follows().equals(java.util.Set.of(8));
         assert graded.marks().isEmpty() && graded.coming().equals(all.coming()) && graded.learnBound() : "the rest is carried over";
     }
+
+    // The worker's /mine/year (worker test 'year: …') and the lines it reads as.
+    void testYear() throws Exception {
+        Cub.Year y = Cub.year("{\"year\":2026,\"hours\":10,\"films\":2,\"started\":3,\"episodes\":2,\"series\":1,\"days\":5,"
+            + "\"run\":[4,1791072000000],\"genre\":[\"Science Fiction\",2],\"director\":[\"Denis Villeneuve\",2],\"loved\":1,"
+            + "\"posters\":[[2,\"movie\",\"Dune: Part Two\",\"2024\",\"/2.jpg\",0,\"\"]],\"posterTitle\":\"Loved in 2026\","
+            + "\"since\":1790881200000}");
+        assert y.posters().size() == 1 && y.posters().get(0).name().equals("Dune: Part Two") : y;
+        assert Cub.yearLines(y).equals(List.of("2 films finished · 1 more started", "2 episodes of 1 series",
+            "Longest run: 4 days in a row, to 4 October", "Top genre: Science Fiction · 2 titles",
+            "Director of the year: Denis Villeneuve · 2 films", "Loved: 1 title you watched this year")) : Cub.yearLines(y);
+        assert Cub.yearHead(y).equals("10 hours · 5 days") : Cub.yearHead(y);
+        assert Cub.yearNote(y).endsWith("Before 1 October a title counts on the day it was last played.") : Cub.yearNote(y);
+        Cub.Year none = Cub.year("{\"year\":2026,\"run\":[0,0],\"genre\":[],\"director\":[],\"posters\":[],\"since\":0}");
+        assert Cub.yearLines(none).equals(List.of("0 films finished")) : Cub.yearLines(none);
+        assert !Cub.yearNote(none).contains("Before");
+        assert Cub.yearHead(none) == null : "nothing played";
+        // episodes started, none finished: still a year played
+        Cub.Year started = Cub.year("{\"year\":2026,\"hours\":1,\"days\":1,\"run\":[1,0],\"genre\":[],\"director\":[],\"posters\":[]}");
+        assert Cub.yearHead(started).equals("1 hour · 1 day") : Cub.yearHead(started);
+    }
+
+    void testYearShown() {
+        assert Cub.yearShown(java.time.LocalDate.of(2026, 11, 24)) == 0;
+        assert Cub.yearShown(java.time.LocalDate.of(2026, 11, 25)) == 2026;
+        assert Cub.yearShown(java.time.LocalDate.of(2026, 12, 31)) == 2026;
+        assert Cub.yearShown(java.time.LocalDate.of(2027, 1, 31)) == 2026;
+        assert Cub.yearShown(java.time.LocalDate.of(2027, 2, 1)) == 0;
+    }
 }

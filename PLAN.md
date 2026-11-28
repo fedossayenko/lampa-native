@@ -433,7 +433,19 @@ shaping; custom-drawn rows would only save Java heap, which is 3–6 MB (log row
      (title, poster): a card with "S1 E9 · Name", "19 min left · ends at 23:41" (DDD has both times), the audio
      track's label, and the overview from a new `overview` extra (per item in `video_list`). ~120 lines in DDD.
      Order: rewind subtitles, the next-episode card, the paused screen, then (b).
-   - **8g. Your 2026** (Year) — dropped (user 2026-11-28).
+   - **8g. Your 2026** (Year) — medium, seasonal: hours, films, episodes, the longest run, top genre and director
+     (TMDB credits, cron-cached), Loved this year; from D1's timeline, CUB's history and grades. A December job.
+     ✅ Built 2026-11-28. First a **play log** (D1 `play_log`, plays.sql): Play's ask makes a row (the card, the name,
+     the torrent's name on TorBox, the file, where it started), DDD's reports move it on (position, duration, percent)
+     and its answer says how it ended (`end_by`); a playlist's next episode gets a row of its own. `GET /plays` reads
+     it (why plays stop early: of the 93 films started in 2026 before it, 39 stopped under 40 %, with nothing to say
+     which release or why). Your 2026: `GET /mine/year?y=&tz=` counts from the timeline's points (stamped since
+     2026-08; Lampa's older ones in the year CUB's history last played their title), the play log (rewatches) and
+     CUB's history (the days); genres and directors from TMDB once a title (`title_info`, year.sql: calls of the
+     worker's own, 10 titles each, a film's credits being ~50 KB of JSON), not a cron. The tile after History, 25
+     November to January; the page: "248 hours · 108 days", lines, then "Loved in 2026" posters (else the most
+     watched). Real data on 2026-11-28: 39 films finished (102 started), 212 episodes of 29 series, 5 days in a row at
+     most, 13 Loved.
    - **8i. Tonight** (user 2026-11-28, after Netflix's AI Discover test) built: Search's six themes (Something light,
      Scare me, Under 100 minutes, With the kids, Like what I loved, On my services) asked as voice search's
      recommendation, then Something different (the picks shown as "Not: …"). Voice and themes send the worker's
@@ -441,9 +453,9 @@ shaping; custom-drawn rows would only save Java heap, which is 3–6 MB (log row
      Claude (or the worker's model); a recommendation leaves out the graded, marked and watched. Checked 2026-11-28
      with the real grades, Sonnet: "Like what I loved" The Prestige, Coco, Sherlock, Howl's Moving Castle (without:
      Shawshank, Breaking Bad); "On my services" Lupin, The Gentlemen, Black Doves from Bulgaria's Top 10.
-     Also: D1 `starts` (each Play's release name and timeline key, test_plays setting = 1): why a third of the plays stop
-     in the first two minutes (30 days to 11-28: 21 of 57 under 20 %, 14 in 2 min, none played again; some were test
-     plays). Coming up's "Last 7 days" skipped: an episode out stays under Today until watched.
+     Why plays stop early (30 days to 11-28: 21 of 57 under 20 %, 14 in 2 min, none played again; some were test plays):
+     8g's play log answers it from now on. Coming up's "Last 7 days" skipped: an episode out stays under Today until
+     watched.
      Voice's free model (home Mac off) is now Llama 3.3 70B fast: Llama 4 Scout took 17-38 s with the taste (past the
      stick's 30 s) and 4-7 s on titles; 70B 3.7-4.9 s and 0.8-1.1 s, the same six titles (measured 2026-11-28). It also
      answers in OpenAI's shape at times (choices), which read as "not understood" before; Server-Timing has both parts.
