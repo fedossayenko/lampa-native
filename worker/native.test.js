@@ -621,6 +621,8 @@ function d1() {
   db.exec(readFileSync(new URL('./audio.sql', import.meta.url), 'utf8'));
   db.exec(readFileSync(new URL('./grades.sql', import.meta.url), 'utf8'));
   db.exec(readFileSync(new URL('./top10.sql', import.meta.url), 'utf8'));
+  db.exec(readFileSync(new URL('./plays.sql', import.meta.url), 'utf8'));
+  db.exec(readFileSync(new URL('./year.sql', import.meta.url), 'utf8'));
   const stmt = (sql, args = []) => ({
     bind: (...a) => stmt(sql, a),
     all: async () => ({ results: db.prepare(sql).all(...args) }),
@@ -3342,4 +3344,105 @@ test('Home: Netflix\'s lookup failing (a bad row) → Home without them and not 
   const res = await worker.fetch(new Request('https://w/home?country=BG', { headers: tv }), e, { waitUntil: () => {} });
   assert.equal(res.status, 200);
   assert.equal(res.headers.get('Cache-Control'), 'no-store');
+});
+
+// The play log: a row a play, moved on by DDD's reports; a playlist's next episode a row of its own.
+test('plays: Play logs the title, the release and its file; reports move it on; DDD\'s answer says how it ended', async () => {
+  torbox({ ...ready, 'mylist?id': { success: true, data: { ...pack, name: 'Show.S01.1080p.WEB-DL' } } });
+  const e = tlEnv();
+  await postTimeline(e, [{ hash: '77', time: 600, duration: 3000, percent: 20, card: 'tv_5' }]); // an earlier evening's point
+  e.DB.raw.prepare('UPDATE play_log SET t = 0').run();
+  const res = await worker.fetch(new Request(`https://w/play/${H}?file=1&name=Show.S01E02.mkv&tl=77&card=tv_5&title=Show&s=1&e=2`,
+    { headers: stick }), e);
+  assert.equal(res.status, 200);
+  const logged = () => e.DB.raw.prepare('SELECT * FROM play_log ORDER BY id').all().map(({ id, t, updated, ...r }) => r);
+  assert.deepEqual(logged(), [{ tl: '77', card: 'tv_5', title: 'Show', season: 1, episode: 2, hash: H,
+    release: 'Show.S01.1080p.WEB-DL', file: 'Show.S01E02.mkv', start: 600, time: null, duration: null, percent: null, end_by: null }]);
+  await postTimeline(e, [{ hash: '77', time: 900, duration: 3000, percent: 30, card: 'tv_5', season: 1, episode: 2 }]);
+  await postTimeline(e, [{ hash: '77', time: 960, duration: 3000, percent: 32, card: 'tv_5', season: 1, episode: 2, end: 'user' }]);
+  assert.deepEqual(logged().map((r) => [r.time, r.percent, r.end_by]), [[960, 32, 'user']]);
+  // DDD went on to the next episode by itself: its reports make a row with the release played
+  await postTimeline(e, [{ hash: '78', time: 120, duration: 3000, percent: 4, card: 'tv_5', season: 1, episode: 3 }]);
+  await postTimeline(e, [{ hash: '78', time: 3000, duration: 3000, percent: 100, card: 'tv_5', season: 1, episode: 3, end: 'completion' }]);
+  assert.deepEqual(logged().slice(1), [{ tl: '78', card: 'tv_5', title: 'Show', season: 1, episode: 3, hash: H,
+    release: 'Show.S01.1080p.WEB-DL', file: null, start: 0, time: 3000, duration: 3000, percent: 100, end_by: 'completion' }]);
+  // Lampa's points are resume points only; a point of no play here (none in 12 hours, no card) logs nothing
+  await postTimeline(e, [{ hash: '77', time: 2000, duration: 3000, percent: 66, updated: Date.now() + 5000 }], lampa);
+  await postTimeline(e, [{ hash: '90', time: 100, duration: 1000, percent: 10 }]);
+  assert.equal(logged().length, 2);
+  assert.equal(logged()[0].time, 960);
+  // GET /plays: newest first, the stick's only
+  torbox(ready);
+  const plays = await (await worker.fetch(new Request('https://w/plays?n=1', { headers: stick }), e)).json();
+  assert.deepEqual(plays.plays.map((p) => p.tl), ['78']);
+  assert.equal((await worker.fetch(new Request('https://w/plays', { headers: lampa }), e)).status, 403);
+});
+
+test('plays: an older app (no card) gets its card from the first report; a probe or a link not ready logs nothing', async () => {
+  torbox(ready);
+  const e = tlEnv();
+  await worker.fetch(new Request(`https://w/play/${H}?file=1&tl=55`, { headers: stick }), e);
+  await worker.fetch(new Request(`https://w/play/${H}?file=1&tl=56&probe=1`, { headers: stick }), e);
+  await worker.fetch(new Request(`https://w/play/${H}?file=1`, { headers: stick }), e); // no key
+  torbox({ ...ready, 'mylist?id': { success: true, data: { ...pack, download_present: false, progress: 0.5 } } });
+  assert.equal((await worker.fetch(new Request(`https://w/play/${H}?file=1&tl=57`, { headers: stick }), e)).status, 202);
+  await postTimeline(e, [{ hash: '55', time: 700, duration: 7000, percent: 10, card: 'movie_155' }]);
+  assert.deepEqual(e.DB.raw.prepare('SELECT tl, card, title, release, time FROM play_log').all().map((r) => ({ ...r })),
+    [{ tl: '55', card: 'movie_155', title: null, release: null, time: 700 }]);
+});
+
+// Your <year>: the timeline's points, the play log and CUB's history of the year, TMDB's genres and directors once.
+test('year: hours, films, episodes, the longest run, top genre and director, Loved first on the posters', async () => {
+  const e = { ...mineEnv(), ...playEnv, DB: d1(), CUB_ACCOUNTS: '42' };
+  const at = (iso) => Date.parse(iso);
+  const point = (key, time, duration, percent, updated, card = null, season = null, episode = null) => e.DB.raw.prepare(
+    'INSERT INTO timeline (hash, time, duration, percent, updated, card, season, episode) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(lampaHashOf(key), time, duration, percent, updated, card, season, episode);
+  point('Dune', 9000, 9000, 100, at('2026-10-01T19:00Z'), 'movie_1'); // finished, here
+  point('Dune: Part Two', 9600, 9960, 96, at('2026-10-02T19:00Z'), 'movie_2');
+  point('Arrival', 2040, 7000, 29, at('2026-10-03T19:00Z')); // Lampa's, stopped early
+  point('Old', 6000, 6000, 100, 0); // Lampa's, no time: CUB played it in 2025
+  point('Wish', 30, 5700, 1, at('2026-10-05T10:00Z')); // tried
+  point('11Dark Matter', 3000, 3000, 100, 0); // Lampa's: CUB played the series in 2026
+  point('12Dark Matter', 2990, 3000, 99, at('2026-10-04T19:00Z'));
+  for (const t of ['2026-03-01T19:00Z', '2026-10-01T16:30Z']) { // seen twice: the play log counts both
+    e.DB.raw.prepare("INSERT INTO play_log (t, tl, card, hash, start, time, duration) VALUES (?, ?, 'movie_1', 'x', 0, 9000, 9000)")
+      .run(at(t), lampaHashOf('Dune'));
+  }
+  e.DB.raw.prepare("INSERT INTO grades (who, card, t, v) VALUES ('42:7', 'movie_2', 1, '{\"g\":2}')").run();
+  const answers = {
+    'users/get': { user: { id: 42 } },
+    'bookmarks/dump': cubDump([
+      bm(1, 'history', 'movie', at('2026-10-01T19:00Z'), { id: 1, title: 'Дюна', original_title: 'Dune' }),
+      bm(2, 'history', 'movie', at('2026-10-02T19:00Z'), { id: 2, title: 'Дюна 2', original_title: 'Dune: Part Two' }),
+      bm(3, 'history', 'movie', at('2026-10-03T19:00Z'), { id: 3, title: 'Прибытие', original_title: 'Arrival' }),
+      bm(4, 'history', 'movie', at('2025-05-01T12:00Z'), { id: 4, title: 'Старый', original_title: 'Old' }),
+      bm(5, 'history', 'movie', at('2026-10-05T10:00Z'), { id: 5, title: 'Желание', original_title: 'Wish' }),
+      bm(6, 'history', 'tv', at('2026-10-04T19:00Z'), { id: 196322, name: 'Тёмная материя' }),
+    ]),
+    'tv/196322': { id: 196322, name: 'Dark Matter', original_name: 'Dark Matter', poster_path: '/d.jpg', genres: [{ name: 'Drama' }],
+      created_by: [{ name: 'Blake Crouch' }], seasons: [{ season_number: 1, episode_count: 9 }] },
+    'movie/1': { id: 1, title: 'Dune', release_date: '2021-09-15', poster_path: '/1.jpg', genres: [{ name: 'Science Fiction' }],
+      credits: { crew: [{ job: 'Director', name: 'Denis Villeneuve' }] } },
+    'movie/2': { id: 2, title: 'Dune: Part Two', release_date: '2024-02-27', poster_path: '/2.jpg',
+      genres: [{ name: 'Science Fiction' }, { name: 'Adventure' }], credits: { crew: [{ job: 'Director', name: 'Denis Villeneuve' }] } },
+    'movie/3': { id: 3, title: 'Arrival', release_date: '2016-11-10', poster_path: '/3.jpg' },
+  };
+  cub(answers);
+  const res = await worker.fetch(new Request('https://w/mine/year?y=2026&tz=120', { headers: { ...stick, ...lampa } }), e);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('Cache-Control'), 'no-store');
+  const y = await res.json();
+  assert.deepEqual({ ...y, posters: y.posters.map((c) => c[2]) }, {
+    year: 2026, hours: Math.round((9000 * 2 + 9960 + 2040 + 3000 + 3000) / 3600), films: 2, started: 3, episodes: 2, series: 1,
+    days: 5, run: [4, Date.UTC(2026, 9, 4)], genre: ['Science Fiction', 2], director: ['Denis Villeneuve', 2], loved: 1,
+    posters: ['Dune: Part Two', 'Dune', 'Dark Matter', 'Arrival'], posterTitle: 'Loved in 2026', since: at('2026-10-01T19:00Z'),
+  });
+  assert.equal(e.DB.raw.prepare('SELECT count(*) n FROM title_info').get().n, 3, 'the films finished and the series, once');
+  cub(answers);
+  await worker.fetch(new Request('https://w/mine/year?y=2026', { headers: { ...stick, ...lampa } }), e);
+  assert.ok(!asked.some((u) => /\/3\/movie\/[12]$/.test(u.split(' ')[0])), 'asked TMDB once a title');
+  assert.equal((await worker.fetch(new Request('https://w/mine/year', { headers: lampa }), e)).status, 403);
+  cub({ 'users/get': { user: { id: 9 } } });
+  assert.equal((await worker.fetch(new Request('https://w/mine/year', { headers: { ...stick, ...lampa } }), e)).status, 401);
 });

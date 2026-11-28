@@ -230,6 +230,20 @@ class TimelineTest {
         assert Timeline.Playing.of(null) == null;
     }
 
+    // The play log's fields after the release: the card, the name (encoded), an episode's numbers.
+    void testPlayLog() {
+        assert Timeline.playLog("movie_155", "The Dark Knight", 0, 0).equals("&card=movie_155&title=The+Dark+Knight");
+        assert Timeline.playLog("tv_1399", "A & B", 2, 7).equals("&card=tv_1399&title=A+%26+B&s=2&e=7");
+    }
+
+    // DDD's answer says how it ended; a report while it plays doesn't.
+    void testTimelineBodyEnd() throws Exception {
+        Timeline.Playing p = new Timeline.Playing("1", "movie_155", 0, 0, 0);
+        assert new org.json.JSONObject(p.body(new long[] {7000, 7000, 100}, "completion")).getJSONArray("timelines")
+            .getJSONObject(0).getString("end").equals("completion");
+        assert !p.body(new long[] {1, 2, 50}).contains("\"end\"");
+    }
+
     // POST /timeline: one point as the worker takes it (it stamps `updated` itself).
     void testTimelineBody() throws Exception {
         String body = new Timeline.Playing("46902274", "tv_1399", 1, 5, 0).body(new long[] {3000, 7000, 43});

@@ -434,6 +434,17 @@ shaping; custom-drawn rows would only save Java heap, which is 3–6 MB (log row
      Order: rewind subtitles, the next-episode card, the paused screen, then (b).
    - **8g. Your 2026** (Year) — medium, seasonal: hours, films, episodes, the longest run, top genre and director
      (TMDB credits, cron-cached), Loved this year; from D1's timeline, CUB's history and grades. A December job.
+     ✅ Built 2026-11-28. First a **play log** (D1 `play_log`, plays.sql): Play's ask makes a row (the card, the name,
+     the torrent's name on TorBox, the file, where it started), DDD's reports move it on (position, duration, percent)
+     and its answer says how it ended (`end_by`); a playlist's next episode gets a row of its own. `GET /plays` reads
+     it (why plays stop early: of the 93 films started in 2026 before it, 39 stopped under 40 %, with nothing to say
+     which release or why). Your 2026: `GET /mine/year?y=&tz=` counts from the timeline's points (stamped since
+     2026-08; Lampa's older ones in the year CUB's history last played their title), the play log (rewatches) and
+     CUB's history (the days); genres and directors from TMDB once a title (`title_info`, year.sql: calls of the
+     worker's own, 10 titles each, a film's credits being ~50 KB of JSON), not a cron. The tile after History, 25
+     November to January; the page: "248 hours · 108 days", lines, then "Loved in 2026" posters (else the most
+     watched). Real data on 2026-11-28: 39 films finished (102 started), 212 episodes of 29 series, 5 days in a row at
+     most, 13 Loved.
    - **8h. Translated subtitles** (Subs, second half) — high effort: English subtitles from OpenSubtitles (matched by
      the release's hash; an API key, ~20 downloads a day), translated by Claude on the home server (~1 min) and
      handed to DDD as an external track. Timing has to match the release, so a hash match only.

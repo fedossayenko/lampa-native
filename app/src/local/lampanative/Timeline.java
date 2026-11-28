@@ -218,6 +218,17 @@ final class Timeline {
         }
     }
 
+    // What the worker's play log keeps of a play beside the release (appended to playPath): the film's or series' card,
+    // the name shown, an episode's season and episode.
+    static String playLog(String card, String title, int season, int episode) {
+        try {
+            return "&card=" + card + "&title=" + URLEncoder.encode(title, "UTF-8")
+                + (season > 0 ? "&s=" + season + "&e=" + episode : "");
+        } catch (UnsupportedEncodingException e) {
+            throw new AssertionError(e); // UTF-8 is always there
+        }
+    }
+
     // The worker's /segments path (our DDD fork's skip times): a film's, or an episode's and the 5 after it (DDD's
     // playlist rarely gets further in one sitting; Continue asks again), with the release played (torrent, file, name,
     // the series' original name): the home server finds that release's intros by sound. null without an IMDb id.
@@ -366,9 +377,15 @@ final class Timeline {
 
         // POST /timeline: where DDD stopped ({time, duration, percent} from saved()); the worker stamps the time.
         String body(long[] t) {
+            return body(t, null);
+        }
+
+        // end: DDD's end_by with its answer ("completion", "user"; null: a report while it plays), for the play log
+        String body(long[] t, String end) {
             try {
                 JSONObject p = new JSONObject().put("hash", key).put("time", t[0]).put("duration", t[1])
                     .put("percent", t[2]).put("card", card).put("season", season).put("episode", episode);
+                if (end != null) p.put("end", end);
                 return new JSONObject().put("timelines", new JSONArray().put(p)).toString();
             } catch (JSONException e) {
                 throw new AssertionError(e); // numbers and strings only

@@ -358,4 +358,63 @@ final class Cub {
             }
         }
     }
+
+    /** Your <year>, the worker's /mine/year: counts, the longest run (days, its last day), the top genre and director
+     * ("" when none), the posters and their row's title, and since: the first stamped play (0: before the year). */
+    record Year(int year, int hours, int films, int started, int episodes, int series, int days, int run, long runTo,
+                String genre, int genreTitles, String director, int directorFilms, int loved, List<Home.Card> posters,
+                String posterTitle, long since) {}
+
+    static Year year(String json) throws JSONException {
+        JSONObject o = new JSONObject(json);
+        JSONArray run = o.optJSONArray("run"), genre = o.optJSONArray("genre"), director = o.optJSONArray("director");
+        JSONArray p = o.getJSONArray("posters");
+        List<Home.Card> posters = new ArrayList<>(p.length());
+        for (int i = 0; i < p.length(); i++) posters.add(Home.card(p.getJSONArray(i)));
+        return new Year(o.getInt("year"), o.optInt("hours"), o.optInt("films"), o.optInt("started"), o.optInt("episodes"),
+            o.optInt("series"), o.optInt("days"), run != null ? run.optInt(0) : 0, run != null ? run.optLong(1) : 0,
+            genre != null && genre.length() == 2 ? genre.getString(0) : "", genre != null ? genre.optInt(1) : 0,
+            director != null && director.length() == 2 ? director.getString(0) : "", director != null ? director.optInt(1) : 0,
+            o.optInt("loved"), posters, o.optString("posterTitle"), o.optLong("since"));
+    }
+
+    // The year Your <year> looks back on: the year itself from 25 November through December, the one before in
+    // January; 0 the rest of the year (no tile).
+    static int yearShown(LocalDate today) {
+        int m = today.getMonthValue();
+        if (m == 12 || m == 11 && today.getDayOfMonth() >= 25) return today.getYear();
+        return m == 1 ? today.getYear() - 1 : 0;
+    }
+
+    // Your <year>'s lines under its big one ("86 hours · 120 days"): what there is to say, in order.
+    static List<String> yearLines(Year y) {
+        List<String> out = new ArrayList<>();
+        String more = y.started() > y.films() ? " · " + (y.started() - y.films()) + " more started" : "";
+        out.add(count(y.films(), "film") + " finished" + more);
+        if (y.episodes() > 0) out.add(count(y.episodes(), "episode") + " of " + count(y.series(), "series", "series"));
+        if (y.run() >= 2) {
+            out.add("Longest run: " + y.run() + " days in a row, to "
+                + LocalDate.ofEpochDay(Math.floorDiv(y.runTo(), 86_400_000L)).format(DateTimeFormatter.ofPattern("d MMMM", Locale.ENGLISH)));
+        }
+        if (!y.genre().isEmpty()) out.add("Top genre: " + y.genre() + " · " + count(y.genreTitles(), "title"));
+        if (!y.director().isEmpty()) out.add("Director of the year: " + y.director() + " · " + count(y.directorFilms(), "film"));
+        if (y.loved() > 0) out.add("Loved: " + count(y.loved(), "title") + " you watched this year");
+        return out;
+    }
+
+    // Before the first stamped play the days are CUB's (a title's last play): said under the lines.
+    static String yearNote(Year y) {
+        String base = "Played here and in Lampa: the films and episodes you got past the first minute.";
+        if (y.since() <= 0) return base;
+        String d = LocalDate.ofEpochDay(Math.floorDiv(y.since(), 86_400_000L)).format(DateTimeFormatter.ofPattern("d MMMM", Locale.ENGLISH));
+        return base + " Before " + d + " a title counts on the day it was last played.";
+    }
+
+    private static String count(int n, String one) {
+        return count(n, one, one + "s");
+    }
+
+    private static String count(int n, String one, String many) {
+        return n + " " + (n == 1 ? one : many);
+    }
 }
