@@ -71,7 +71,7 @@ class SearchTest {
         List<Home.Row> rows = List.of(new Home.Row("Top 10 series on Netflix in Bulgaria", List.of(film, wed)),
             new Home.Row("Popular on Apple TV in Bulgaria", List.of(lasso)),
             new Home.Row("Trending for the week", List.of(new Home.Card(1, "movie", "X", "2025", "/x", 70, ""))));
-        assert "Netflix #2".equals(Search.whereOn(rows, wed)) : Search.whereOn(rows, wed);
+        assert "Netflix Top 10".equals(Search.whereOn(rows, wed)) : Search.whereOn(rows, wed);
         assert "Apple TV".equals(Search.whereOn(rows, lasso));
         assert Search.whereOn(rows, new Home.Card(1, "movie", "X", "2025", "/x", 70, "")) == null : "TMDB's rows: no service";
         assert Search.whereOn(rows, new Home.Card(5, "tv", "Y", "2025", "/y", 70, "")) == null;

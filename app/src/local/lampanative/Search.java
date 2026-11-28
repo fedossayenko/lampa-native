@@ -44,17 +44,14 @@ final class Search {
         return not.isEmpty() ? ask : ask + ". Not: " + not;
     }
 
-    // Where a recommendation is on Home today, for its corner: "Netflix #3" (a Top 10 row: its place), "HBO Max" (a
-    // service's Popular row); null when in neither (TMDB's own rows say nothing about where to watch it).
+    // Where a recommendation is on Home today, for its corner: "Netflix Top 10", "HBO Max" (a service's Popular row);
+    // null when in neither (TMDB's own rows say nothing about where to watch it). No rank: a row's place isn't Netflix's
+    // (the worker merges a show's seasons and drops what TMDB lacks).
+    // ponytail: the service read from the worker's English row title; a field on the row if that wording ever changes
     static String whereOn(List<Home.Row> rows, Home.Card c) {
         for (Home.Row r : rows) {
-            int at = -1;
-            for (int i = 0; i < r.cards().size(); i++) {
-                Home.Card x = r.cards().get(i);
-                if (x.id() == c.id() && x.type().equals(c.type())) at = i;
-            }
-            if (at < 0) continue;
-            if (r.title().startsWith("Top 10 ") && r.title().contains(" on Netflix")) return "Netflix #" + (at + 1);
+            if (r.cards().stream().noneMatch(x -> x.id() == c.id() && x.type().equals(c.type()))) continue;
+            if (r.title().startsWith("Top 10 ") && r.title().contains(" on Netflix")) return "Netflix Top 10";
             if (r.title().startsWith("Popular on ") && r.title().contains(" in ")) {
                 return r.title().substring("Popular on ".length(), r.title().lastIndexOf(" in "));
             }
