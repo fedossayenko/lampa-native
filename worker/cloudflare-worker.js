@@ -3189,9 +3189,9 @@ async function yearPage(request, env) {
     const dated = p.updated > DATED;
     const h = titles.get(at[0]);
     // played again after the year (January's look back): its plays in the year, from the play log
-    const later = dated && p.updated >= to && played.has(p.hash);
+    const later = dated && p.updated >= to && played.get(p.hash);
     if (!later && ((p.time < TRIED_S && p.percent < 90) || (dated ? !inYear(p.updated) : !h || !inYear(h.t)))) continue;
-    const finished = later ? played.get(p.hash).done : p.percent >= 90;
+    const finished = later ? later.done : p.percent >= 90;
     const secs = later ? logged.get(p.hash)
       : Math.max(p.percent >= 90 ? p.duration : Math.min(p.time, p.duration), logged.get(p.hash) || 0);
     const t = per.get(at[0]) || { secs: 0, done: false, episodes: 0, last: 0 };
@@ -3200,7 +3200,7 @@ async function yearPage(request, env) {
       if (at[1] > 0) t.episodes += 1;
       else t.done = true;
     }
-    t.last = Math.max(t.last, later ? played.get(p.hash).t : dated ? p.updated : h.t);
+    t.last = Math.max(t.last, later ? later.t : dated ? p.updated : h.t);
     per.set(at[0], t);
     if (!later) days.add(day(dated ? p.updated : h.t)); // later: its days are the play log's
   }

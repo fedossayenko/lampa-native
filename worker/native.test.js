@@ -3470,6 +3470,12 @@ test('year: hours, films, episodes, the longest run, top genre and director, Lov
   cub(answers);
   const tried = await (await worker.fetch(new Request('https://w/mine/year?y=2026&tz=120', { headers: { ...stick, ...lampa } }), e)).json();
   assert.deepEqual([tried.started, tried.days, tried.posters.map((c) => c[2]).includes('Arrival')], [2, 4, false]);
+  // finished in 2026 (in September, before Dune: Part Two), Loved, rewatched in 2027: a 2026 film, sorted by its 2026 play
+  e.DB.raw.prepare('UPDATE play_log SET time = 7000, percent = 100, t = ? WHERE tl = ?').run(at('2026-09-01T19:00Z'), lampaHashOf('Arrival'));
+  e.DB.raw.prepare("INSERT INTO grades (who, card, t, v) VALUES ('42:7', 'movie_3', 1, '{\"g\":2}')").run();
+  cub(answers);
+  const rewatched = await (await worker.fetch(new Request('https://w/mine/year?y=2026&tz=120', { headers: { ...stick, ...lampa } }), e)).json();
+  assert.deepEqual([rewatched.films, rewatched.loved, rewatched.posters.slice(0, 2).map((c) => c[2])], [3, 2, ['Dune: Part Two', 'Arrival']]);
   cub(answers);
   await worker.fetch(new Request('https://w/mine/year?y=2026', { headers: { ...stick, ...lampa } }), e);
   assert.ok(!asked.some((u) => /\/3\/movie\/[12]$/.test(u.split(' ')[0])), 'asked TMDB once a title');
