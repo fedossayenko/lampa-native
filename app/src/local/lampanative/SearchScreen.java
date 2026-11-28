@@ -284,7 +284,8 @@ final class SearchScreen extends Main.Part {
         sure.clear();
         List<Home.Card> cards = new ArrayList<>();
         for (Voice.Found f : Voice.shown(a, m.cub.grades(), m.cub.seen(), m.cub.marks())) {
-            String badge = Voice.badge(f.sure());
+            // a pick: where it is on (a fit's "80%" says nothing to a viewer); a search: how sure it is the one
+            String badge = a.intent().equals("recommend") ? Search.whereOn(m.homeRows, f.card()) : Voice.badge(f.sure());
             if (badge != null) sure.put(Timeline.card(f.card()), badge);
             cards.add(f.card());
         }

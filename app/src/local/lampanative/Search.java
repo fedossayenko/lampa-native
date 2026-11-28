@@ -27,7 +27,7 @@ final class Search {
     static final List<Theme> THEMES = List.of(
         new Theme("Something light", "Something light, funny and feel-good for tonight"),
         new Theme("Scare me", "A really scary horror film or a tense thriller"),
-        new Theme("Under 100 minutes", "A great film under 100 minutes long"),
+        new Theme("Under 100 min", "A great film under 100 minutes long"), // a third of the row: one line
         new Theme("With the kids", "A film the whole family will enjoy, with children"),
         new Theme("Like what I loved", "More like the films and series I loved most"),
         new Theme("On my services", "The best of what is popular on my streaming services right now"));
@@ -42,6 +42,24 @@ final class Search {
             not = more;
         }
         return not.isEmpty() ? ask : ask + ". Not: " + not;
+    }
+
+    // Where a recommendation is on Home today, for its corner: "Netflix #3" (a Top 10 row: its place), "HBO Max" (a
+    // service's Popular row); null when in neither (TMDB's own rows say nothing about where to watch it).
+    static String whereOn(List<Home.Row> rows, Home.Card c) {
+        for (Home.Row r : rows) {
+            int at = -1;
+            for (int i = 0; i < r.cards().size(); i++) {
+                Home.Card x = r.cards().get(i);
+                if (x.id() == c.id() && x.type().equals(c.type())) at = i;
+            }
+            if (at < 0) continue;
+            if (r.title().startsWith("Top 10 ") && r.title().contains(" on Netflix")) return "Netflix #" + (at + 1);
+            if (r.title().startsWith("Popular on ") && r.title().contains(" in ")) {
+                return r.title().substring("Popular on ".length(), r.title().lastIndexOf(" in "));
+            }
+        }
+        return null;
     }
 
     static String url(String q) {

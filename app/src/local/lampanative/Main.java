@@ -543,7 +543,10 @@ public class Main extends Activity {
         retry.requestFocus();
     }
 
+    List<Home.Row> homeRows = List.of(); // the rows Home shows (Search's picks say which service each is on)
+
     void showRows(List<Home.Row> data) {
+        homeRows = data;
         int stride = cardW + gap;
         for (Home.Row row : data) {
             TextView title = ux.text(row.title(), 22, Color.WHITE);
