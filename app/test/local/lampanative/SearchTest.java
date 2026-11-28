@@ -53,4 +53,14 @@ class SearchTest {
         assert Search.remember("", "dark\n knight  ").equals("dark knight");
         assert Search.recent(Search.remember("a", "b\nc")).equals(java.util.List.of("b c", "a"));
     }
+
+    void testDifferent() {
+        assert Search.different("Scare me", List.of()).equals("Scare me") : "nothing shown yet";
+        assert Search.different("Scare me", List.of("Alien", "Heat")).equals("Scare me. Not: Alien; Heat");
+        List<String> many = new java.util.ArrayList<>();
+        for (int i = 0; i < 60; i++) many.add("A long film title number " + i);
+        String s = Search.different("Scare me", many);
+        assert s.length() <= 1000 : s.length();
+        assert s.contains("number 59") && !s.contains("number 19;") : "the newest kept";
+    }
 }

@@ -1,5 +1,7 @@
 package local.lampanative;
 
+import org.json.JSONObject;
+
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -40,9 +42,13 @@ class VoiceTest {
     }
 
     void testBodies() throws Exception {
-        assert Voice.understandBody("фильм \"Дюна\"").equals("{\"text\":\"фильм \\\"Дюна\\\"\"}") : Voice.understandBody("фильм \"Дюна\"");
-        assert Voice.findBody("x", null).equals("{\"text\":\"x\"}") : "no answer from Claude: the worker reads it";
-        String with = Voice.findBody("x", "{\"intent\":\"title\",\"candidates\":[]}");
+        assert Voice.understandBody("фильм \"Дюна\"", "").equals("{\"text\":\"фильм \\\"Дюна\\\"\"}") : Voice.understandBody("фильм \"Дюна\"", "");
+        assert new JSONObject(Voice.understandBody("x", "Loved: Dune (2021)")).getString("taste").equals("Loved: Dune (2021)");
+        assert Voice.findBody("x", null, "").equals("{\"text\":\"x\"}") : "no answer from Claude: the worker reads it";
+        assert new JSONObject(Voice.findBody("x", null, "Loved: Dune")).getString("taste").equals("Loved: Dune")
+            : "no Claude: the worker's model gets the taste";
+        String with = Voice.findBody("x", "{\"intent\":\"title\",\"candidates\":[]}", "Loved: Dune");
+        assert !new JSONObject(with).has("taste") : "Claude had it already";
         assert with.contains("\"understood\":{") && with.contains("\"intent\":\"title\"") : with;
         assert Voice.heard("{\"text\":\" Дом дракона. \"}").equals("Дом дракона.");
         assert Voice.heard("{}").isEmpty();
@@ -76,6 +82,6 @@ class VoiceTest {
         assert Voice.understood("{\"intent\":\"find\"}").equals("{\"intent\":\"find\"}");
         assert Voice.understood("<html>login</html>") == null && Voice.understood("") == null;
         assert Voice.understood("[1]") == null;
-        Voice.findBody("dune", Voice.understood("sorry, try later")); // null: no "understood" key, no exception
+        Voice.findBody("dune", Voice.understood("sorry, try later"), ""); // null: no "understood" key, no exception
     }
 }

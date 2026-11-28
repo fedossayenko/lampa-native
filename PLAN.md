@@ -432,8 +432,17 @@ shaping; custom-drawn rows would only save Java heap, which is 3–6 MB (log row
      (title, poster): a card with "S1 E9 · Name", "19 min left · ends at 23:41" (DDD has both times), the audio
      track's label, and the overview from a new `overview` extra (per item in `video_list`). ~120 lines in DDD.
      Order: rewind subtitles, the next-episode card, the paused screen, then (b).
-   - **8g. Your 2026** (Year) — medium, seasonal: hours, films, episodes, the longest run, top genre and director
-     (TMDB credits, cron-cached), Loved this year; from D1's timeline, CUB's history and grades. A December job.
+   - **8g. Your 2026** (Year) — dropped (user 2026-11-28).
+   - **8i. Tonight** (user 2026-11-28, after Netflix's AI Discover test) built: Search's six themes (Something light,
+     Scare me, Under 100 minutes, With the kids, Like what I loved, On my services) asked as voice search's
+     recommendation, then Something different (the picks shown as "Not: …"). Voice and themes send the worker's
+     `/voice/taste` (the newest 40 Loved, 20 Liked, 15 Meh or worse, and the country's Netflix and services rows) to
+     Claude (or the worker's model); a recommendation leaves out the graded, marked and watched. Checked 2026-11-28
+     with the real grades, Sonnet: "Like what I loved" The Prestige, Coco, Sherlock, Howl's Moving Castle (without:
+     Shawshank, Breaking Bad); "On my services" Lupin, The Gentlemen, Black Doves from Bulgaria's Top 10.
+     Also: D1 `starts` (each Play's release name and timeline key, test_plays setting = 1): why a third of the plays stop
+     in the first two minutes (30 days to 11-28: 21 of 57 under 20 %, 14 in 2 min, none played again; some were test
+     plays). Coming up's "Last 7 days" skipped: an episode out stays under Today until watched.
    - **8h. Translated subtitles** (Subs, second half) — high effort: English subtitles from OpenSubtitles (matched by
      the release's hash; an API key, ~20 downloads a day), translated by Claude on the home server (~1 min) and
      handed to DDD as an external track. Timing has to match the release, so a hash match only.

@@ -60,8 +60,11 @@ final class Voice {
         return new JSONObject(json).optString("text").trim();
     }
 
-    static String understandBody(String text) throws JSONException {
-        return new JSONObject().put("text", text).toString();
+    // taste: the worker's /voice/taste ("" none): what a recommendation knows of the viewer
+    static String understandBody(String text, String taste) throws JSONException {
+        JSONObject o = new JSONObject().put("text", text);
+        if (!taste.isEmpty()) o.put("taste", taste);
+        return o.toString();
     }
 
     // The home server's answer as it came when it is a JSON object, else null: a captive page or a proxy's text on
@@ -76,9 +79,10 @@ final class Voice {
     }
 
     // understood: Claude Code's answer as it came, null when it didn't answer (the worker's own model reads text).
-    static String findBody(String text, String understood) throws JSONException {
+    static String findBody(String text, String understood, String taste) throws JSONException {
         JSONObject o = new JSONObject().put("text", text);
         if (understood != null) o.put("understood", new JSONObject(understood));
+        else if (!taste.isEmpty()) o.put("taste", taste); // the worker's own model reads it then
         return o.toString();
     }
 

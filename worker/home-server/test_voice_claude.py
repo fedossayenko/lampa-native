@@ -27,7 +27,7 @@ class Checks(unittest.TestCase):
         self.addCleanup(os.unlink, token.name)
         vc.TOKEN = token.name
         vc.seen.clear()
-        vc.understand = lambda text: {'intent': 'title', 'text': text}
+        vc.understand = lambda text, taste='': {'intent': 'title', 'text': text, 'taste': taste}
         vc.recap = lambda o: (self.gate.wait(3), 'x' * 400)[1]
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), vc.Handler)
         self.port = self.server.server_address[1]
@@ -69,7 +69,7 @@ class Checks(unittest.TestCase):
         self.assertEqual(self.post('/nope', {}), 403)
 
     def test_body_size(self):
-        self.assertEqual(self.post('/understand', {'text': 'x' * 5000}), 413)
+        self.assertEqual(self.post('/understand', {'text': 'x' * 33000}), 413)  # text and taste: 32 KB
         # a negative length would read to the end of the connection before any check
         with socket.create_connection(('127.0.0.1', self.port), timeout=5) as s:
             s.sendall(b'POST /understand HTTP/1.0\r\nContent-Length: -1\r\n\r\n')

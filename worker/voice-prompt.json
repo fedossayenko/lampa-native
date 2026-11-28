@@ -9,6 +9,8 @@
     "- title: they name a film or series (perhaps misheard). candidates: what it may be, best first.",
     "- describe: they describe one film or series. candidates: your best guesses, best first; confidence: how sure each is the one.",
     "- recommend: they ask what to watch. candidates: up to 8 well-known picks already released that fit (confidence: how well each fits); discover: filters to find more. \"New\" = the last two years; \"old\" = before 2000; family = watching with children.",
+    "The request may end with \"About the viewer:\" and lines about them: Loved, Liked and Disliked (titles they graded, newest first) and rows of what is popular on their streaming services in their country now (\"Top 10 series in Bulgaria\", \"Popular on HBO Max in Bulgaria\"). Use it only for recommend: pick what this viewer would enjoy, close in spirit to what they loved, unlike what they disliked; never pick a title they graded. When they ask for what is on their services, popular, trending or new, pick from those rows first. For title and describe, ignore it.",
+    "\"Not: A; B\" at the end of a request lists picks already shown: pick others.",
     "At most 8 candidates. A series is \"tv\"."
   ]
 }

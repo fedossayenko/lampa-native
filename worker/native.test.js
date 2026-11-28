@@ -3343,3 +3343,43 @@ test('Home: Netflix\'s lookup failing (a bad row) → Home without them and not 
   assert.equal(res.status, 200);
   assert.equal(res.headers.get('Cache-Control'), 'no-store');
 });
+
+test('voice/taste: the newest Loved, Liked and Disliked (original titles, years; skip and removed left out) and the country\'s Home rows', async () => {
+  const e = { ...env, PLAY_TOKEN: 'stick-token', DB: d1(), CUB_ACCOUNTS: '42' };
+  cub({ 'users/get': { user: { id: 42 } } });
+  await worker.fetch(new Request('https://w/grades', { method: 'POST', headers: lampa, body: JSON.stringify({ grades: {
+    movie_1: { g: 2, t: 10, card: { id: 1, title: 'Дюна', original_title: 'Dune', release_date: '2021-09-15' } },
+    tv_2: { g: 2, t: 20, card: { id: 2, name: 'Сёгун', original_name: 'Shōgun', first_air_date: '2024-02-27' } },
+    movie_3: { g: 1, t: 5, card: { id: 3, title: 'Heat', release_date: '1995' } },
+    movie_4: { g: -1, t: 5, card: { id: 4, original_title: 'Cats', release_date: '2019' } },
+    movie_5: { g: 0, t: 6, card: { id: 5, original_title: 'Tenet' } },
+    tv_6: { g: 'skip', t: 7, card: { id: 6, original_name: 'Skipped' } },
+    movie_7: { g: null, t: 8, card: { id: 7, original_title: 'Removed' } } } }) }), e);
+  e.DB.raw.prepare("INSERT INTO top10 (country, week, rows, asked, t) VALUES ('BG', '2026-11-22', ?, ?, ?)")
+    .run(JSON.stringify([['Top 10 series in Bulgaria', [[9, 'tv', 'Wednesday', '2022', '/w.jpg', 85, '']]]]), Date.now(), Date.now());
+  const taste = (headers, q = '') => worker.fetch(new Request(`https://w/voice/taste${q}`, { headers }), e);
+  const { taste: text } = await (await taste({ ...stick, ...lampa })).json();
+  assert.equal(text, 'Loved: Shōgun (2024); Dune (2021)\nLiked: Heat (1995)\nDisliked: Tenet; Cats (2019)');
+  const bg = (await (await taste({ ...stick, ...lampa }, '?country=BG')).json()).taste;
+  assert.ok(bg.endsWith('\nTop 10 series in Bulgaria: Wednesday (2022)'), bg);
+  assert.equal((await taste(lampa)).status, 403, 'the stick\'s only');
+  assert.equal((await taste(stick)).status, 401, 'a CUB sign-in');
+});
+
+test('voice/find: the worker\'s own model gets the viewer\'s taste after the request; Claude\'s answer needs none', async () => {
+  globalThis.fetch = async () => Response.json({ results: [] });
+  const e = voiceEnv(() => ({ response: '{"intent": "recommend", "candidates": [], "discover": null}' }));
+  await voice('find', JSON.stringify({ text: 'Scare me', taste: 'Loved: Alien (1979)' }), e);
+  assert.equal(e.AI.calls[0][1].messages[1].content, 'Scare me\n\nAbout the viewer:\nLoved: Alien (1979)');
+  await voice('find', JSON.stringify({ text: 'x'.repeat(1200) }), e);
+  assert.equal(e.AI.calls[1][1].messages[1].content.length, 1000, 'a theme\'s Not: list fits, capped');
+});
+
+test('play: each start is logged with its release, the timeline\'s key and the test flag', async () => {
+  torbox(ready);
+  const e = tlEnv();
+  await worker.fetch(new Request(`https://w/play/${H}?file=1&name=Dune.2021.2160p.RUS.mkv&tl=123`, { headers: stick }), e);
+  await worker.fetch(new Request(`https://w/play/${H}?file=1&tl=124&test=1`, { headers: stick }), e);
+  assert.deepEqual(e.DB.raw.prepare('SELECT hash, name, tl, test FROM starts ORDER BY t, tl').all().map((r) => ({ ...r })),
+    [{ hash: H, name: 'Dune.2021.2160p.RUS.mkv', tl: '123', test: 0 }, { hash: H, name: '', tl: '124', test: 1 }]);
+});

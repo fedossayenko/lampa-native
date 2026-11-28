@@ -13,8 +13,12 @@ import android.view.View;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.HttpURLConnection;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
 import org.json.JSONException;
+import org.json.JSONObject;
 
 /**
  * Voice search: the remote's voice button held records what is said (the microphone on its own thread), the worker hears it, the
@@ -102,6 +106,7 @@ final class VoiceSearch extends Main.Part {
             return;
         }
         s.thinking("Hearing…");
+        FutureTask<String> taste = tasteAsked(); // beside the hearing
         m.async(() -> {
             String text = null;
             Voice.Answer found = null;
@@ -112,8 +117,7 @@ final class VoiceSearch extends Main.Part {
                 if (!text.isEmpty()) {
                     String t = text;
                     m.ui.post(() -> s.heard(ask, t));
-                    Answer f = m.ask("/voice/find", Voice.findBody(text, understand(text)).getBytes(StandardCharsets.UTF_8));
-                    if (f.code() == 200) found = Voice.parse(f.body());
+                    found = find(text, taste);
                 }
             } catch (Exception e) {
                 Log.w(Main.TAG, "voice", e);
@@ -124,14 +128,64 @@ final class VoiceSearch extends Main.Part {
         });
     }
 
-    String understand(String text) {
+    // A theme on Search (Search.THEMES) or its Something different: asked as if said, shown as its label.
+    void ask(SearchScreen s, String label, String text) {
+        if (m.recording) return;
+        int ask = ++s.asks;
+        s.heard(ask, label);
+        FutureTask<String> taste = tasteAsked();
+        m.async(() -> {
+            Voice.Answer found = null;
+            try {
+                found = find(text, taste);
+            } catch (Exception e) {
+                Log.w(Main.TAG, "theme", e);
+            }
+            Voice.Answer a = found;
+            m.ui.post(() -> s.found(ask, label, a));
+        });
+    }
+
+    // Claude Code's understanding (or the worker's model's), found on TMDB; null when the worker didn't answer.
+    Voice.Answer find(String text, FutureTask<String> tasteAsked) throws IOException, JSONException {
+        String taste = "";
+        try {
+            taste = tasteAsked.get(5, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            Log.w(Main.TAG, "voice: no taste", e);
+        }
+        Answer f = m.ask("/voice/find", Voice.findBody(text, understand(text, taste), taste).getBytes(StandardCharsets.UTF_8));
+        return f.code() == 200 ? Voice.parse(f.body()) : null;
+    }
+
+    // What a recommendation knows of the viewer (the worker's /voice/taste: grades and the country's Home rows), asked on
+    // its own thread; "" when nobody is signed in or it didn't answer.
+    FutureTask<String> tasteAsked() {
+        Cub.Account a = m.account();
+        String country = m.country();
+        FutureTask<String> t = new FutureTask<>(() -> {
+            if (a == null) return "";
+            try {
+                Answer r = send(withCub(open(Home.worker + "/voice/taste?country=" + URLEncoder.encode(country, "UTF-8"), 5000), a),
+                    null, null);
+                return r.code() == 200 ? new JSONObject(r.body()).optString("taste") : "";
+            } catch (IOException | JSONException e) {
+                Log.w(Main.TAG, "voice: taste", e);
+                return "";
+            }
+        });
+        Main.thread("taste", t);
+        return t;
+    }
+
+    String understand(String text, String taste) {
         if (m.homeServer.isEmpty()) return null;
         try {
             HttpURLConnection c = open("http://" + m.homeServer + "/understand", 25000);
             // the home network: no answer in 3 s = not there (a computer just woken or busy took over 1.5 s); the
             // worker's own understanding meanwhile
             c.setConnectTimeout(3000);
-            byte[] body = Voice.understandBody(text).getBytes(StandardCharsets.UTF_8);
+            byte[] body = Voice.understandBody(text, taste).getBytes(StandardCharsets.UTF_8);
             String[] auth = Voice.homeAuth(m.token(), body, System.currentTimeMillis());
             c.setRequestProperty("X-Home-Time", auth[0]);
             c.setRequestProperty("X-Home-Sig", auth[1]);

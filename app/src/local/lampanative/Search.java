@@ -21,6 +21,29 @@ final class Search {
         "Drama", "Family", "Fantasy", "History", "Horror", "Kids", "Music", "Mystery", "Romance", "Science fiction",
         "Thriller", "War", "Western");
 
+    // Tonight, above them (Netflix's mood themes): OK asks it as voice search's recommendation would be asked, with the
+    // viewer's taste (/voice/taste): label, then what is asked.
+    record Theme(String label, String ask) {}
+    static final List<Theme> THEMES = List.of(
+        new Theme("Something light", "Something light, funny and feel-good for tonight"),
+        new Theme("Scare me", "A really scary horror film or a tense thriller"),
+        new Theme("Under 100 minutes", "A great film under 100 minutes long"),
+        new Theme("With the kids", "A film the whole family will enjoy, with children"),
+        new Theme("Like what I loved", "More like the films and series I loved most"),
+        new Theme("On my services", "The best of what is popular on my streaming services right now"));
+    static final int NOT_MAX = 40; // titles in a Something different's "Not:" (the worker reads 1000 characters)
+
+    // Something different: the theme asked again without the picks shown so far (the newest NOT_MAX).
+    static String different(String ask, List<String> shown) {
+        String not = "";
+        for (int i = shown.size() - 1; i >= Math.max(0, shown.size() - NOT_MAX); i--) { // newest first, while it fits
+            String more = not.isEmpty() ? shown.get(i) : shown.get(i) + "; " + not;
+            if (ask.length() + 7 + more.length() > 1000) break;
+            not = more;
+        }
+        return not.isEmpty() ? ask : ask + ". Not: " + not;
+    }
+
     static String url(String q) {
         try {
             // v: bumped when answers cached on the stick must go (2: the index's first day answered nothing)

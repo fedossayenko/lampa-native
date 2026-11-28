@@ -45,6 +45,8 @@ final class SearchScreen extends Main.Part {
     String q = "", shownFor; // the query typed; the one the results are for (null: none yet)
     String inFlight; // the query asked and not answered yet: "dark" → "dark " meanwhile asks nothing more
     boolean ru = m.settings().getBoolean("search_ru", false);
+    Search.Theme theme; // the theme whose picks are shown (null: a search's or voice's), and every pick it showed
+    final List<String> picked = new ArrayList<>();
 
     void show() {
         screen.setOrientation(LinearLayout.VERTICAL);
@@ -106,6 +108,7 @@ final class SearchScreen extends Main.Part {
     // The query changed: shown at once, searched 0.3 s after the last key (at once when cleared).
     void set(String typed) {
         q = typed;
+        theme = null; // typing: a search's results now
         sure.clear();
         query.setText(q.isEmpty() ? "Type a title" : q + "▏");
         query.setTextColor(q.isEmpty() ? 0xff9a9a9a : Color.WHITE);
@@ -162,10 +165,22 @@ final class SearchScreen extends Main.Part {
         clear();
         shownFor = asked;
         if (found == null) {
+            theme = null;
+            results.addView(m.ux.heading("Tonight", 0));
+            LinearLayout pills = null;
+            for (int i = 0; i < Search.THEMES.size(); i++) { // 3 a row, as the genres
+                if (i % 3 == 0) results.addView(pills = new LinearLayout(m));
+                Search.Theme t = Search.THEMES.get(i);
+                pills.addView(m.ux.key(t.label(), 3, v -> {
+                    theme = t;
+                    picked.clear();
+                    m.voiceSearch.ask(this, t.label(), t.ask());
+                }));
+            }
             List<String> recent = Search.recent(m.settings().getString("searches", ""));
-            if (!recent.isEmpty()) results.addView(m.ux.heading("Recent searches", 0));
+            if (!recent.isEmpty()) results.addView(m.ux.heading("Recent searches", m.dp(24)));
             for (String r : recent) results.addView(m.ux.row(r, null, v -> set(r)));
-            results.addView(m.ux.heading("Genres", recent.isEmpty() ? 0 : m.dp(24)));
+            results.addView(m.ux.heading("Genres", m.dp(24)));
             LinearLayout line = null;
             for (int i = 0; i < Search.GENRES.size(); i++) { // 3 a row: 3 keys 3 wide fill the 508 dp
                 if (i % 3 == 0) results.addView(line = new LinearLayout(m));
@@ -188,7 +203,7 @@ final class SearchScreen extends Main.Part {
             card.setOnFocusChangeListener((v, on) -> m.prefetch(c, on)); // OK shows it all at once
             card.setOnClickListener(v -> {
                 m.ui.removeCallbacks(soon); // a search still pending would rebuild these under the film
-                m.settings().edit().putString("searches",
+                if (theme == null) m.settings().edit().putString("searches",
                     Search.remember(m.settings().getString("searches", ""), asked)).apply(); // what was found
                 m.filmPage.showFilm(c, null);
             });
@@ -207,6 +222,7 @@ final class SearchScreen extends Main.Part {
 
     // A press: its number (answers to an older one are dropped), the meter at 0 until speech comes.
     int listening() {
+        theme = null; // voice: its own results
         say(Voice.meter(0));
         clear();
         results.addView(m.ux.text("Speak while you hold the button: a title, what happens in it, or what you would"
@@ -261,13 +277,19 @@ final class SearchScreen extends Main.Part {
         List<Home.Card> cards = new ArrayList<>();
         for (Voice.Found f : a.results()) {
             String key = Timeline.card(f.card());
-            if (a.intent().equals("recommend") && (m.cub.grades().containsKey(key)
+            if (a.intent().equals("recommend") && (m.cub.grades().containsKey(key) || m.cub.seen().contains(key)
                 || "viewed".equals(m.cub.marks().get(key)) || "thrown".equals(m.cub.marks().get(key)))) continue;
             String badge = Voice.badge(f.sure());
             if (badge != null) sure.put(key, badge);
             cards.add(f.card());
         }
+        Search.Theme t = theme;
         show(text, cards);
+        if (t != null) { // a theme: Something different asks it again without these
+            for (Home.Card c : cards) picked.add(c.name());
+            results.addView(m.ux.key("Something different", 3,
+                v -> m.voiceSearch.ask(this, t.label(), Search.different(t.ask(), picked))));
+        }
         results.requestFocus(); // the first film (none: stays where it was)
         if (a.open() && !cards.isEmpty()) m.filmPage.showFilm(cards.get(0), null);
     }

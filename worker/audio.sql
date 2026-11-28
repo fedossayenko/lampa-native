@@ -15,6 +15,13 @@ CREATE TABLE IF NOT EXISTS plays (
   hash TEXT PRIMARY KEY, -- a release Play asked for: a torrent a probe added stays in the account; a week kept
   t INTEGER NOT NULL     -- (ms)
 );
+CREATE TABLE IF NOT EXISTS starts (
+  t INTEGER NOT NULL,    -- a Play (ms): which release each play was, to learn why one stops in its first minutes
+  hash TEXT NOT NULL,    -- the release (the torrent's info hash)
+  name TEXT NOT NULL,    -- its file or row name as the app sent it ("" none): quality, dub, group
+  tl TEXT NOT NULL,      -- the timeline's key (timeline.hash): how far it got
+  test INTEGER NOT NULL  -- 1: a test play (the stick's test_plays setting), not real watching
+);
 CREATE TABLE IF NOT EXISTS added (
   hash TEXT PRIMARY KEY, -- a torrent a probe added to the TorBox account: taken out at night unless played since
   id INTEGER NOT NULL,   -- TorBox's torrent id

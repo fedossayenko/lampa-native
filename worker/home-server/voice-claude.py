@@ -117,7 +117,10 @@ def refresh():
                 spare = start()
 
 
-def understand(text):
+def understand(text, taste=''):
+    """taste: the worker's /voice/taste text, sent by the stick (voice-prompt.json says how it is read)."""
+    if taste:
+        text = f'{text}\n\nAbout the viewer:\n{taste[:6000]}'
     p = take()
     timer = threading.Timer(WAIT_S, p.kill)
     timer.start()
@@ -223,7 +226,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            limit = {'/understand': 4096, '/recap': 65536}.get(self.path)
+            limit = {'/understand': 32768, '/recap': 65536}.get(self.path)
             n = int(self.headers.get('Content-Length') or 0)
             if limit is None or not 0 <= n <= limit:
                 return self.answer(403 if limit is None else 413, {'error': 'Forbidden.' if limit is None else 'Too large.'})
@@ -248,14 +251,15 @@ class Handler(BaseHTTPRequestHandler):
                         busy.discard(key)
                 log(f'{time.time() - t:.1f} s recap', repr(o.get('key')), '->', (text or '')[:80])
                 return self.answer(200 if text else 502, {'text': text} if text else {'error': 'No recap.'})
-            text = str(json.loads(body or b'{}').get('text', '')).strip()[:300]
+            o = json.loads(body or b'{}')
+            text = str(o.get('text', '')).strip()[:1000]  # a theme's "Not: ..." list makes it longer than speech
             if not text:
                 return self.answer(400, {'error': 'No text.'})
             if not understanding.acquire(blocking=False):
                 return self.answer(429, {'error': 'Busy.'})
             try:
                 t = time.time()
-                got = understand(text)
+                got = understand(text, str(o.get('taste') or ''))
             finally:
                 understanding.release()
             log(f'{time.time() - t:.1f} s', repr(text), '->', json.dumps(got, ensure_ascii=False)[:300])

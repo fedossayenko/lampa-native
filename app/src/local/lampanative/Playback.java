@@ -44,7 +44,8 @@ final class Playback extends Main.Part {
         }
         m.asking = true;
         String key = Timeline.key(f, season, episode);
-        String path = Timeline.playPath(hash, fileIdx, name, key, season > 0 ? Timeline.original(f) : null);
+        String path = Timeline.playPath(hash, fileIdx, name, key, season > 0 ? Timeline.original(f) : null)
+            + (m.settings().getBoolean("test_plays", false) ? "&test=1" : ""); // the worker's starts: not real watching
         Toast.makeText(m, "Getting the link…", Toast.LENGTH_SHORT).show();
         // Our DDD fork's skip times (intro, recap, credits) from the worker, asked alongside the link
         String skipPath = Timeline.segmentsPath(c, f.imdb(), season, episode, hash, fileIdx, name, Timeline.original(f));

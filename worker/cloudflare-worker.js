@@ -333,7 +333,7 @@ async function refreshTitles(env, language) {
 // times a series' episode got (asked again after a week anyway), "out in your language" answers (a new episode's, asked
 // for a month), a followed film's news (the app shows 30 days), recommendations of a film no longer graded, MaxVol's
 // lists (a day's), jobs of the intro detector that nothing has taken for a month (it asks the queue every 10 minutes).
-const PURGE = [['segments', 60], ['fresh', 30], ['news', 90], ['recs', 60], ['maxvol', 30], ['intro_jobs', 30], ['top10_titles', 90]];
+const PURGE = [['segments', 60], ['fresh', 30], ['news', 90], ['recs', 60], ['maxvol', 30], ['intro_jobs', 30], ['top10_titles', 90], ['starts', 180]];
 async function purgeOld(env, now) {
   for (const [table, days] of PURGE) {
     await env.DB.prepare(`DELETE FROM ${table} WHERE t < ?`).bind(now - days * 86400e3).run().catch((e) => console.log('purge', table, String(e)));
@@ -1594,7 +1594,10 @@ async function play(request, env, ctx, hash) {
   const q = new URL(request.url).searchParams;
   const resume = resumePoint(env, q.get('tl')); // alongside TorBox's three calls
   // played: a torrent a probe added stays in the account (dropProbeAdds)
-  const played = env.DB?.prepare('INSERT OR REPLACE INTO plays (hash, t) VALUES (?, ?)').bind(hash, Date.now()).run()
+  // starts: each play's release beside the timeline's key (half a year kept): why plays stop early, by release
+  const played = env.DB && Promise.all([env.DB.prepare('INSERT OR REPLACE INTO plays (hash, t) VALUES (?, ?)').bind(hash, Date.now()).run(),
+    env.DB.prepare('INSERT INTO starts (t, hash, name, tl, test) VALUES (?, ?, ?, ?, ?)').bind(Date.now(), hash,
+      String(q.get('name') || '').slice(0, 300), String(q.get('tl') || '').slice(0, 100), q.get('test') === '1' ? 1 : 0).run()])
     .catch(() => {});
   try {
     const got = await torboxLink(env, hash, Number(q.get('file') ?? -1), q.get('name') || '');
@@ -3167,11 +3170,11 @@ async function voiceDiscover(env, d) {
 async function voiceFind(request, env) {
   if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
   const ask = await request.json().catch(() => null);
-  const text = String(ask?.text || '').trim().slice(0, 300);
+  const text = String(ask?.text || '').trim().slice(0, 1000); // a theme's "Not: ..." makes it longer than speech
   let understood = ask?.understood && typeof ask.understood === 'object' ? ask.understood : null;
   const by = understood ? 'claude' : 'workers-ai';
   if (!understood && text && env.AI) {
-    const o = await env.AI.run(READS, { messages: [{ role: 'system', content: voicePrompt() }, { role: 'user', content: text }],
+    const o = await env.AI.run(READS, { messages: [{ role: 'system', content: voicePrompt() }, { role: 'user', content: withTaste(text, ask.taste) }],
       max_tokens: 1500 }).catch(() => null);
     understood = typeof o?.response === 'object' ? o.response : jsonIn(String(o?.response || ''));
   }
@@ -3187,6 +3190,40 @@ async function voiceFind(request, env) {
   const [a, b] = results;
   const open = intent !== 'recommend' && Boolean(a) && a[7] >= 70 && (!b || b[7] <= a[7] - 50);
   return voiceAnswer(request, { intent, by, open, results });
+}
+
+// What a recommendation knows of the viewer (voice-prompt.json reads it): the request, then "About the viewer:" and
+// /voice/taste's text. Capped: a long one only slows the model.
+const TASTE_MAX = 6000;
+const withTaste = (text, taste) => (typeof taste === 'string' && taste.trim() ? `${text}\n\nAbout the viewer:\n${taste.slice(0, TASTE_MAX)}` : text);
+
+// GET /voice/taste?country=BG (the stick's token and CUB sign-in) -> {taste}: the newest of the films and series graded
+// Loved, Good and Meh or worse (original titles, with the year), and what is popular on their services in the country
+// now (Home's Netflix and other rows, as they are: never waited for long). The stick sends it with a request to Claude
+// or to /voice/find, so a recommendation fits this viewer and a theme ("New on my services") picks from those rows.
+const TASTE_LISTS = [['Loved', '= 2', 40], ['Liked', '= 1', 20], ['Disliked', '<= 0', 15]];
+async function voiceTaste(request, env, ctx) {
+  if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
+  const who = await cubUser(request, env);
+  if (!who) return corsError(request, 'CUB sign-in required.', 401);
+  if (!env.DB) return corsError(request, 'No database.', 502);
+  const iso = new URL(request.url).searchParams.get('country') || '';
+  const name = "coalesce(v->>'$.card.original_title', v->>'$.card.original_name', v->>'$.card.title', v->>'$.card.name')";
+  const year = "substr(coalesce(v->>'$.card.release_date', v->>'$.card.first_air_date', ''), 1, 4)";
+  const [lists, netflix, services] = await Promise.all([
+    Promise.all(TASTE_LISTS.map(([, g, n]) => env.DB.prepare(`SELECT ${name} AS name, ${year} AS year FROM grades
+      WHERE who = ? AND typeof(v->>'$.g') = 'integer' AND v->>'$.g' ${g} ORDER BY t DESC LIMIT ${n}`).bind(who).all()
+      .then((r) => r.results))),
+    upTo(top10Rows(env, ctx, iso).catch(() => null), 1500, null),
+    upTo(serviceRows(env, ctx, iso).catch(() => null), 1500, null)]);
+  const lines = TASTE_LISTS.map(([label], i) => lists[i].length && `${label}: ${lists[i].filter((x) => x.name)
+    .map((x) => (x.year ? `${x.name} (${x.year})` : x.name)).join('; ')}`).filter(Boolean);
+  for (const [title, cards] of [...(netflix || []), ...(services?.rows || [])]) {
+    if (cards.length) lines.push(`${title}: ${cards.map((c) => (c[3] ? `${c[2]} (${c[3]})` : c[2])).join('; ')}`);
+  }
+  return new Response(JSON.stringify({ taste: lines.join('\n') }), {
+    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...corsHeaders(request) },
+  });
 }
 
 const LAMPA_FIELDS = ['poster_path', 'overview', 'release_date', 'id', 'original_title', 'original_language', 'title',
@@ -3346,6 +3383,7 @@ async function route(request, env, ctx) {
   if (listed && request.method === 'POST') return bookmark(request, env, listed[1], listed[2], listed[3]);
   if (path === '/voice/hear' && request.method === 'POST') return voiceHear(request, env);
   if (path === '/voice/find' && request.method === 'POST') return voiceFind(request, env);
+  if (path === '/voice/taste' && request.method === 'GET') return voiceTaste(request, env, ctx);
 
   // The Lampa plugin's routes, only when wanted (PASS_THROUGH=1 in wrangler.toml's [vars]): open to anyone, they
   // spend the MDBList key and pass requests through
