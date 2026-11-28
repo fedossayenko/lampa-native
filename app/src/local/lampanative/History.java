@@ -5,7 +5,6 @@ import static local.lampanative.Net.*;
 import android.graphics.Color;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
-import android.view.Gravity;
 import android.view.View;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -36,18 +35,8 @@ final class History extends Main.Part {
 
     // Continue browsing's last tile: History.
     View historyTile(TextView rowTitle) {
-        int w = m.dp(195), h = m.dp(110);
-        TextView picture = m.ux.text("↺", 40, 0xff9a9a9a);
-        picture.setGravity(Gravity.CENTER);
-        picture.setBackground(m.ux.shape(12 * m.dp, 0x14ffffff, 0x26ffffff));
-        View card = m.ux.tile(picture, w, h, 12 * m.dp, "History", "Played here and in Lampa");
-        card.setTag(HISTORY);
-        card.setOnFocusChangeListener((v, focused) -> {
-            if (focused) m.scroll.scrollTo(0, rowTitle.getTop());
-        });
-        card.setOnClickListener(this::openHistory);
-        historyTile = card;
-        return card;
+        historyTile = m.ux.glyphTile("↺", 0xff9a9a9a, "History", "Played here and in Lampa", HISTORY, rowTitle, this::openHistory);
+        return historyTile;
     }
 
     // History: what was played here and in Lampa, newest first, by day (the worker's

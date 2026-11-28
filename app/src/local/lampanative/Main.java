@@ -442,6 +442,7 @@ public class Main extends Activity {
         }
         mine.removeAllViews();
         int before = posters.size();
+        int year = Year.shown(); // Your <year>'s tile after History's (0: not this month)
         for (Home.Row row : data) {
             TextView title = ux.text(row.title(), 22, Color.WHITE);
             // Continue browsing as landscape tiles with how far in, the rest as posters
@@ -454,7 +455,7 @@ public class Main extends Activity {
                 line.addView(card);
             }
             if (tiles) line.addView(historyScreen.historyTile(title));
-            if (tiles && Year.shown() > 0) line.addView(yearScreen.tile(title, Year.shown()));
+            if (tiles && year > 0) line.addView(yearScreen.tile(title, year));
         }
         minePosters.addAll(posters.subList(before, posters.size()));
         List<Home.Card> tags = new ArrayList<>();
@@ -462,7 +463,7 @@ public class Main extends Activity {
         int at = Home.focusIndex(tags, was, old == null || old == firstCard);
         View target = at < 0 ? null : Ui.cardOf(minePosters.get(at));
         if (History.HISTORY.equals(was)) target = historyScreen.historyTile;
-        if (Year.YEAR.equals(was) && Year.shown() > 0) target = yearScreen.tile;
+        if (Year.YEAR.equals(was) && year > 0) target = yearScreen.tile;
         if (target == null && was != null && !posters.isEmpty()) target = Ui.cardOf(posters.get(0));
         if (page != null) {
             if (was != null) from = target; // Back lands there

@@ -3,7 +3,6 @@ package local.lampanative;
 import static local.lampanative.Net.*;
 
 import android.graphics.Color;
-import android.view.Gravity;
 import android.view.View;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -28,18 +27,9 @@ final class Year extends Main.Part {
     View tile;
 
     View tile(TextView rowTitle, int year) {
-        int w = m.dp(195), h = m.dp(110);
-        TextView picture = m.ux.text(String.valueOf(year), 40, 0xffdddddd);
-        picture.setGravity(Gravity.CENTER);
-        picture.setBackground(m.ux.shape(12 * m.dp, 0x14ffffff, 0x26ffffff));
-        View card = m.ux.tile(picture, w, h, 12 * m.dp, "Your " + year, "Your year in films and series");
-        card.setTag(YEAR);
-        card.setOnFocusChangeListener((v, focused) -> {
-            if (focused) m.scroll.scrollTo(0, rowTitle.getTop());
-        });
-        card.setOnClickListener(v -> openYear(v, year));
-        tile = card;
-        return card;
+        tile = m.ux.glyphTile(String.valueOf(year), 0xffdddddd, "Your " + year, "Your year in films and series", YEAR, rowTitle,
+            v -> openYear(v, year));
+        return tile;
     }
 
     // Asked each time it opens (~3 KB; the first time of a year up to ~10 s while the worker asks TMDB for genres).
@@ -72,13 +62,13 @@ final class Year extends Main.Part {
     }
 
     void show(LinearLayout column, TextView note, Cub.Year y, List<ImageView> pics) {
-        if (y.started() == 0 && y.episodes() == 0) {
+        String head = Cub.yearHead(y);
+        if (head == null) {
             note.setText("Nothing played in " + y.year() + " yet.");
             return;
         }
         column.removeView(note);
-        TextView big = m.ux.text(y.hours() + (y.hours() == 1 ? " hour" : " hours") + " · " + y.days()
-            + (y.days() == 1 ? " day" : " days"), 36, Color.WHITE);
+        TextView big = m.ux.text(head, 36, Color.WHITE);
         big.setTypeface(m.medium);
         big.setPadding(m.halo, m.dp(8), 0, m.dp(8));
         column.addView(big);

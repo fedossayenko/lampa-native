@@ -3351,7 +3351,6 @@ test('plays: Play logs the title, the release and its file; reports move it on; 
   torbox({ ...ready, 'mylist?id': { success: true, data: { ...pack, name: 'Show.S01.1080p.WEB-DL' } } });
   const e = tlEnv();
   await postTimeline(e, [{ hash: '77', time: 600, duration: 3000, percent: 20, card: 'tv_5' }]); // an earlier evening's point
-  e.DB.raw.prepare('UPDATE play_log SET t = 0').run();
   const res = await worker.fetch(new Request(`https://w/play/${H}?file=1&name=Show.S01E02.mkv&tl=77&card=tv_5&title=Show&s=1&e=2`,
     { headers: stick }), e);
   assert.equal(res.status, 200);
@@ -3399,6 +3398,7 @@ test('year: hours, films, episodes, the longest run, top genre and director, Lov
     'INSERT INTO timeline (hash, time, duration, percent, updated, card, season, episode) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
     .run(lampaHashOf(key), time, duration, percent, updated, card, season, episode);
   point('Dune', 9000, 9000, 100, at('2026-10-01T19:00Z'), 'movie_1'); // finished, here
+  point('Before', 0, 0, 0, at('2026-09-30T22:30Z')); // the first stamped point: 00:30 on 1 October at UTC+2
   point('Dune: Part Two', 9600, 9960, 96, at('2026-10-02T19:00Z'), 'movie_2');
   point('Arrival', 2040, 7000, 29, at('2026-10-03T19:00Z')); // Lampa's, stopped early
   point('Old', 6000, 6000, 100, 0); // Lampa's, no time: CUB played it in 2025
@@ -3409,6 +3409,9 @@ test('year: hours, films, episodes, the longest run, top genre and director, Lov
     e.DB.raw.prepare("INSERT INTO play_log (t, tl, card, hash, start, time, duration) VALUES (?, ?, 'movie_1', 'x', 0, 9000, 9000)")
       .run(at(t), lampaHashOf('Dune'));
   }
+  e.DB.raw.prepare("INSERT INTO play_log (t, tl, hash, start) VALUES (?, '9', 'x', 0)").run(at('2026-06-01T19:00Z')); // tried: no day
+  e.DB.raw.prepare("INSERT INTO play_log (t, tl, hash, start, time, duration) VALUES (?, '9', 'x', 600, 630, 6000)")
+    .run(at('2026-06-02T19:00Z')); // 30 s past its resume point: no day either
   e.DB.raw.prepare("INSERT INTO grades (who, card, t, v) VALUES ('42:7', 'movie_2', 1, '{\"g\":2}')").run();
   const answers = {
     'users/get': { user: { id: 42 } },
@@ -3436,7 +3439,7 @@ test('year: hours, films, episodes, the longest run, top genre and director, Lov
   assert.deepEqual({ ...y, posters: y.posters.map((c) => c[2]) }, {
     year: 2026, hours: Math.round((9000 * 2 + 9960 + 2040 + 3000 + 3000) / 3600), films: 2, started: 3, episodes: 2, series: 1,
     days: 5, run: [4, Date.UTC(2026, 9, 4)], genre: ['Science Fiction', 2], director: ['Denis Villeneuve', 2], loved: 1,
-    posters: ['Dune: Part Two', 'Dune', 'Dark Matter', 'Arrival'], posterTitle: 'Loved in 2026', since: at('2026-10-01T19:00Z'),
+    posters: ['Dune: Part Two', 'Dune', 'Dark Matter', 'Arrival'], posterTitle: 'Loved in 2026', since: Date.UTC(2026, 9, 1),
   });
   assert.equal(e.DB.raw.prepare('SELECT count(*) n FROM title_info').get().n, 3, 'the films finished and the series, once');
   cub(answers);

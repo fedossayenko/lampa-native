@@ -386,6 +386,12 @@ final class Cub {
         return m == 1 ? today.getYear() - 1 : 0;
     }
 
+    // Your <year>'s big line, "86 hours · 120 days"; null: nothing played that year (not a day with a minute watched).
+    static String yearHead(Year y) {
+        if (y.days() == 0 && y.hours() == 0) return null;
+        return count(y.hours(), "hour") + " · " + count(y.days(), "day");
+    }
+
     // Your <year>'s lines under its big one ("86 hours · 120 days"): what there is to say, in order.
     static List<String> yearLines(Year y) {
         List<String> out = new ArrayList<>();

@@ -191,10 +191,15 @@ class CubTest {
         assert Cub.yearLines(y).equals(List.of("2 films finished · 1 more started", "2 episodes of 1 series",
             "Longest run: 4 days in a row, to 4 October", "Top genre: Science Fiction · 2 titles",
             "Director of the year: Denis Villeneuve · 2 films", "Loved: 1 title you watched this year")) : Cub.yearLines(y);
+        assert Cub.yearHead(y).equals("10 hours · 5 days") : Cub.yearHead(y);
         assert Cub.yearNote(y).endsWith("Before 1 October a title counts on the day it was last played.") : Cub.yearNote(y);
         Cub.Year none = Cub.year("{\"year\":2026,\"run\":[0,0],\"genre\":[],\"director\":[],\"posters\":[],\"since\":0}");
         assert Cub.yearLines(none).equals(List.of("0 films finished")) : Cub.yearLines(none);
         assert !Cub.yearNote(none).contains("Before");
+        assert Cub.yearHead(none) == null : "nothing played";
+        // episodes started, none finished: still a year played
+        Cub.Year started = Cub.year("{\"year\":2026,\"hours\":1,\"days\":1,\"posters\":[]}");
+        assert Cub.yearHead(started).equals("1 hour · 1 day") : Cub.yearHead(started);
     }
 
     void testYearShown() {

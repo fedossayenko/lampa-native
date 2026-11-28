@@ -3136,7 +3136,7 @@ async function historyPage(request, env) {
 const YEAR_INFO_CALL = 10; // titles a call of its own asks TMDB for (a film's credits: ~50 KB of JSON each to parse)
 const YEAR_INFO_CALLS = 15;
 const YEAR_POSTERS = 10;
-async function yearPage(request, env, ctx) {
+async function yearPage(request, env) {
   if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
   const who = await cubUser(request, env);
   if (!who) return corsError(request, 'CUB sign-in required.', 401);
@@ -3151,7 +3151,7 @@ async function yearPage(request, env, ctx) {
   const rows = (sql, ...args) => env.DB.prepare(sql).bind(...args).all().then((r) => r.results);
   const [dump, points, plays, graded, since] = await Promise.all([cubApi(request, 'bookmarks/dump'),
     rows('SELECT * FROM timeline'),
-    rows('SELECT tl, t, start, time, duration, card FROM play_log WHERE t >= ? AND t < ?', from, to).catch(() => []),
+    rows('SELECT tl, t, start, time, duration, percent FROM play_log WHERE t >= ? AND t < ?', from, to).catch(() => []),
     gradeValues(env, who).catch(() => []),
     rows('SELECT min(updated) AS t FROM timeline WHERE updated > ?', DATED).then((r) => r[0]?.t || 0)]);
   if (!dump || !Array.isArray(dump.bookmarks)) return corsError(request, 'CUB unavailable.', 502);
@@ -3174,8 +3174,9 @@ async function yearPage(request, env, ctx) {
   const logged = new Map(); // a key's time watched in the year by the play log (each play from where it started)
   const days = new Set();
   for (const p of plays) {
-    logged.set(p.tl, (logged.get(p.tl) || 0) + Math.max(0, Math.min(p.time || 0, p.duration || 0) - (p.start || 0)));
-    days.add(day(p.t));
+    const secs = Math.max(0, Math.min(p.time || 0, p.duration || 0) - (p.start || 0));
+    logged.set(p.tl, (logged.get(p.tl) || 0) + secs);
+    if (secs >= TRIED_S || p.percent >= 90) days.add(day(p.t)); // a release tried and left: no day watched
   }
   const per = new Map(); // title → {secs, done (a film finished), episodes finished, last}
   for (const p of points) {
@@ -3247,7 +3248,7 @@ async function yearPage(request, env, ctx) {
     series: [...per].filter(([k, t]) => k.startsWith('tv_') && t.episodes > 0).length,
     days: days.size, run, genre: top(genres), director: director[1] >= 2 ? director : [],
     loved: loved.length, posters, posterTitle: loved.length ? `Loved in ${year}` : `Most watched in ${year}`,
-    since: inYear(since) ? since : 0,
+    since: inYear(since) ? day(since) * 86400e3 : 0, // a local day, as the run's
   }), { headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...corsHeaders(request) } });
 }
 
@@ -3542,7 +3543,7 @@ async function route(request, env, ctx) {
   if (path === '/plays' && request.method === 'GET') return playsPage(request, env);
   if (path === '/mine' && request.method === 'GET') return mine(request, env);
   if (path === '/mine/history' && request.method === 'GET') return historyPage(request, env);
-  if (path === '/mine/year' && request.method === 'GET') return yearPage(request, env, ctx);
+  if (path === '/mine/year' && request.method === 'GET') return yearPage(request, env);
   if (path === '/year/info' && request.method === 'POST') { // the worker's own call (yearPage)
     if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
     if (!env.DB) return corsError(request, 'No database.', 503);
