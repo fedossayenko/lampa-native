@@ -1626,7 +1626,8 @@ async function play(request, env, ctx, hash) {
         got.file.short_name || '')}`, { headers: { 'X-Play-Token': env.PLAY_TOKEN } }).catch(() => {})
         : rememberAudio(env, hash, got.link, true));
     }
-    const row = env.DB && playRow(q, hash, got, (await resume).time);
+    const { time, percent } = await resume;
+    const row = env.DB && playRow(q, hash, got, time > 10 && percent < 90 ? time : 0); // where DDD starts (Timeline.startMs)
     const logged = row ? env.DB.prepare(`INSERT INTO play_log (t, tl, card, title, season, episode, hash, release, file, start)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(...row).run().catch(() => {}) : null; // no log beats no film
     const playlist = q.has('series')
@@ -2442,16 +2443,15 @@ const PLAY_LOG_WINDOW = 12 * 3600e3;
 const PLAY_LOG_POINTS = 5; // the stick sends one a report
 async function logReport(env, r, end, now) {
   const since = now - PLAY_LOG_WINDOW;
-  if (r.card) {
-    await env.DB.prepare(`INSERT INTO play_log (t, tl, card, title, season, episode, hash, release, start)
-      SELECT ?1, ?2, card, title, ?3, ?4, hash, release, 0 FROM play_log
-      WHERE card = ?5 AND t > ?6 AND NOT EXISTS (SELECT 1 FROM play_log WHERE tl = ?2 AND t > ?6)
-      ORDER BY t DESC LIMIT 1`).bind(now, r.hash, r.season, r.episode, r.card, since).run();
-  }
-  await env.DB.prepare(`UPDATE play_log SET time = ?, duration = ?, percent = ?, updated = ?, card = COALESCE(card, ?),
-      season = COALESCE(season, ?), episode = COALESCE(episode, ?), end_by = COALESCE(?, end_by)
+  const update = () => env.DB.prepare(`UPDATE play_log SET time = ?, duration = ?, percent = ?, updated = ?,
+      card = COALESCE(card, ?), season = COALESCE(season, ?), episode = COALESCE(episode, ?), end_by = COALESCE(?, end_by)
     WHERE id = (SELECT id FROM play_log WHERE tl = ? AND t > ? ORDER BY t DESC LIMIT 1)`)
     .bind(r.time, r.duration, r.percent, r.updated, r.card, r.season, r.episode, end, r.hash, since).run();
+  if ((await update()).meta?.changes !== 0 || !r.card) return; // a report a play: one statement
+  await env.DB.prepare(`INSERT INTO play_log (t, tl, card, title, season, episode, hash, release, start)
+    SELECT ?, ?, card, title, ?, ?, hash, release, 0 FROM play_log WHERE card = ? AND t > ? ORDER BY t DESC LIMIT 1`)
+    .bind(now, r.hash, r.season, r.episode, r.card, since).run();
+  await update();
 }
 
 // GET /plays?n=50 (the stick's token) -> {plays: [{t, tl, card, title, season, episode, hash, release, file, start, time,

@@ -102,9 +102,6 @@ final class Ui {
         return lp;
     }
 
-    // A card: a picture (w × h, corners radius; < 0: a circle) in its focus halo, a name and a gray line under it, up
-    // to two lines each. The halo is a ring drawn by the card only while focused (the old frame sat inside the
-    // picture, over the badges); the card reaches a halo past the picture on each side, inside the gap.
     // A tile with a glyph or a word in place of a picture (Continue browsing's History and Your <year>): tag finds it
     // again when the row is drawn again; focus puts its row at the top, as a card's.
     View glyphTile(String glyph, int color, String name, String sub, String tag, TextView rowTitle, View.OnClickListener click) {
@@ -120,6 +117,10 @@ final class Ui {
         return card;
     }
 
+
+    // A card: a picture (w × h, corners radius; < 0: a circle) in its focus halo, a name and a gray line under it, up
+    // to two lines each. The halo is a ring drawn by the card only while focused (the old frame sat inside the
+    // picture, over the badges); the card reaches a halo past the picture on each side, inside the gap.
     View tile(View picture, int w, int h, float radius, String name, String sub) {
         LinearLayout card = new LinearLayout(m);
         card.setOrientation(LinearLayout.VERTICAL);

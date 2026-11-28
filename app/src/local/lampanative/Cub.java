@@ -400,7 +400,7 @@ final class Cub {
         if (y.episodes() > 0) out.add(count(y.episodes(), "episode") + " of " + count(y.series(), "series", "series"));
         if (y.run() >= 2) {
             out.add("Longest run: " + y.run() + " days in a row, to "
-                + LocalDate.ofEpochDay(Math.floorDiv(y.runTo(), 86_400_000L)).format(DateTimeFormatter.ofPattern("d MMMM", Locale.ENGLISH)));
+                + dayOf(y.runTo()));
         }
         if (!y.genre().isEmpty()) out.add("Top genre: " + y.genre() + " · " + count(y.genreTitles(), "title"));
         if (!y.director().isEmpty()) out.add("Director of the year: " + y.director() + " · " + count(y.directorFilms(), "film"));
@@ -412,8 +412,14 @@ final class Cub {
     static String yearNote(Year y) {
         String base = "Played here and in Lampa: the films and episodes you got past the first minute.";
         if (y.since() <= 0) return base;
-        String d = LocalDate.ofEpochDay(Math.floorDiv(y.since(), 86_400_000L)).format(DateTimeFormatter.ofPattern("d MMMM", Locale.ENGLISH));
-        return base + " Before " + d + " a title counts on the day it was last played.";
+        return base + " Before " + dayOf(y.since()) + " a title counts on the day it was last played.";
+    }
+
+    private static final DateTimeFormatter DAY_MONTH = DateTimeFormatter.ofPattern("d MMMM", Locale.ENGLISH);
+
+    // The worker's local day (ms at its midnight, as UTC) as "4 October"
+    private static String dayOf(long ms) {
+        return LocalDate.ofEpochDay(Math.floorDiv(ms, 86_400_000L)).format(DAY_MONTH);
     }
 
     private static String count(int n, String one) {

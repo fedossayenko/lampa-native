@@ -627,7 +627,7 @@ function d1() {
     bind: (...a) => stmt(sql, a),
     all: async () => ({ results: db.prepare(sql).all(...args) }),
     first: async () => db.prepare(sql).get(...args) ?? null,
-    run: async () => (db.prepare(sql).run(...args), { success: true }),
+    run: async () => ({ success: true, meta: { changes: Number(db.prepare(sql).run(...args).changes) } }),
   });
   return { prepare: (sql) => stmt(sql), raw: db };
 }
@@ -3375,6 +3375,17 @@ test('plays: Play logs the title, the release and its file; reports move it on; 
   const plays = await (await worker.fetch(new Request('https://w/plays?n=1', { headers: stick }), e)).json();
   assert.deepEqual(plays.plays.map((p) => p.tl), ['78']);
   assert.equal((await worker.fetch(new Request('https://w/plays', { headers: lampa }), e)).status, 403);
+});
+
+test('plays: a rewatch of a finished film starts at 0 (as DDD does), so its hours count', async () => {
+  torbox(ready);
+  const e = tlEnv();
+  await postTimeline(e, [{ hash: '61', time: 7000, duration: 7000, percent: 100, card: 'movie_155' }]);
+  await postTimeline(e, [{ hash: '62', time: 1000, duration: 7000, percent: 14, card: 'movie_156' }]);
+  await worker.fetch(new Request(`https://w/play/${H}?file=1&tl=61&card=movie_155`, { headers: stick }), e);
+  await worker.fetch(new Request(`https://w/play/${H}?file=1&tl=62&card=movie_156`, { headers: stick }), e);
+  assert.deepEqual(e.DB.raw.prepare('SELECT tl, start FROM play_log ORDER BY tl').all().map((r) => [r.tl, r.start]),
+    [['61', 0], ['62', 1000]]);
 });
 
 test('plays: an older app (no card) gets its card from the first report; a probe or a link not ready logs nothing', async () => {
