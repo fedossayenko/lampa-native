@@ -166,24 +166,34 @@ final class VoiceSearch extends Main.Part {
     // What a recommendation knows of the viewer (the worker's /voice/taste: grades and the country's Home rows), asked on
     // its own thread once while Search is open (again after a failure: null); "" when nobody is signed in.
     // Sent with title searches too (~2-4 KB): Claude can't know the intent before reading the request.
+    Future<String> taste; // the last taste asked, for TASTE_MS: a voice press from Home opens a new Search each time
+    long tasteAt;
+    static final long TASTE_MS = 10 * 60_000;
+
     Future<String> taste(SearchScreen s) {
-        if (Voice.reuse(s.taste)) return s.taste;
+        if (Voice.reuse(taste) && System.currentTimeMillis() - tasteAt < TASTE_MS) return taste;
         Cub.Account a = m.account();
         String country = m.country();
         if (a == null) return CompletableFuture.completedFuture(""); // nobody signed in: nothing to ask
         FutureTask<String> t = new FutureTask<>(() -> {
             try {
+                m.token(); // read again after a refusal, as m.ask does (open() sends it)
                 Answer r = send(withCub(open(Home.worker + "/voice/taste?country=" + URLEncoder.encode(country, "UTF-8"), 5000), a),
                     null, null);
                 if (r.code() == 200) return new JSONObject(r.body()).optString("taste");
                 Log.w(Main.TAG, "voice: taste " + r.code());
-            } catch (IOException | JSONException e) {
+                if (r.code() == 401 || r.code() == 403) { // refused: nothing to know, not asked again for TASTE_MS
+                    if (r.code() == 403) Net.token = null;
+                    return "";
+                }
+            } catch (IOException | JSONException e) { // m.token(): none set up, too
                 Log.w(Main.TAG, "voice: taste", e);
             }
             return null;
         });
         Main.thread("taste", t);
-        return s.taste = t;
+        tasteAt = System.currentTimeMillis();
+        return taste = t;
     }
 
     String understand(String text, String taste) {

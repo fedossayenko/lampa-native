@@ -21,7 +21,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.Future;
 
 final class SearchScreen extends Main.Part {
     SearchScreen(Main m) {
@@ -50,7 +49,6 @@ final class SearchScreen extends Main.Part {
     boolean ru = m.settings().getBoolean("search_ru", false);
     Search.Theme theme; // the theme whose picks are shown (null: a search's or voice's), and every pick it showed
     final Set<String> picked = new LinkedHashSet<>(); // once each: a repeat takes no slot
-    Future<String> taste; // the viewer's taste (VoiceSearch.taste), asked once while the screen is open
 
     void show() {
         screen.setOrientation(LinearLayout.VERTICAL);
