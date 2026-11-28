@@ -6,6 +6,9 @@ import java.nio.charset.StandardCharsets;
 import static java.nio.charset.StandardCharsets.US_ASCII;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.Future;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -116,8 +119,7 @@ final class Voice {
 
     // The films of an answer to show: a recommendation leaves out what was graded, played to the end (seen) or marked
     // Viewed or Thrown; a search shows all.
-    static List<Found> shown(Answer a, java.util.Map<String, String> grades, java.util.Set<String> seen,
-                             java.util.Map<String, String> marks) {
+    static List<Found> shown(Answer a, Map<String, String> grades, Set<String> seen, Map<String, String> marks) {
         List<Found> out = new ArrayList<>();
         for (Found f : a.results()) {
             String key = Timeline.card(f.card());
@@ -126,6 +128,16 @@ final class Voice {
             out.add(f);
         }
         return out;
+    }
+
+    // The taste asked before (VoiceSearch.taste) is used again while it is coming or once it came; one that failed or
+    // came empty is asked again.
+    static boolean reuse(Future<String> had) {
+        try {
+            return had != null && (!had.isDone() || !had.get().isEmpty());
+        } catch (Exception e) {
+            return false; // failed
+        }
     }
 
     // A card's corner: how sure ("97%"), nothing for one the filters found.

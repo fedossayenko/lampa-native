@@ -98,4 +98,16 @@ class VoiceTest {
         Voice.Answer search = Voice.parse(json.replace("recommend", "title"));
         assert Voice.shown(search, grades, seen, marks).size() == 5 : "a search shows them all";
     }
+
+    void testReuse() {
+        java.util.concurrent.FutureTask<String> coming = new java.util.concurrent.FutureTask<>(() -> "Loved: Dune");
+        assert Voice.reuse(coming) : "still coming";
+        coming.run();
+        assert Voice.reuse(coming) : "came";
+        java.util.concurrent.FutureTask<String> empty = new java.util.concurrent.FutureTask<>(() -> "");
+        empty.run();
+        java.util.concurrent.FutureTask<String> failed = new java.util.concurrent.FutureTask<>(() -> { throw new java.io.IOException(); });
+        failed.run();
+        assert !Voice.reuse(empty) && !Voice.reuse(failed) && !Voice.reuse(null) : "asked again";
+    }
 }

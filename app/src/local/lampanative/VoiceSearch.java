@@ -133,7 +133,8 @@ final class VoiceSearch extends Main.Part {
         if (m.recording) return;
         int ask = ++s.asks;
         s.keys.requestFocus(); // the key pressed goes with the old results: the keyboard meanwhile, the first film after
-        s.heard(ask, theme.label());
+        s.say(theme.label()); // gray, not a query: a key typed starts from nothing
+        s.thinking("Finding…");
         FutureTask<String> taste = taste(s);
         m.async(() -> {
             Voice.Answer found = null;
@@ -163,16 +164,15 @@ final class VoiceSearch extends Main.Part {
     // its own thread once while Search is open (again after a failure); "" when nobody is signed in or it didn't answer.
     // Sent with title searches too (~2-4 KB): Claude can't know the intent before reading the request.
     FutureTask<String> taste(SearchScreen s) {
-        FutureTask<String> had = s.taste;
-        try {
-            if (had != null && (!had.isDone() || !had.get().isEmpty())) return had;
-        } catch (Exception e) {
-            // failed: asked again below
-        }
+        if (Voice.reuse(s.taste)) return s.taste;
         Cub.Account a = m.account();
         String country = m.country();
+        if (a == null) { // nobody signed in: nothing to ask
+            FutureTask<String> none = new FutureTask<>(() -> "");
+            none.run();
+            return none;
+        }
         FutureTask<String> t = new FutureTask<>(() -> {
-            if (a == null) return "";
             try {
                 Answer r = send(withCub(open(Home.worker + "/voice/taste?country=" + URLEncoder.encode(country, "UTF-8"), 5000), a),
                     null, null);

@@ -121,6 +121,8 @@ class Taste(unittest.TestCase):
 
             def wait(self):
                 pass
+        was = vc.take, vc.understand
+        self.addCleanup(lambda: setattr(vc, 'take', was[0]) or setattr(vc, 'understand', was[1]))
         vc.take, vc.understand = Fake, real_understand
         self.assertEqual(vc.understand('Scare me', 'Loved: Alien (1979)'), {'intent': 'recommend'})
         self.assertEqual(sent[-1], 'Scare me\n\nAbout the viewer:\nLoved: Alien (1979)')

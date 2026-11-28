@@ -174,10 +174,14 @@ final class SearchScreen extends Main.Part {
             for (int i = 0; i < Search.THEMES.size(); i++) { // 3 a row, as the genres
                 if (i % 3 == 0) results.addView(pills = new LinearLayout(m));
                 Search.Theme t = Search.THEMES.get(i);
-                pills.addView(m.ux.key(t.label(), 3, v -> {
+                View pill = m.ux.key(t.label(), 3, v -> {
                     picked.clear();
                     m.voiceSearch.ask(this, t, t.ask());
-                }));
+                });
+                pill.setOnFocusChangeListener((v, on) -> {
+                    if (on) m.voiceSearch.taste(this); // asked ahead, once: the first theme doesn't wait for it
+                });
+                pills.addView(pill);
             }
             List<String> recent = Search.recent(m.settings().getString("searches", ""));
             if (!recent.isEmpty()) results.addView(m.ux.heading("Recent searches", m.dp(24)));
@@ -287,7 +291,7 @@ final class SearchScreen extends Main.Part {
         show(text, cards);
         theme = t;
         if (t != null) { // a theme: Something different asks it again without these
-            for (Home.Card c : cards) picked.add(c.name());
+            for (Voice.Found f : a.results()) picked.add(f.card().name()); // the left out too: else asked the same again
             results.addView(m.ux.key("Something different", 3,
                 v -> m.voiceSearch.ask(this, t, Search.different(t.ask(), picked))));
         }

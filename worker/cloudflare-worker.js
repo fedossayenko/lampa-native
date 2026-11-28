@@ -3216,12 +3216,16 @@ async function voiceTaste(request, env, ctx) {
       .then((r) => r.results))),
     upTo(top10Rows(env, ctx, iso).catch(() => null), 1500, null),
     upTo(serviceRows(env, ctx, iso).catch(() => null), 1500, null)]);
-  const lines = TASTE_LISTS.map(([label], i) => lists[i].filter((x) => x.name)).map((xs, i) => xs.length
-    && `${TASTE_LISTS[i][0]}: ${xs.map((x) => (x.year ? `${x.name} (${x.year})` : x.name)).join('; ')}`).filter(Boolean);
-  for (const [title, cards] of [...(netflix || []), ...(services?.rows || [])]) {
-    if (cards.length) lines.push(`${title}: ${cards.map((c) => (c[3] ? `${c[2]} (${c[3]})` : c[2])).join('; ')}`);
+  // the rows first: a cut (TASTE_MAX) takes the oldest grades, never what "On my services" picks from
+  const lines = [...(netflix || []), ...(services?.rows || [])].filter(([, cards]) => cards.length)
+    .map(([title, cards]) => `${title}: ${cards.map((c) => (c[3] ? `${c[2]} (${c[3]})` : c[2])).join('; ')}`);
+  for (const [i, [label]] of TASTE_LISTS.entries()) {
+    const xs = lists[i].filter((x) => x.name);
+    if (xs.length) lines.push(`${label}: ${xs.map((x) => (x.year ? `${x.name} (${x.year})` : x.name)).join('; ')}`);
   }
-  return new Response(JSON.stringify({ taste: lines.join('\n') }), {
+  let taste = lines.join('\n');
+  if (taste.length > TASTE_MAX) taste = taste.slice(0, taste.lastIndexOf('; ', TASTE_MAX)); // a whole title last
+  return new Response(JSON.stringify({ taste }), {
     headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...corsHeaders(request) },
   });
 }
