@@ -241,12 +241,12 @@ class TimelineTest {
         Timeline.Playing p = new Timeline.Playing("1", "movie_155", 0, 0, 0);
         assert new org.json.JSONObject(p.body(new long[] {7000, 7000, 100}, "completion")).getJSONArray("timelines")
             .getJSONObject(0).getString("end").equals("completion");
-        assert !p.body(new long[] {1, 2, 50}).contains("\"end\"");
+        assert !p.body(new long[] {1, 2, 50}, null).contains("\"end\"");
     }
 
     // POST /timeline: one point as the worker takes it (it stamps `updated` itself).
     void testTimelineBody() throws Exception {
-        String body = new Timeline.Playing("46902274", "tv_1399", 1, 5, 0).body(new long[] {3000, 7000, 43});
+        String body = new Timeline.Playing("46902274", "tv_1399", 1, 5, 0).body(new long[] {3000, 7000, 43}, null);
         org.json.JSONObject t = new org.json.JSONObject(body).getJSONArray("timelines").getJSONObject(0);
         assert t.getString("hash").equals("46902274") && t.getLong("time") == 3000 && t.getLong("duration") == 7000;
         assert t.getInt("percent") == 43 && t.getString("card").equals("tv_1399");

@@ -117,7 +117,6 @@ final class Ui {
         return card;
     }
 
-
     // A card: a picture (w × h, corners radius; < 0: a circle) in its focus halo, a name and a gray line under it, up
     // to two lines each. The halo is a ring drawn by the card only while focused (the old frame sat inside the
     // picture, over the badges); the card reaches a halo past the picture on each side, inside the gap.

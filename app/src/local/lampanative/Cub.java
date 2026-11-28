@@ -367,14 +367,14 @@ final class Cub {
 
     static Year year(String json) throws JSONException {
         JSONObject o = new JSONObject(json);
-        JSONArray run = o.optJSONArray("run"), genre = o.optJSONArray("genre"), director = o.optJSONArray("director");
+        JSONArray run = o.getJSONArray("run"), genre = o.getJSONArray("genre"), director = o.getJSONArray("director");
         JSONArray p = o.getJSONArray("posters");
         List<Home.Card> posters = new ArrayList<>(p.length());
         for (int i = 0; i < p.length(); i++) posters.add(Home.card(p.getJSONArray(i)));
         return new Year(o.getInt("year"), o.optInt("hours"), o.optInt("films"), o.optInt("started"), o.optInt("episodes"),
-            o.optInt("series"), o.optInt("days"), run != null ? run.optInt(0) : 0, run != null ? run.optLong(1) : 0,
-            genre != null && genre.length() == 2 ? genre.getString(0) : "", genre != null ? genre.optInt(1) : 0,
-            director != null && director.length() == 2 ? director.getString(0) : "", director != null ? director.optInt(1) : 0,
+            o.optInt("series"), o.optInt("days"), run.optInt(0), run.optLong(1),
+            genre.length() == 2 ? genre.getString(0) : "", genre.optInt(1),
+            director.length() == 2 ? director.getString(0) : "", director.optInt(1),
             o.optInt("loved"), posters, o.optString("posterTitle"), o.optLong("since"));
     }
 
@@ -388,7 +388,7 @@ final class Cub {
 
     // Your <year>'s big line, "86 hours · 120 days"; null: nothing played that year (not a day with a minute watched).
     static String yearHead(Year y) {
-        if (y.days() == 0 && y.hours() == 0) return null;
+        if (y.days() == 0) return null; // every point that adds hours adds a day
         return count(y.hours(), "hour") + " · " + count(y.days(), "day");
     }
 

@@ -376,10 +376,6 @@ final class Timeline {
         }
 
         // POST /timeline: where DDD stopped ({time, duration, percent} from saved()); the worker stamps the time.
-        String body(long[] t) {
-            return body(t, null);
-        }
-
         // end: DDD's end_by with its answer ("completion", "user"; null: a report while it plays), for the play log
         String body(long[] t, String end) {
             try {

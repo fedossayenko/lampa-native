@@ -3453,6 +3453,13 @@ test('year: hours, films, episodes, the longest run, top genre and director, Lov
     posters: ['Dune: Part Two', 'Dune', 'Dark Matter', 'Arrival'], posterTitle: 'Loved in 2026', since: Date.UTC(2026, 9, 1),
   });
   assert.equal(e.DB.raw.prepare('SELECT count(*) n FROM title_info').get().n, 3, 'the films finished and the series, once');
+  // January: Arrival finished in 2027 moves its point out of 2026; its 2026 play (the log) still counts there
+  e.DB.raw.prepare('UPDATE timeline SET time = 7000, percent = 100, updated = ? WHERE hash = ?').run(at('2027-01-05T19:00Z'), lampaHashOf('Arrival'));
+  e.DB.raw.prepare("INSERT INTO play_log (t, tl, hash, start, time, duration, percent) VALUES (?, ?, 'x', 0, 2040, 7000, 29)")
+    .run(at('2026-10-03T19:00Z'), lampaHashOf('Arrival'));
+  cub(answers);
+  const jan = await (await worker.fetch(new Request('https://w/mine/year?y=2026&tz=120', { headers: { ...stick, ...lampa } }), e)).json();
+  assert.deepEqual([jan.hours, jan.films, jan.started, jan.days], [y.hours, 2, 3, 5]);
   cub(answers);
   await worker.fetch(new Request('https://w/mine/year?y=2026', { headers: { ...stick, ...lampa } }), e);
   assert.ok(!asked.some((u) => /\/3\/movie\/[12]$/.test(u.split(' ')[0])), 'asked TMDB once a title');

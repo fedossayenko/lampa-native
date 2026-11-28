@@ -198,7 +198,7 @@ class CubTest {
         assert !Cub.yearNote(none).contains("Before");
         assert Cub.yearHead(none) == null : "nothing played";
         // episodes started, none finished: still a year played
-        Cub.Year started = Cub.year("{\"year\":2026,\"hours\":1,\"days\":1,\"posters\":[]}");
+        Cub.Year started = Cub.year("{\"year\":2026,\"hours\":1,\"days\":1,\"run\":[1,0],\"genre\":[],\"director\":[],\"posters\":[]}");
         assert Cub.yearHead(started).equals("1 hour · 1 day") : Cub.yearHead(started);
     }
 

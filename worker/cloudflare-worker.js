@@ -1626,15 +1626,15 @@ async function play(request, env, ctx, hash) {
         got.file.short_name || '')}`, { headers: { 'X-Play-Token': env.PLAY_TOKEN } }).catch(() => {})
         : rememberAudio(env, hash, got.link, true));
     }
-    const { time, percent } = await resume;
-    const row = env.DB && playRow(q, hash, got, time > 10 && percent < 90 ? time : 0); // where DDD starts (Timeline.startMs)
+    const point = await resume;
+    const row = env.DB && playRow(q, hash, got, point.time > 10 && point.percent < 90 ? point.time : 0); // DDD's start (Timeline.startMs)
     const logged = row ? env.DB.prepare(`INSERT INTO play_log (t, tl, card, title, season, episode, hash, release, file, start)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(...row).run().catch(() => {}) : null; // no log beats no film
     const playlist = q.has('series')
       ? await episodesFrom(request, env, ctx, got.id, got.files, got.file, q.get('series'), got.link, q.has('probe')) : [];
     await logged;
     return new Response(JSON.stringify(playlist.length
-      ? { url: playlist[0][4], ...(await resume), playlist } : { url: got.link, ...(await resume) }), {
+      ? { url: playlist[0][4], ...point, playlist } : { url: got.link, ...point }), {
       headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...corsHeaders(request) },
     });
   } catch {
@@ -3172,10 +3172,12 @@ async function yearPage(request, env) {
     }
   }
   const logged = new Map(); // a key's time watched in the year by the play log (each play from where it started)
+  const loggedDone = new Map(); // and when one of its plays there finished it
   const days = new Set();
   for (const p of plays) {
     const secs = Math.max(0, Math.min(p.time || 0, p.duration || 0) - (p.start || 0));
     logged.set(p.tl, (logged.get(p.tl) || 0) + secs);
+    if (p.percent >= 90) loggedDone.set(p.tl, Math.max(loggedDone.get(p.tl) || 0, p.t));
     if (secs >= TRIED_S || p.percent >= 90) days.add(day(p.t)); // a release tried and left: no day watched
   }
   const per = new Map(); // title → {secs, done (a film finished), episodes finished, last}
@@ -3184,17 +3186,21 @@ async function yearPage(request, env) {
     if (!at || (p.time < TRIED_S && p.percent < 90)) continue;
     const dated = p.updated > DATED;
     const h = titles.get(at[0]);
-    if (dated ? !inYear(p.updated) : !h || !inYear(h.t)) continue;
-    const secs = Math.max(p.percent >= 90 ? p.duration : Math.min(p.time, p.duration), logged.get(p.hash) || 0);
+    // played again after the year (January's look back): its plays in the year, from the play log
+    const later = dated && p.updated >= to && logged.get(p.hash) > 0;
+    if (!later && (dated ? !inYear(p.updated) : !h || !inYear(h.t))) continue;
+    const finished = later ? loggedDone.has(p.hash) : p.percent >= 90;
+    const secs = later ? logged.get(p.hash)
+      : Math.max(p.percent >= 90 ? p.duration : Math.min(p.time, p.duration), logged.get(p.hash) || 0);
     const t = per.get(at[0]) || { secs: 0, done: false, episodes: 0, last: 0 };
     t.secs += secs;
-    if (p.percent >= 90) {
+    if (finished) {
       if (at[1] > 0) t.episodes += 1;
       else t.done = true;
     }
-    t.last = Math.max(t.last, dated ? p.updated : h.t);
+    t.last = Math.max(t.last, later ? loggedDone.get(p.hash) || from : dated ? p.updated : h.t);
     per.set(at[0], t);
-    days.add(day(dated ? p.updated : h.t));
+    if (!later) days.add(day(dated ? p.updated : h.t)); // later: its days are the play log's
   }
   const films = [...per].filter(([k]) => k.startsWith('movie_'));
   const watched = [...per].filter(([k, t]) => t.done || t.episodes > 0).map(([k]) => k);

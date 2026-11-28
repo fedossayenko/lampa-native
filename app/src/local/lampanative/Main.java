@@ -745,7 +745,7 @@ public class Main extends Activity {
             Timeline.Playing p = started.at(at);
             long[] t = p.saved(data.getLongExtra("position", 0), data.getLongExtra("duration", 0), false);
             if (t == null) return;
-            byte[] json = p.body(t).getBytes(StandardCharsets.UTF_8);
+            byte[] json = p.body(t, null).getBytes(StandardCharsets.UTF_8);
             PendingResult done = goAsync(); // ~10 s for the request before Android counts it hung
             SENDING.incrementAndGet(); // endBehindPlayer waits for it
             new Thread(() -> {
