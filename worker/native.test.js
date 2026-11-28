@@ -3396,10 +3396,11 @@ test('voice/taste: a line whose first title crosses the cap goes whole, the line
   e.DB.raw.prepare("INSERT INTO top10 (country, week, rows, asked, t) VALUES ('BG', '2026-11-22', ?, ?, ?)")
     .run(JSON.stringify([['Top 10 series in Bulgaria', [[9, 'tv', 'Wednesday', '2022', '/w.jpg', 85, '']]]]), Date.now(), Date.now());
   const first = 'Top 10 series in Bulgaria: Wednesday (2022)\nLiked: ';
-  const liked = 'L'.repeat(5990 - first.length); // the Liked line ends at 5990
+  const liked = 'L'.repeat(5990 - first.length - 'B; '.length); // the Liked line "B; LLL…" ends at 5990
   await worker.fetch(new Request('https://w/grades', { method: 'POST', headers: lampa, body: JSON.stringify({ grades: {
     movie_1: { g: 1, t: 1, card: { id: 1, original_title: liked } },
+    movie_3: { g: 1, t: 2, card: { id: 3, original_title: 'B' } },
     movie_2: { g: 2, t: 1, card: { id: 2, original_title: 'A Loved film past the cap' } } } }) }), e);
   const { taste } = await (await worker.fetch(new Request('https://w/voice/taste?country=BG', { headers: { ...stick, ...lampa } }), e)).json();
-  assert.equal(taste, first + liked);
+  assert.equal(taste, `${first}B; ${liked}`, 'not cut after B, the earlier line\'s last "; "');
 });
