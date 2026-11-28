@@ -3201,7 +3201,7 @@ const withTaste = (text, taste) => (typeof taste === 'string' && taste.trim() ? 
 // Loved, Good and Meh or worse (original titles, with the year), and what is popular on their services in the country
 // now (Home's Netflix and other rows, as they are: never waited for long). The stick sends it with a request to Claude
 // or to /voice/find, so a recommendation fits this viewer and a theme ("New on my services") picks from those rows.
-const TASTE_LISTS = [['Loved', '= 2', 40], ['Liked', '= 1', 20], ['Disliked', '<= 0', 15]];
+const TASTE_LISTS = [['Disliked', '<= 0', 15], ['Liked', '= 1', 20], ['Loved', '= 2', 40]]; // a cut takes Loved's oldest
 async function voiceTaste(request, env, ctx) {
   if (!isStick(request, env)) return corsError(request, 'Forbidden.', 403);
   const who = await cubUser(request, env);
@@ -3216,7 +3216,7 @@ async function voiceTaste(request, env, ctx) {
       .then((r) => r.results))),
     upTo(top10Rows(env, ctx, iso).catch(() => null), 1500, null),
     upTo(serviceRows(env, ctx, iso).catch(() => null), 1500, null)]);
-  // the rows first: a cut (TASTE_MAX) takes the oldest grades, never what "On my services" picks from
+  // the rows first, Loved last: a cut (TASTE_MAX) takes the oldest Loved, never what "On my services" picks from
   const lines = [...(netflix || []), ...(services?.rows || [])].filter(([, cards]) => cards.length)
     .map(([title, cards]) => `${title}: ${cards.map((c) => (c[3] ? `${c[2]} (${c[3]})` : c[2])).join('; ')}`);
   for (const [i, [label]] of TASTE_LISTS.entries()) {
@@ -3224,7 +3224,10 @@ async function voiceTaste(request, env, ctx) {
     if (xs.length) lines.push(`${label}: ${xs.map((x) => (x.year ? `${x.name} (${x.year})` : x.name)).join('; ')}`);
   }
   let taste = lines.join('\n');
-  if (taste.length > TASTE_MAX) taste = taste.slice(0, taste.lastIndexOf('; ', TASTE_MAX)); // a whole title last
+  if (taste.length > TASTE_MAX) { // a whole title last
+    const cut = taste.lastIndexOf('; ', TASTE_MAX);
+    taste = taste.slice(0, cut > 0 ? cut : TASTE_MAX);
+  }
   return new Response(JSON.stringify({ taste }), {
     headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...corsHeaders(request) },
   });

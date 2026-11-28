@@ -15,6 +15,8 @@ import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Future;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import org.json.JSONException;
@@ -106,7 +108,7 @@ final class VoiceSearch extends Main.Part {
             return;
         }
         s.thinking("Hearing…");
-        FutureTask<String> taste = taste(s); // beside the hearing
+        Future<String> taste = taste(s); // beside the hearing
         m.async(() -> {
             String text = null;
             Voice.Answer found = null;
@@ -124,7 +126,7 @@ final class VoiceSearch extends Main.Part {
             }
             String t = text;
             Voice.Answer a = found;
-            m.ui.post(() -> s.found(ask, t, a, null));
+            m.ui.post(() -> s.found(ask, t, a, null, null));
         });
     }
 
@@ -135,7 +137,7 @@ final class VoiceSearch extends Main.Part {
         s.keys.requestFocus(); // the key pressed goes with the old results: the keyboard meanwhile, the first film after
         s.say(theme.label()); // gray, not a query: a key typed starts from nothing
         s.thinking("Finding…");
-        FutureTask<String> taste = taste(s);
+        Future<String> taste = taste(s);
         m.async(() -> {
             Voice.Answer found = null;
             try {
@@ -144,43 +146,41 @@ final class VoiceSearch extends Main.Part {
                 Log.w(Main.TAG, "theme", e);
             }
             Voice.Answer a = found;
-            m.ui.post(() -> s.found(ask, theme.label(), a, theme));
+            m.ui.post(() -> s.found(ask, theme.label(), a, theme, text));
         });
     }
 
     // Claude Code's understanding (or the worker's model's), found on TMDB; null when the worker didn't answer.
-    Voice.Answer find(String text, FutureTask<String> tasteAsked) throws IOException, JSONException {
-        String taste = "";
+    Voice.Answer find(String text, Future<String> tasteAsked) throws IOException, JSONException {
+        String taste = null;
         try {
             taste = tasteAsked.get(4, TimeUnit.SECONDS); // beside the hearing, or once a screen: rarely waited for
         } catch (Exception e) {
             Log.w(Main.TAG, "voice: no taste", e);
         }
+        if (taste == null) taste = ""; // failed: asked without
         Answer f = m.ask("/voice/find", Voice.findBody(text, understand(text, taste), taste).getBytes(StandardCharsets.UTF_8));
         return f.code() == 200 ? Voice.parse(f.body()) : null;
     }
 
     // What a recommendation knows of the viewer (the worker's /voice/taste: grades and the country's Home rows), asked on
-    // its own thread once while Search is open (again after a failure); "" when nobody is signed in or it didn't answer.
+    // its own thread once while Search is open (again after a failure: null); "" when nobody is signed in.
     // Sent with title searches too (~2-4 KB): Claude can't know the intent before reading the request.
-    FutureTask<String> taste(SearchScreen s) {
+    Future<String> taste(SearchScreen s) {
         if (Voice.reuse(s.taste)) return s.taste;
         Cub.Account a = m.account();
         String country = m.country();
-        if (a == null) { // nobody signed in: nothing to ask
-            FutureTask<String> none = new FutureTask<>(() -> "");
-            none.run();
-            return none;
-        }
+        if (a == null) return CompletableFuture.completedFuture(""); // nobody signed in: nothing to ask
         FutureTask<String> t = new FutureTask<>(() -> {
             try {
                 Answer r = send(withCub(open(Home.worker + "/voice/taste?country=" + URLEncoder.encode(country, "UTF-8"), 5000), a),
                     null, null);
-                return r.code() == 200 ? new JSONObject(r.body()).optString("taste") : "";
+                if (r.code() == 200) return new JSONObject(r.body()).optString("taste");
+                Log.w(Main.TAG, "voice: taste " + r.code());
             } catch (IOException | JSONException e) {
                 Log.w(Main.TAG, "voice: taste", e);
-                return "";
             }
+            return null;
         });
         Main.thread("taste", t);
         return s.taste = t;

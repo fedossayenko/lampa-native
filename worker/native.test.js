@@ -3359,14 +3359,15 @@ test('voice/taste: the newest Loved, Liked and Disliked (original titles, years;
     .run(JSON.stringify([['Top 10 series in Bulgaria', [[9, 'tv', 'Wednesday', '2022', '/w.jpg', 85, '']]]]), Date.now(), Date.now());
   const taste = (headers, q = '') => worker.fetch(new Request(`https://w/voice/taste${q}`, { headers }), e);
   const { taste: text } = await (await taste({ ...stick, ...lampa })).json();
-  assert.equal(text, 'Loved: Shōgun (2024); Dune (2021)\nLiked: Heat (1995)\nDisliked: Tenet; Cats (2019)');
+  assert.equal(text, 'Disliked: Tenet; Cats (2019)\nLiked: Heat (1995)\nLoved: Shōgun (2024); Dune (2021)');
   const bg = (await (await taste({ ...stick, ...lampa }, '?country=BG')).json()).taste;
-  assert.ok(bg.startsWith('Top 10 series in Bulgaria: Wednesday (2022)\nLoved: '), bg);
+  assert.ok(bg.startsWith('Top 10 series in Bulgaria: Wednesday (2022)\nDisliked: '), bg);
   const many = {};
   for (let i = 0; i < 40; i++) many[`movie_${100 + i}`] = { g: 2, t: 100 + i, card: { id: 100 + i, original_title: `${'A rather long film title '.repeat(8)}${i}` } };
   await worker.fetch(new Request('https://w/grades', { method: 'POST', headers: lampa, body: JSON.stringify({ grades: many }) }), e);
   const long = (await (await taste({ ...stick, ...lampa }, '?country=BG')).json()).taste;
-  assert.ok(long.length <= 6000 && long.startsWith('Top 10 series in Bulgaria') && /title \d+$/.test(long), long.slice(-80));
+  assert.ok(long.length <= 6000 && long.startsWith('Top 10 series in Bulgaria') && long.includes('\nDisliked: Tenet')
+    && /\nLoved: .*title \d+$/.test(long), long.slice(-80)); // the oldest Loved cut, a whole title last
   assert.equal((await taste(lampa)).status, 403, 'the stick\'s only');
   assert.equal((await taste(stick)).status, 401, 'a CUB sign-in');
 });

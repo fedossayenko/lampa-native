@@ -130,11 +130,11 @@ final class Voice {
         return out;
     }
 
-    // The taste asked before (VoiceSearch.taste) is used again while it is coming or once it came; one that failed or
-    // came empty is asked again.
+    // The taste asked before (VoiceSearch.taste) is used again while it is coming or once it came ("" too: no grades
+    // and no rows is an answer); one that failed (null) is asked again.
     static boolean reuse(Future<String> had) {
         try {
-            return had != null && (!had.isDone() || !had.get().isEmpty());
+            return had != null && (!had.isDone() || had.get() != null);
         } catch (Exception e) {
             return false; // failed
         }

@@ -19,7 +19,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.FutureTask;
+import java.util.concurrent.Future;
 
 final class SearchScreen extends Main.Part {
     SearchScreen(Main m) {
@@ -47,8 +47,8 @@ final class SearchScreen extends Main.Part {
     String inFlight; // the query asked and not answered yet: "dark" → "dark " meanwhile asks nothing more
     boolean ru = m.settings().getBoolean("search_ru", false);
     Search.Theme theme; // the theme whose picks are shown (null: a search's or voice's), and every pick it showed
-    final List<String> picked = new ArrayList<>();
-    FutureTask<String> taste; // the viewer's taste (VoiceSearch.taste), asked once while the screen is open
+    final java.util.Set<String> picked = new java.util.LinkedHashSet<>(); // once each: a repeat takes no slot
+    Future<String> taste; // the viewer's taste (VoiceSearch.taste), asked once while the screen is open
 
     void show() {
         screen.setOrientation(LinearLayout.VERTICAL);
@@ -265,8 +265,8 @@ final class SearchScreen extends Main.Part {
 
     // The films found, each with how sure it is the one; a recommendation leaves out what was graded or marked
     // watched. text null: not heard (no network, the worker down); "" nothing said; a null: not searched.
-    // t: the theme asked (null: voice).
-    void found(int ask, String text, Voice.Answer a, Search.Theme t) {
+    // t: the theme asked (null: voice), asked: what was sent for it (Try again sends it again).
+    void found(int ask, String text, Voice.Answer a, Search.Theme t, String asked) {
         if (m.pageTop != screen || ask != asks) return;
         if (text == null || text.isEmpty()) {
             say(text == null ? "Can't hear now. Try again." : "Didn't catch that. Hold the button and speak.");
@@ -276,7 +276,7 @@ final class SearchScreen extends Main.Part {
         if (a == null) {
             clear();
             results.addView(m.ux.text("Can't search now. Try again.", 18, 0xff9a9a9a));
-            if (t != null) results.addView(m.ux.key("Try again", 3, v -> m.voiceSearch.ask(this, t, t.ask())));
+            if (t != null) results.addView(m.ux.key("Try again", 3, v -> m.voiceSearch.ask(this, t, asked)));
             if (!results.requestFocus()) keys.requestFocus();
             return;
         }
@@ -293,7 +293,7 @@ final class SearchScreen extends Main.Part {
         if (t != null) { // a theme: Something different asks it again without these
             for (Voice.Found f : a.results()) picked.add(f.card().name()); // the left out too: else asked the same again
             results.addView(m.ux.key("Something different", 3,
-                v -> m.voiceSearch.ask(this, t, Search.different(t.ask(), picked))));
+                v -> m.voiceSearch.ask(this, t, Search.different(t.ask(), List.copyOf(picked)))));
         }
         results.requestFocus(); // the first film (none: stays where it was)
         if (a.open() && !cards.isEmpty()) m.filmPage.showFilm(cards.get(0), null);

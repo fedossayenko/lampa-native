@@ -104,10 +104,10 @@ class VoiceTest {
         assert Voice.reuse(coming) : "still coming";
         coming.run();
         assert Voice.reuse(coming) : "came";
-        java.util.concurrent.FutureTask<String> empty = new java.util.concurrent.FutureTask<>(() -> "");
-        empty.run();
+        assert Voice.reuse(java.util.concurrent.CompletableFuture.completedFuture("")) : "nothing to know is an answer";
         java.util.concurrent.FutureTask<String> failed = new java.util.concurrent.FutureTask<>(() -> { throw new java.io.IOException(); });
         failed.run();
-        assert !Voice.reuse(empty) && !Voice.reuse(failed) && !Voice.reuse(null) : "asked again";
+        assert !Voice.reuse(java.util.concurrent.CompletableFuture.completedFuture(null)) && !Voice.reuse(failed)
+            && !Voice.reuse(null) : "a failure is asked again";
     }
 }
