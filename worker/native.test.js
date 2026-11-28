@@ -3460,6 +3460,16 @@ test('year: hours, films, episodes, the longest run, top genre and director, Lov
   cub(answers);
   const jan = await (await worker.fetch(new Request('https://w/mine/year?y=2026&tz=120', { headers: { ...stick, ...lampa } }), e)).json();
   assert.deepEqual([jan.hours, jan.films, jan.started, jan.days], [y.hours, 2, 3, 5]);
+  // started again in 2027 and left within a minute: its 2026 play still counts
+  e.DB.raw.prepare('UPDATE timeline SET time = 20, percent = 0 WHERE hash = ?').run(lampaHashOf('Arrival'));
+  cub(answers);
+  const again = await (await worker.fetch(new Request('https://w/mine/year?y=2026&tz=120', { headers: { ...stick, ...lampa } }), e)).json();
+  assert.deepEqual([again.hours, again.started, again.days], [y.hours, 3, 5]);
+  // a 2026 log of tries only (and the point after the year): not a film started in 2026
+  e.DB.raw.prepare('UPDATE play_log SET time = 30 WHERE tl = ?').run(lampaHashOf('Arrival'));
+  cub(answers);
+  const tried = await (await worker.fetch(new Request('https://w/mine/year?y=2026&tz=120', { headers: { ...stick, ...lampa } }), e)).json();
+  assert.deepEqual([tried.started, tried.days, tried.posters.map((c) => c[2]).includes('Arrival')], [2, 4, false]);
   cub(answers);
   await worker.fetch(new Request('https://w/mine/year?y=2026', { headers: { ...stick, ...lampa } }), e);
   assert.ok(!asked.some((u) => /\/3\/movie\/[12]$/.test(u.split(' ')[0])), 'asked TMDB once a title');
