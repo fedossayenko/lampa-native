@@ -209,10 +209,12 @@ final class Timeline {
 
     // The worker's /play path: one file of a torrent (Torrentio's index and name) and this point's key. series: an
     // episode's original series name (Lampa's keys of the ones after it), the playlist then comes too; null: a film.
-    static String playPath(String hash, int fileIdx, String name, String key, String series) {
+    // test: a test play (the test_plays setting, written over adb with su: the stick is rooted), kept out of the worker's
+    // starts numbers
+    static String playPath(String hash, int fileIdx, String name, String key, String series, boolean test) {
         try {
             return "/play/" + hash + "?file=" + fileIdx + "&name=" + URLEncoder.encode(name, "UTF-8") + "&tl=" + key
-                + (series == null ? "" : "&series=" + URLEncoder.encode(series, "UTF-8"));
+                + (series == null ? "" : "&series=" + URLEncoder.encode(series, "UTF-8")) + (test ? "&test=1" : "");
         } catch (UnsupportedEncodingException e) {
             throw new AssertionError(e); // UTF-8 is always there
         }

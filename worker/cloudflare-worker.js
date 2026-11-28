@@ -3216,8 +3216,8 @@ async function voiceTaste(request, env, ctx) {
       .then((r) => r.results))),
     upTo(top10Rows(env, ctx, iso).catch(() => null), 1500, null),
     upTo(serviceRows(env, ctx, iso).catch(() => null), 1500, null)]);
-  const lines = TASTE_LISTS.map(([label], i) => lists[i].length && `${label}: ${lists[i].filter((x) => x.name)
-    .map((x) => (x.year ? `${x.name} (${x.year})` : x.name)).join('; ')}`).filter(Boolean);
+  const lines = TASTE_LISTS.map(([label], i) => lists[i].filter((x) => x.name)).map((xs, i) => xs.length
+    && `${TASTE_LISTS[i][0]}: ${xs.map((x) => (x.year ? `${x.name} (${x.year})` : x.name)).join('; ')}`).filter(Boolean);
   for (const [title, cards] of [...(netflix || []), ...(services?.rows || [])]) {
     if (cards.length) lines.push(`${title}: ${cards.map((c) => (c[3] ? `${c[2]} (${c[3]})` : c[2])).join('; ')}`);
   }

@@ -84,4 +84,18 @@ class VoiceTest {
         assert Voice.understood("[1]") == null;
         Voice.findBody("dune", Voice.understood("sorry, try later"), ""); // null: no "understood" key, no exception
     }
+
+    void testShown() throws Exception {
+        String json = "{\"intent\":\"recommend\",\"results\":[[1,\"movie\",\"A\",\"2020\",\"/a\",70,\"\",90],"
+            + "[2,\"movie\",\"B\",\"2020\",\"/b\",70,\"\",80],[3,\"tv\",\"C\",\"2020\",\"/c\",70,\"\",70],"
+            + "[4,\"movie\",\"D\",\"2020\",\"/d\",70,\"\",60],[5,\"movie\",\"E\",\"2020\",\"/e\",70,\"\",-1]]}";
+        Voice.Answer a = Voice.parse(json);
+        java.util.Map<String, String> grades = java.util.Map.of("movie_1", "2");
+        java.util.Set<String> seen = java.util.Set.of("movie_2");
+        java.util.Map<String, String> marks = java.util.Map.of("tv_3", "viewed", "movie_4", "scheduled");
+        List<String> names = Voice.shown(a, grades, seen, marks).stream().map(f -> f.card().name()).toList();
+        assert names.equals(List.of("D", "E")) : "graded, seen and Viewed out; Finish later stays: " + names;
+        Voice.Answer search = Voice.parse(json.replace("recommend", "title"));
+        assert Voice.shown(search, grades, seen, marks).size() == 5 : "a search shows them all";
+    }
 }

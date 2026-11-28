@@ -191,12 +191,13 @@ class TimelineTest {
 
     // The worker's /play path: the file Torrentio meant, its name encoded, and this point's key.
     void testPlayPath() {
-        String p = Timeline.playPath("ab12", 3, "Темный рыцарь / The Dark Knight [2008].mkv", "13906648", null);
+        String p = Timeline.playPath("ab12", 3, "Темный рыцарь / The Dark Knight [2008].mkv", "13906648", null, false);
         assert p.startsWith("/play/ab12?file=3&name=") && p.endsWith("&tl=13906648") : p;
         assert !p.contains(" ") && !p.contains("/ The") && p.contains("%D0%A2") : p;
-        assert Timeline.playPath("ab12", -1, "a&b=c", "1", null).contains("name=a%26b%3Dc") : "& and = stay inside the name";
-        assert Timeline.playPath("ab12", 8, "F.S01E09.mkv", "1", "Foundation & Co").endsWith("&tl=1&series=Foundation+%26+Co")
+        assert Timeline.playPath("ab12", -1, "a&b=c", "1", null, false).contains("name=a%26b%3Dc") : "& and = stay inside the name";
+        assert Timeline.playPath("ab12", 8, "F.S01E09.mkv", "1", "Foundation & Co", false).endsWith("&tl=1&series=Foundation+%26+Co")
             : "an episode: the series' original name, for the playlist's keys";
+        assert Timeline.playPath("ab12", 3, "x", "1", null, true).endsWith("&tl=1&test=1") : "a test play";
     }
 
     // An episode's /play answer: the playlist, this one first, as the worker's /stream addresses.

@@ -3354,7 +3354,7 @@ test('voice/taste: the newest Loved, Liked and Disliked (original titles, years;
     movie_4: { g: -1, t: 5, card: { id: 4, original_title: 'Cats', release_date: '2019' } },
     movie_5: { g: 0, t: 6, card: { id: 5, original_title: 'Tenet' } },
     tv_6: { g: 'skip', t: 7, card: { id: 6, original_name: 'Skipped' } },
-    movie_7: { g: null, t: 8, card: { id: 7, original_title: 'Removed' } } } }) }), e);
+    movie_7: { g: null, t: 8, card: { id: 7, original_title: 'Removed' } }, movie_8: { g: 1, t: 1, card: { id: 8 } } } }) }), e);
   e.DB.raw.prepare("INSERT INTO top10 (country, week, rows, asked, t) VALUES ('BG', '2026-11-22', ?, ?, ?)")
     .run(JSON.stringify([['Top 10 series in Bulgaria', [[9, 'tv', 'Wednesday', '2022', '/w.jpg', 85, '']]]]), Date.now(), Date.now());
   const taste = (headers, q = '') => worker.fetch(new Request(`https://w/voice/taste${q}`, { headers }), e);

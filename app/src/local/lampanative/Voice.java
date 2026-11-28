@@ -114,6 +114,20 @@ final class Voice {
         return "Listening  " + "▮".repeat(level) + "▯".repeat(8 - level);
     }
 
+    // The films of an answer to show: a recommendation leaves out what was graded, played to the end (seen) or marked
+    // Viewed or Thrown; a search shows all.
+    static List<Found> shown(Answer a, java.util.Map<String, String> grades, java.util.Set<String> seen,
+                             java.util.Map<String, String> marks) {
+        List<Found> out = new ArrayList<>();
+        for (Found f : a.results()) {
+            String key = Timeline.card(f.card());
+            if (a.intent().equals("recommend") && (grades.containsKey(key) || seen.contains(key)
+                || "viewed".equals(marks.get(key)) || "thrown".equals(marks.get(key)))) continue;
+            out.add(f);
+        }
+        return out;
+    }
+
     // A card's corner: how sure ("97%"), nothing for one the filters found.
     static String badge(int sure) {
         return sure < 0 ? null : sure + "%";

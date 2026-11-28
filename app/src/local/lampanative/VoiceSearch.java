@@ -106,7 +106,7 @@ final class VoiceSearch extends Main.Part {
             return;
         }
         s.thinking("Hearing…");
-        FutureTask<String> taste = tasteAsked(); // beside the hearing
+        FutureTask<String> taste = taste(s); // beside the hearing
         m.async(() -> {
             String text = null;
             Voice.Answer found = null;
@@ -124,16 +124,17 @@ final class VoiceSearch extends Main.Part {
             }
             String t = text;
             Voice.Answer a = found;
-            m.ui.post(() -> s.found(ask, t, a));
+            m.ui.post(() -> s.found(ask, t, a, null));
         });
     }
 
     // A theme on Search (Search.THEMES) or its Something different: asked as if said, shown as its label.
-    void ask(SearchScreen s, String label, String text) {
+    void ask(SearchScreen s, Search.Theme theme, String text) {
         if (m.recording) return;
         int ask = ++s.asks;
-        s.heard(ask, label);
-        FutureTask<String> taste = tasteAsked();
+        s.keys.requestFocus(); // the key pressed goes with the old results: the keyboard meanwhile, the first film after
+        s.heard(ask, theme.label());
+        FutureTask<String> taste = taste(s);
         m.async(() -> {
             Voice.Answer found = null;
             try {
@@ -142,7 +143,7 @@ final class VoiceSearch extends Main.Part {
                 Log.w(Main.TAG, "theme", e);
             }
             Voice.Answer a = found;
-            m.ui.post(() -> s.found(ask, label, a));
+            m.ui.post(() -> s.found(ask, theme.label(), a, theme));
         });
     }
 
@@ -150,7 +151,7 @@ final class VoiceSearch extends Main.Part {
     Voice.Answer find(String text, FutureTask<String> tasteAsked) throws IOException, JSONException {
         String taste = "";
         try {
-            taste = tasteAsked.get(5, TimeUnit.SECONDS);
+            taste = tasteAsked.get(4, TimeUnit.SECONDS); // beside the hearing, or once a screen: rarely waited for
         } catch (Exception e) {
             Log.w(Main.TAG, "voice: no taste", e);
         }
@@ -159,8 +160,15 @@ final class VoiceSearch extends Main.Part {
     }
 
     // What a recommendation knows of the viewer (the worker's /voice/taste: grades and the country's Home rows), asked on
-    // its own thread; "" when nobody is signed in or it didn't answer.
-    FutureTask<String> tasteAsked() {
+    // its own thread once while Search is open (again after a failure); "" when nobody is signed in or it didn't answer.
+    // Sent with title searches too (~2-4 KB): Claude can't know the intent before reading the request.
+    FutureTask<String> taste(SearchScreen s) {
+        FutureTask<String> had = s.taste;
+        try {
+            if (had != null && (!had.isDone() || !had.get().isEmpty())) return had;
+        } catch (Exception e) {
+            // failed: asked again below
+        }
         Cub.Account a = m.account();
         String country = m.country();
         FutureTask<String> t = new FutureTask<>(() -> {
@@ -175,7 +183,7 @@ final class VoiceSearch extends Main.Part {
             }
         });
         Main.thread("taste", t);
-        return t;
+        return s.taste = t;
     }
 
     String understand(String text, String taste) {

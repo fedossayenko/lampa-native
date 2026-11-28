@@ -16,6 +16,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 spec = importlib.util.spec_from_file_location('voice_claude', os.path.join(HERE, 'voice-claude.py'))
 vc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(vc)
+real_understand = vc.understand  # setUp replaces it; one test runs the real one
 
 
 class Checks(unittest.TestCase):
@@ -27,7 +28,8 @@ class Checks(unittest.TestCase):
         self.addCleanup(os.unlink, token.name)
         vc.TOKEN = token.name
         vc.seen.clear()
-        vc.understand = lambda text, taste='': {'intent': 'title', 'text': text, 'taste': taste}
+        self.asked = []
+        vc.understand = lambda text, taste='': (self.asked.append((text, taste)), {'intent': 'title'})[1]
         vc.recap = lambda o: (self.gate.wait(3), 'x' * 400)[1]
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), vc.Handler)
         self.port = self.server.server_address[1]
@@ -58,6 +60,11 @@ class Checks(unittest.TestCase):
         sig = vc.signed('abc', when, body)
         self.assertEqual(self.post('/understand', {'text': 'dune'}, when, sig), 200)
         self.assertEqual(self.post('/understand', {'text': 'dune'}, when, sig), 403, 'a replay')
+
+    def test_taste_goes_to_claude(self):
+        self.assertEqual(self.post('/understand', {'text': 'scare me', 'taste': 'Loved: Alien'}), 200)
+        self.assertEqual(self.post('/understand', {'text': 'dune'}), 200)
+        self.assertEqual(self.asked, [('scare me', 'Loved: Alien'), ('dune', '')])
 
     def test_wrong_signature_stale_time_and_changed_body(self):
         self.assertEqual(self.post('/understand', {'text': 'x'}, sig='0' * 64), 403)
@@ -91,6 +98,36 @@ class Checks(unittest.TestCase):
             self.assertTrue(vc.understanding.acquire(blocking=False))
         self.addCleanup(lambda: [vc.understanding.release() for _ in range(vc.UNDERSTANDING)])
         self.assertEqual(self.post('/understand', {'text': 'dune'}), 429)
+
+
+
+class Taste(unittest.TestCase):
+    def test_taste_reaches_claude_after_the_request_capped(self):
+        sent = []
+
+        class Fake:  # claude -p: what it was given, a fixed answer
+            def __init__(self):
+                self.stdin = self
+                self.stdout = iter(['{"type": "result", "result": "{\\"intent\\": \\"recommend\\"}"}\n'])
+
+            def write(self, s):
+                sent.append(json.loads(s)['message']['content'])
+
+            def flush(self):
+                pass
+
+            def kill(self):
+                pass
+
+            def wait(self):
+                pass
+        vc.take, vc.understand = Fake, real_understand
+        self.assertEqual(vc.understand('Scare me', 'Loved: Alien (1979)'), {'intent': 'recommend'})
+        self.assertEqual(sent[-1], 'Scare me\n\nAbout the viewer:\nLoved: Alien (1979)')
+        vc.understand('dune')
+        self.assertEqual(sent[-1], 'dune', 'no taste: the request alone')
+        vc.understand('x', 'y' * 9000)
+        self.assertEqual(len(sent[-1]), len('x\n\nAbout the viewer:\n') + 6000)
 
 
 if __name__ == '__main__':
