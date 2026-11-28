@@ -1740,7 +1740,7 @@ test('voice/find: no Claude answer → the free model reads the text (the shared
   const res = await (await voice('find', JSON.stringify({ text: 'фильм где мужик на Марсе выращивает картошку' }), e)).json();
   assert.deepEqual([res.by, res.open, res.results[0][0], res.results[0][7]], ['workers-ai', true, 286217, 99]);
   const [model, input] = e.AI.calls[0];
-  assert.equal(model, '@cf/meta/llama-4-scout-17b-16e-instruct');
+  assert.equal(model, '@cf/meta/llama-3.3-70b-instruct-fp8-fast');
   assert.ok(input.messages[0].content.includes(`Today is ${new Date().toISOString().slice(0, 10)}.`));
   assert.equal(input.messages[1].content, 'фильм где мужик на Марсе выращивает картошку');
   assert.equal((await voice('find', JSON.stringify({ text: 'hmm' }), voiceEnv(() => ({ response: 'no idea' })))).status, 502);
@@ -3403,4 +3403,12 @@ test('voice/taste: a line whose first title crosses the cap goes whole, the line
     movie_2: { g: 2, t: 1, card: { id: 2, original_title: 'A Loved film past the cap' } } } }) }), e);
   const { taste } = await (await worker.fetch(new Request('https://w/voice/taste?country=BG', { headers: { ...stick, ...lampa } }), e)).json();
   assert.equal(taste, `${first}B; ${liked}`, 'not cut after B, the earlier line\'s last "; "');
+});
+
+test('voice/find: the model\'s answer in OpenAI\'s shape (choices) is read too; the time it took in Server-Timing', async () => {
+  globalThis.fetch = async () => Response.json({ results: [{ id: 157336, title: 'Interstellar', release_date: '2014-11-05', poster_path: '/i.jpg' }] });
+  const e = voiceEnv(() => ({ choices: [{ message: { content: '{"intent": "title", "candidates": [{"title": "Interstellar", "year": 2014, "type": "movie", "confidence": 0.9}], "discover": null}' } }] }));
+  const res = await voice('find', JSON.stringify({ text: 'Покажи Интерстеллар' }), e);
+  assert.deepEqual((await res.json()).results.map((c) => c[0]), [157336]);
+  assert.match(res.headers.get('Server-Timing'), /^model;dur=\d+, tmdb;dur=\d+$/);
 });

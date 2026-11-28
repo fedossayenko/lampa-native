@@ -443,6 +443,9 @@ shaping; custom-drawn rows would only save Java heap, which is 3–6 MB (log row
      Also: D1 `starts` (each Play's release name and timeline key, test_plays setting = 1): why a third of the plays stop
      in the first two minutes (30 days to 11-28: 21 of 57 under 20 %, 14 in 2 min, none played again; some were test
      plays). Coming up's "Last 7 days" skipped: an episode out stays under Today until watched.
+     Voice's free model (home Mac off) is now Llama 3.3 70B fast: Llama 4 Scout took 17-38 s with the taste (past the
+     stick's 30 s) and 4-7 s on titles; 70B 3.7-4.9 s and 0.8-1.1 s, the same six titles (measured 2026-11-28). It also
+     answers in OpenAI's shape at times (choices), which read as "not understood" before; Server-Timing has both parts.
    - **8h. Translated subtitles** (Subs, second half) — high effort: English subtitles from OpenSubtitles (matched by
      the release's hash; an API key, ~20 downloads a day), translated by Claude on the home server (~1 min) and
      handed to DDD as an external track. Timing has to match the release, so a hash match only.

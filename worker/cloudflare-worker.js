@@ -3102,7 +3102,10 @@ async function unwatch(request, env) {
 // open: one title that sure (70+) and 50 ahead of the next opens at once (an exact title Claude rates 70-80, a same-name
 // one 10: Foundation, Темная материя, 2026-10-31).
 const HEARS = '@cf/deepgram/nova-3';
-const READS = '@cf/meta/llama-4-scout-17b-16e-instruct';
+// Llama 3.3 70B fast, measured 2026-11-28 against the Llama 4 Scout before it: the same six titles found (Russian and
+// English, a description), 0.8-1.1 s against 4-7 s; a recommendation with the viewer's taste 3.7-4.9 s against 17-38 s
+// (past the stick's 30 s), and picks that fit the taste
+const READS = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
 const VOICE_WAV_MAX = 1e6; // 30 s
 const GENRES = {
   movie: { action: 28, adventure: 12, animation: 16, comedy: 35, crime: 80, documentary: 99, drama: 18, family: 10751,
@@ -3173,12 +3176,17 @@ async function voiceFind(request, env) {
   const text = String(ask?.text || '').trim().slice(0, 1000); // a theme's "Not: ..." makes it longer than speech
   let understood = ask?.understood && typeof ask.understood === 'object' ? ask.understood : null;
   const by = understood ? 'claude' : 'workers-ai';
+  const t0 = Date.now();
   if (!understood && text && env.AI) {
     const o = await env.AI.run(READS, { messages: [{ role: 'system', content: voicePrompt() }, { role: 'user', content: withTaste(text, ask.taste) }],
-      max_tokens: 1500 }).catch(() => null);
-    understood = typeof o?.response === 'object' ? o.response : jsonIn(String(o?.response || ''));
+      max_tokens: 1500 }).catch((e) => (console.log('voice model', String(e)), null));
+    // {response} as text or parsed, or (seen 2026-11-28 from the same model) OpenAI's {choices: [{message: {content}}]}
+    const said = o?.response ?? o?.choices?.[0]?.message?.content ?? '';
+    understood = typeof said === 'object' ? said : jsonIn(String(said));
+    if (!understood) console.log('voice model said', JSON.stringify(o).slice(0, 600));
   }
   if (!understood) return corsError(request, 'Not understood.', 502);
+  const t1 = Date.now();
   const intent = ['title', 'describe', 'recommend'].includes(understood.intent) ? understood.intent : 'title';
   const guesses = (Array.isArray(understood.candidates) ? understood.candidates : [])
     .filter((c) => c && typeof c.title === 'string' && c.title.trim()).slice(0, 8);
@@ -3189,7 +3197,9 @@ async function voiceFind(request, env) {
     .filter((c) => !seen.has(`${c[1]}:${c[0]}`) && seen.add(`${c[1]}:${c[0]}`)).slice(0, 20);
   const [a, b] = results;
   const open = intent !== 'recommend' && Boolean(a) && a[7] >= 70 && (!b || b[7] <= a[7] - 50);
-  return voiceAnswer(request, { intent, by, open, results });
+  const res = voiceAnswer(request, { intent, by, open, results });
+  res.headers.set('Server-Timing', `model;dur=${t1 - t0}, tmdb;dur=${Date.now() - t1}`); // where an answer's time went
+  return res;
 }
 
 // What a recommendation knows of the viewer (voice-prompt.json reads it): the request, then "About the viewer:" and
