@@ -3389,3 +3389,17 @@ test('play: each start is logged with its release, the timeline\'s key and the t
   assert.deepEqual(e.DB.raw.prepare('SELECT hash, name, tl, test FROM starts ORDER BY t, tl').all().map((r) => ({ ...r })),
     [{ hash: H, name: 'Dune.2021.2160p.RUS.mkv', tl: '123', test: 0 }, { hash: H, name: '', tl: '124', test: 1 }]);
 });
+
+test('voice/taste: a line whose first title crosses the cap goes whole, the line before it stays whole', async () => {
+  const e = { ...env, PLAY_TOKEN: 'stick-token', DB: d1(), CUB_ACCOUNTS: '42' };
+  cub({ 'users/get': { user: { id: 42 } } });
+  e.DB.raw.prepare("INSERT INTO top10 (country, week, rows, asked, t) VALUES ('BG', '2026-11-22', ?, ?, ?)")
+    .run(JSON.stringify([['Top 10 series in Bulgaria', [[9, 'tv', 'Wednesday', '2022', '/w.jpg', 85, '']]]]), Date.now(), Date.now());
+  const first = 'Top 10 series in Bulgaria: Wednesday (2022)\nLiked: ';
+  const liked = 'L'.repeat(5990 - first.length); // the Liked line ends at 5990
+  await worker.fetch(new Request('https://w/grades', { method: 'POST', headers: lampa, body: JSON.stringify({ grades: {
+    movie_1: { g: 1, t: 1, card: { id: 1, original_title: liked } },
+    movie_2: { g: 2, t: 1, card: { id: 2, original_title: 'A Loved film past the cap' } } } }) }), e);
+  const { taste } = await (await worker.fetch(new Request('https://w/voice/taste?country=BG', { headers: { ...stick, ...lampa } }), e)).json();
+  assert.equal(taste, first + liked);
+});
