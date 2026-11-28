@@ -132,12 +132,21 @@ final class Voice {
 
     // The taste asked before (VoiceSearch.taste) is used again while it is coming or once it came ("" too: no grades
     // and no rows is an answer); one that failed (null) is asked again.
-    static boolean reuse(Future<String> had) {
+    static final long TASTE_MS = 10 * 60_000; // kept that long (a voice press from Home opens a new Search each time)
+
+    // ageMs: since it was asked (elapsed time, not the wall clock); same: for the same sign-in and country
+    static boolean reuse(Future<String> had, long ageMs, boolean same) {
         try {
-            return had != null && (!had.isDone() || had.get() != null);
+            return had != null && same && ageMs >= 0 && ageMs < TASTE_MS && (!had.isDone() || had.get() != null);
         } catch (Exception e) {
             return false; // failed
         }
+    }
+
+    // /voice/taste's answer: the taste; "" for 401 (no CUB sign-in it knows: nothing to know); null to ask again
+    // (a refused play token, 403, works again once tools/connect.sh sets a new one; a failure)
+    static String tasteOf(int code, String body) throws JSONException {
+        return code == 200 ? new JSONObject(body).optString("taste") : code == 401 ? "" : null;
     }
 
     // A card's corner: how sure ("97%"), nothing for one the filters found.

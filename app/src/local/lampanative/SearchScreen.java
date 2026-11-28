@@ -179,7 +179,7 @@ final class SearchScreen extends Main.Part {
                     m.voiceSearch.ask(this, t, t.ask());
                 });
                 pill.setOnFocusChangeListener((v, on) -> {
-                    if (on) m.voiceSearch.taste(this); // asked ahead, once: the first theme doesn't wait for it
+                    if (on) m.voiceSearch.taste(); // asked ahead (kept a while): the first theme doesn't wait for it
                 });
                 pills.addView(pill);
             }

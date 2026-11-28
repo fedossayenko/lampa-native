@@ -20,7 +20,6 @@ import java.util.concurrent.Future;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import org.json.JSONException;
-import org.json.JSONObject;
 
 /**
  * Voice search: the remote's voice button held records what is said (the microphone on its own thread), the worker hears it, the
@@ -108,7 +107,7 @@ final class VoiceSearch extends Main.Part {
             return;
         }
         s.thinking("Hearing…");
-        Future<String> taste = taste(s); // beside the hearing
+        Future<String> taste = taste(); // beside the hearing
         m.async(() -> {
             String text = null;
             Voice.Answer found = null;
@@ -137,7 +136,7 @@ final class VoiceSearch extends Main.Part {
         s.keys.requestFocus(); // the key pressed goes with the old results: the keyboard meanwhile, the first film after
         s.say(theme.label()); // gray, not a query: a key typed starts from nothing
         s.thinking("Finding…");
-        Future<String> taste = taste(s);
+        Future<String> taste = taste();
         m.async(() -> {
             Voice.Answer found = null;
             try {
@@ -164,35 +163,35 @@ final class VoiceSearch extends Main.Part {
     }
 
     // What a recommendation knows of the viewer (the worker's /voice/taste: grades and the country's Home rows), asked on
-    // its own thread once while Search is open (again after a failure: null); "" when nobody is signed in.
+    // its own thread, kept Voice.TASTE_MS for the same sign-in and country (asked again after a failure: null); ""
+    // when nobody is signed in.
     // Sent with title searches too (~2-4 KB): Claude can't know the intent before reading the request.
-    Future<String> taste; // the last taste asked, for TASTE_MS: a voice press from Home opens a new Search each time
+    Future<String> taste; // the last taste asked (Voice.TASTE_MS), when (elapsed ms), for which sign-in and country
     long tasteAt;
-    static final long TASTE_MS = 10 * 60_000;
+    String tasteFor;
 
-    Future<String> taste(SearchScreen s) {
-        if (Voice.reuse(taste) && System.currentTimeMillis() - tasteAt < TASTE_MS) return taste;
+    Future<String> taste() {
         Cub.Account a = m.account();
         String country = m.country();
+        String viewer = a == null ? null : a.token() + "/" + a.profile() + "/" + country;
+        if (Voice.reuse(taste, SystemClock.elapsedRealtime() - tasteAt, viewer != null && viewer.equals(tasteFor))) return taste;
         if (a == null) return CompletableFuture.completedFuture(""); // nobody signed in: nothing to ask
         FutureTask<String> t = new FutureTask<>(() -> {
             try {
                 m.token(); // read again after a refusal, as m.ask does (open() sends it)
                 Answer r = send(withCub(open(Home.worker + "/voice/taste?country=" + URLEncoder.encode(country, "UTF-8"), 5000), a),
                     null, null);
-                if (r.code() == 200) return new JSONObject(r.body()).optString("taste");
-                Log.w(Main.TAG, "voice: taste " + r.code());
-                if (r.code() == 401 || r.code() == 403) { // refused: nothing to know, not asked again for TASTE_MS
-                    if (r.code() == 403) Net.token = null;
-                    return "";
-                }
+                if (r.code() != 200) Log.w(Main.TAG, "voice: taste " + r.code());
+                if (r.code() == 403) Net.token = null; // read again next time, as m.ask does
+                return Voice.tasteOf(r.code(), r.body());
             } catch (IOException | JSONException e) { // m.token(): none set up, too
                 Log.w(Main.TAG, "voice: taste", e);
             }
             return null;
         });
         Main.thread("taste", t);
-        tasteAt = System.currentTimeMillis();
+        tasteAt = SystemClock.elapsedRealtime();
+        tasteFor = viewer;
         return taste = t;
     }
 

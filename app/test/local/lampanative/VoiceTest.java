@@ -99,15 +99,21 @@ class VoiceTest {
         assert Voice.shown(search, grades, seen, marks).size() == 5 : "a search shows them all";
     }
 
-    void testReuse() {
+    void testReuse() throws Exception {
         java.util.concurrent.FutureTask<String> coming = new java.util.concurrent.FutureTask<>(() -> "Loved: Dune");
-        assert Voice.reuse(coming) : "still coming";
+        assert Voice.reuse(coming, 0, true) : "still coming";
         coming.run();
-        assert Voice.reuse(coming) : "came";
-        assert Voice.reuse(java.util.concurrent.CompletableFuture.completedFuture("")) : "nothing to know is an answer";
+        assert Voice.reuse(coming, 60_000, true) : "came";
+        assert !Voice.reuse(coming, Voice.TASTE_MS, true) : "10 minutes: asked again";
+        assert !Voice.reuse(coming, -5, true) : "a clock gone back";
+        assert !Voice.reuse(coming, 0, false) : "another sign-in or country";
+        assert Voice.reuse(java.util.concurrent.CompletableFuture.completedFuture(""), 0, true) : "nothing to know is an answer";
         java.util.concurrent.FutureTask<String> failed = new java.util.concurrent.FutureTask<>(() -> { throw new java.io.IOException(); });
         failed.run();
-        assert !Voice.reuse(java.util.concurrent.CompletableFuture.completedFuture(null)) && !Voice.reuse(failed)
-            && !Voice.reuse(null) : "a failure is asked again";
+        assert !Voice.reuse(java.util.concurrent.CompletableFuture.completedFuture(null), 0, true) && !Voice.reuse(failed, 0, true)
+            && !Voice.reuse(null, 0, true) : "a failure is asked again";
+        assert Voice.tasteOf(200, "{\"taste\":\"Loved: Dune\"}").equals("Loved: Dune");
+        assert Voice.tasteOf(401, "{}").equals("") : "no sign-in the worker knows";
+        assert Voice.tasteOf(403, "{}") == null && Voice.tasteOf(502, "{}") == null : "asked again";
     }
 }
